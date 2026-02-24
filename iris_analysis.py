@@ -79,11 +79,16 @@ class UnavailableDetector:
 
 class YoloPersonDetector:
     def __init__(
-        self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.25, device: str = "cpu"
+        self,
+        model_name: str = "data/models/yolov8n.pt",
+        conf_threshold: float = 0.25,
+        device: str = "cpu",
     ) -> None:
         from ultralytics import YOLO  # type: ignore
 
-        self.model = YOLO(model_name)
+        model_path = Path(model_name)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.model = YOLO(str(model_path))
         self.conf_threshold = conf_threshold
         self.device = device
 

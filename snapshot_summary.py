@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import re
 
@@ -21,10 +22,19 @@ def is_readable(path: Path) -> bool:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Summarize snapshot quality and camera distribution.")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path(__file__).resolve().parent / "data" / "stores" / "IRIS",
+        help="Folder containing snapshot images to summarize.",
+    )
+    args = parser.parse_args()
+
+    root = args.root.resolve()
     files = sorted([f for f in root.glob("*.jpg") if FILE_PATTERN.match(f.name)])
     if not files:
-        print("No matching snapshot files found.")
+        print(f"No matching snapshot files found in {root}.")
         return
 
     zero_byte = 0

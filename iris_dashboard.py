@@ -350,15 +350,20 @@ def main() -> None:
     _ensure_session_state()
 
     app_dir = Path(__file__).resolve().parent
+    data_dir = app_dir / "data"
+    default_stores_root = data_dir / "stores"
+    default_exports_dir = data_dir / "exports" / "current"
     db_path = app_dir / "data" / "store_registry.db"
-    data_root = app_dir
-    employee_assets_root = app_dir / "employee_assets"
+    data_root = default_stores_root
+    employee_assets_root = data_dir / "employee_assets"
+    data_root.mkdir(parents=True, exist_ok=True)
+    default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
 
     with st.sidebar:
         st.header("Analysis Controls")
         root_str = st.text_input("Root Directory", value=str(data_root))
-        out_str = st.text_input("Export Directory", value=str(app_dir / "exports"))
+        out_str = st.text_input("Export Directory", value=str(default_exports_dir))
         access_email = st.text_input("Access Email (optional)", value="")
         conf_threshold = st.slider(
             "Detection Confidence",

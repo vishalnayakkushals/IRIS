@@ -28,12 +28,36 @@ This repository now includes a working store-level analysis app with:
 - Employee image registry per store.
 - Google Drive folder link and sync per store.
 
+## Project Structure
+
+```text
+IRIS/
+  api/
+  docs/
+  ideas/
+  release-notes/
+  schemas/
+  tests/
+  data/
+    stores/                 # one folder per store with snapshots
+    exports/current/        # latest analysis CSV output
+    exports/day1/           # day-1 run snapshots (optional)
+    employee_assets/        # uploaded employee images
+    store_registry.db       # sqlite store/email/drive mapping
+  analyze_stores.py
+  iris_dashboard.py
+  iris_analysis.py
+  store_registry.py
+  requirements.txt
+  environment.yml
+```
+
 ## Folder Contract
 
 Expected store layout:
 
 ```text
-<root>/
+data/stores/
   store_001/
     HH-MM-SS_DXX-N.jpg
   store_002/
@@ -54,13 +78,13 @@ python -m pip install -r requirements.txt
 ## Run Batch Analysis
 
 ```powershell
-python analyze_stores.py --root . --out exports --conf 0.25 --detector yolo --time-bucket 1
+python analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1
 ```
 
 CSV outputs:
-- `exports/all_stores_summary.csv`
-- `exports/store_<store_id>_image_insights.csv`
-- `exports/store_<store_id>_camera_hotspots.csv`
+- `data/exports/current/all_stores_summary.csv`
+- `data/exports/current/store_<store_id>_image_insights.csv`
+- `data/exports/current/store_<store_id>_camera_hotspots.csv`
 
 ## Run Dashboard
 
@@ -88,6 +112,6 @@ Sidebar:
 
 ## Detector Notes
 
-- Default detector: YOLOv8n via `ultralytics` (CPU mode).
+- Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.
 - If detector is unavailable, pipeline continues and records `detection_error`.
 - Use `--detector mock` for deterministic local testing.

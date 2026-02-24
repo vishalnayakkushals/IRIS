@@ -7,19 +7,20 @@ from iris_analysis import analyze_root, export_analysis
 
 
 def parse_args() -> argparse.Namespace:
+    app_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
         description="Analyze store folders and export customer/hotspot insights."
     )
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("."),
+        default=app_dir / "data" / "stores",
         help="Root folder containing one subfolder per store.",
     )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("exports"),
+        default=app_dir / "data" / "exports" / "current",
         help="Output folder where CSV exports will be written.",
     )
     parser.add_argument(
