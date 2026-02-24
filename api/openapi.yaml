@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: IRIS MVP API
+  version: 0.1.0
+  description: |
+    Anonymous retail intelligence APIs for onboarding, ingest, analytics,
+    alerts, and store license workflow.
+servers:
+  - url: https://api.iris.local
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    Store:
+      type: object
+      required: [store_id, name, timezone, status]
+      properties:
+        store_id: { type: string }
+        name: { type: string }
+        timezone: { type: string }
+        address: { type: string }
+        status: { type: string, enum: [ACTIVE, INACTIVE] }
+    Camera:
+      type: object
+      required: [camera_id, store_id, type, snapshot_url, active]
+      properties:
+        camera_id: { type: string }
+        store_id: { type: string }
+        type: { type: string, enum: [ENTRANCE, INSIDE] }
+        snapshot_url: { type: string, format: uri }
+        capture_interval_sec: { type: integer, minimum: 1, default: 1 }
+        active: { type: boolean }
+    Calibration:
+      type: object
+      required: [entry_line, inside_region_polygon, outside_region_polygon, doorway_zone_polygon]
+      properties:
+        entry_line:
+          type: object
+          required: [p1, p2]
+          properties:
+            p1:
+              type: array
+              prefixItems: [{type: number}, {type: number}]
+              minItems: 2
+              maxItems: 2
+            p2:
+              type: array
+              prefixItems: [{type: number}, {type: number}]
+              minItems: 2
+              maxItems: 2
+        inside_region_polygon:
+          $ref: '#/components/schemas/Polygon'
+        outside_region_polygon:
+          $ref: '#/components/schemas/Polygon'
+        doorway_zone_polygon:
+          $ref: '#/components/schemas/Polygon'
+    Polygon:
+      type: array
+      minItems: 3
+      items:
+        type: array
+        minItems: 2
+        maxItems: 2
+        items:
+          type: number
+    Zone:
+      type: object
+      required: [zone_id, camera_id, name, zone_type, polygon]
+      properties:
+        zone_id: { type: string }
+        camera_id: { type: string }
+        name: { type: string }
+        zone_type: { type: string, enum: [HOTSPOT, BILLING, DOORWAY, IGNORE] }
+        polygon:
+          $ref: '#/components/schemas/Polygon'
+    VisitSummary:
+      type: object
+      required: [visit_id, entry_ts, exit_ts, store_dwell_sec, bounce_flag, stitch_confidence, dwell_confidence, los_risk_score]
+      properties:
+        visit_id: { type: string }
+        entry_ts: { type: string, format: date-time }
+        exit_ts: { type: string, format: date-time }
+        store_dwell_sec: { type: integer }
+        bounce_flag: { type: boolean }
+        stitch_confidence: { type: string, enum: [HIGH, MED, LOW] }
+        dwell_confidence: { type: string, enum: [HIGH, MED, LOW] }
+        los_risk_score: { type: number, minimum: 0, maximum: 1 }
+    Alert:
+      type: object
+      required: [alert_id, store_id, alert_type, created_ts, status, risk_score]
+      properties:
+        alert_id: { type: string }
+        store_id: { type: string }
+        alert_type: { type: string, enum: [LOSS_OF_SALE] }
+        created_ts: { type: string, format: date-time }
+        visit_id: { type: string }
+        status: { type: string, enum: [OPEN, ACK, CLOSED] }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH] }
+        risk_score: { type: number, minimum: 0, maximum: 1 }
+        reason_codes:
+          type: array
+          items: { type: string }
+        keyframe_uris:
+          type: array
+          items: { type: string, format: uri }
+    License:
+      type: object
+      required: [license_id, store_id, license_type, status, issue_date, expiry_date, document_uri]
+      properties:
+        license_id: { type: string }
+        store_id: { type: string }
+        license_type: { type: string, enum: [TRADE_DISPLAY] }
+        status: { type: string, enum: [UPLOADED, PENDING_APPROVAL, APPROVED, REJECTED, EXPIRED] }
+        issue_date: { type: string, format: date }
+        expiry_date: { type: string, format: date }
+        document_uri: { type: string, format: uri }
+paths:
+  /v1/stores:
+    post:
+      summary: Create store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, timezone]
+              properties:
+                name: { type: string }
+                timezone: { type: string }
+                address: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Store' }
+  /v1/stores/{store_id}/cameras:
+    post:
+      summary: Add camera to store
+      parameters:
+        - in: path
+          name: store_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, snapshot_url, capture_interval_sec]
+              properties:
+                type: { type: string, enum: [ENTRANCE, INSIDE] }
+                snapshot_url: { type: string, format: uri }
+                capture_interval_sec: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Camera' }
+  /v1/cameras/{camera_id}/calibration:
+    put:
+      summary: Set camera calibration
+      parameters:
+        - in: path
+          name: camera_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Calibration' }
+      responses:
+        '200':
+          description: Saved
+  /v1/cameras/{camera_id}/zones:
+    post:
+      summary: Create zone for camera
+      parameters:
+        - in: path
+          name: camera_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, zone_type, polygon]
+              properties:
+                name: { type: string }
+                zone_type: { type: string, enum: [HOTSPOT, BILLING, DOORWAY, IGNORE] }
+                polygon: { $ref: '#/components/schemas/Polygon' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Zone' }
+  /v1/ingest/snapshots:
+    post:
+      summary: Upload snapshot for ingestion
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [store_id, camera_id, ts, image]
+              properties:
+                store_id: { type: string }
+                camera_id: { type: string }
+                ts: { type: string, format: date-time }
+                image:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  frame_id: { type: string }
+                  accepted: { type: boolean }
+  /v1/analytics/footfall:
+    get:
+      summary: Footfall analytics
+      parameters:
+        - in: query
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: bucket
+          schema: { type: string, enum: [hour, day], default: hour }
+      responses:
+        '200':
+          description: Footfall buckets
+  /v1/analytics/dwell:
+    get:
+      summary: Dwell and bounce analytics
+      parameters:
+        - in: query
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Dwell and bounce summary
+  /v1/analytics/hotspots:
+    get:
+      summary: Hotspot heatmap/zone analytics
+      parameters:
+        - in: query
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: camera_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: mode
+          schema: { type: string, enum: [grid, zones], default: zones }
+      responses:
+        '200':
+          description: Hotspot report
+  /v1/visits:
+    get:
+      summary: Visit drilldown list
+      parameters:
+        - in: query
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: min_confidence
+          schema: { type: string, enum: [LOW, MED, HIGH], default: MED }
+      responses:
+        '200':
+          description: Visit summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VisitSummary' }
+  /v1/alerts:
+    get:
+      summary: List alerts
+      parameters:
+        - in: query
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: type
+          schema: { type: string, enum: [LOSS_OF_SALE] }
+        - in: query
+          name: status
+          schema: { type: string, enum: [OPEN, ACK, CLOSED] }
+      responses:
+        '200':
+          description: Alert list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Alert' }
+  /v1/alerts/{alert_id}:
+    patch:
+      summary: Update alert status
+      parameters:
+        - in: path
+          name: alert_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [ACK, CLOSED] }
+                comment: { type: string }
+      responses:
+        '200':
+          description: Updated
+  /v1/stores/{store_id}/licenses:
+    post:
+      summary: Upload new license record
+      parameters:
+        - in: path
+          name: store_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_type, issue_date, expiry_date, document_uri]
+              properties:
+                license_type: { type: string, enum: [TRADE_DISPLAY] }
+                issue_date: { type: string, format: date }
+                expiry_date: { type: string, format: date }
+                document_uri: { type: string, format: uri }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+    get:
+      summary: List store licenses
+      parameters:
+        - in: path
+          name: store_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: include_expired
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Licenses
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/License' }
+  /v1/licenses/{license_id}/submit:
+    post:
+      summary: Submit uploaded license for approval
+      parameters:
+        - in: path
+          name: license_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Submitted
+  /v1/licenses/{license_id}/decision:
+    post:
+      summary: Approve or reject license
+      parameters:
+        - in: path
+          name: license_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Decision recorded
