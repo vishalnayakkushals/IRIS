@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Any
+from uuid import uuid4
 
 
 DRIVE_FOLDER_ID_PATTERN = re.compile(r"/folders/([a-zA-Z0-9_-]+)")
@@ -65,23 +66,40 @@ def upsert_store(
     db_path: Path, store_id: str, store_name: str, email: str, drive_folder_url: str
 ) -> None:
     init_db(db_path)
+    normalized_store_id = store_id.strip()
+    normalized_store_name = store_name.strip()
+    normalized_email = email.strip().lower()
+    normalized_drive_url = drive_folder_url.strip()
+    if not normalized_store_id or not normalized_store_name or not normalized_email:
+        raise ValueError("store_id, store_name, and email are required")
+
     now = _now_utc()
     conn = sqlite3.connect(db_path)
     try:
         existing = conn.execute(
-            "SELECT store_id FROM stores WHERE email = ? AND store_id != ?", (email, store_id)
+            "SELECT store_id FROM stores WHERE lower(email) = lower(?) AND store_id != ?",
+            (normalized_email, normalized_store_id),
         ).fetchone()
         if existing:
             raise ValueError(f"Email '{email}' is already linked to store '{existing[0]}'")
 
-        row = conn.execute("SELECT store_id FROM stores WHERE store_id = ?", (store_id,)).fetchone()
+        row = conn.execute(
+            "SELECT store_id FROM stores WHERE store_id = ?", (normalized_store_id,)
+        ).fetchone()
         if row is None:
             conn.execute(
                 """
                 INSERT INTO stores (store_id, store_name, email, drive_folder_url, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (store_id, store_name, email, drive_folder_url, now, now),
+                (
+                    normalized_store_id,
+                    normalized_store_name,
+                    normalized_email,
+                    normalized_drive_url,
+                    now,
+                    now,
+                ),
             )
         else:
             conn.execute(
@@ -90,7 +108,13 @@ def upsert_store(
                 SET store_name = ?, email = ?, drive_folder_url = ?, updated_at = ?
                 WHERE store_id = ?
                 """,
-                (store_name, email, drive_folder_url, now, store_id),
+                (
+                    normalized_store_name,
+                    normalized_email,
+                    normalized_drive_url,
+                    now,
+                    normalized_store_id,
+                ),
             )
         conn.commit()
     finally:
@@ -115,6 +139,9 @@ def list_stores(db_path: Path) -> list[StoreRecord]:
 
 def get_store_by_email(db_path: Path, email: str) -> StoreRecord | None:
     init_db(db_path)
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        return None
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
@@ -123,7 +150,7 @@ def get_store_by_email(db_path: Path, email: str) -> StoreRecord | None:
             FROM stores
             WHERE lower(email) = lower(?)
             """,
-            (email,),
+            (normalized_email,),
         ).fetchone()
         return StoreRecord(*row) if row else None
     finally:
@@ -175,16 +202,31 @@ def add_employee_image(
     content: bytes,
 ) -> Path:
     init_db(db_path)
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", employee_name.strip()).strip("_")
+    normalized_store_id = store_id.strip()
+    normalized_employee_name = employee_name.strip()
+    if not normalized_store_id or not normalized_employee_name:
+        raise ValueError("store_id and employee_name are required")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM stores WHERE store_id = ?", (normalized_store_id,)
+        ).fetchone()
+        if not exists:
+            raise ValueError(f"Store '{normalized_store_id}' is not registered")
+    finally:
+        conn.close()
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", normalized_employee_name).strip("_")
     if not safe_name:
         safe_name = "employee"
     extension = Path(original_filename).suffix.lower() or ".jpg"
     if extension not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
         extension = ".jpg"
 
-    target_dir = employee_assets_root / store_id
+    target_dir = employee_assets_root / normalized_store_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}{extension}"
+    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe_name}_{uuid4().hex[:8]}{extension}"
     target_path = target_dir / filename
     target_path.write_bytes(content)
 
@@ -195,7 +237,7 @@ def add_employee_image(
             INSERT INTO employees (store_id, employee_name, image_path, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (store_id, employee_name, str(target_path), _now_utc()),
+            (normalized_store_id, normalized_employee_name, str(target_path), _now_utc()),
         )
         conn.commit()
     finally:
@@ -236,8 +278,12 @@ def sync_store_from_drive(store: StoreRecord, data_root: Path) -> tuple[bool, st
             url=store.drive_folder_url,
             output=str(target_dir),
             quiet=True,
-            remaining_ok=True,
+            remaining_ok=False,
         )
         return True, f"{store.store_id}: synced snapshots into {target_dir}"
     except Exception as exc:
-        return False, f"{store.store_id}: sync failed ({exc})"
+        return (
+            False,
+            f"{store.store_id}: sync failed ({exc}). "
+            "If folder has >50 files, use Drive API-based sync for full ingestion.",
+        )
