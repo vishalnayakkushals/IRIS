@@ -18,6 +18,8 @@ from .store_registry import (
     get_store_by_email,
     init_db,
     list_alert_routes,
+    list_user_activity,
+    log_user_activity,
     list_camera_configs,
     list_employees,
     list_license_audit,
@@ -27,6 +29,7 @@ from .store_registry import (
     list_stores,
     list_users,
     route_alert,
+    authenticate_user,
     set_role_permissions,
     set_user_password,
     sync_store_from_drive,
@@ -500,6 +503,8 @@ def main() -> None:
                 camera_configs_by_store=cfg_map,
             )
             st.session_state["analysis_output"] = output
+            if st.session_state.get("login_email"):
+                log_user_activity(db_path=db_path, actor_email=st.session_state.get("login_email",""), action_code="ANALYSIS_RUN")
             st.success("Analysis completed and CSV exports updated.")
 
     output: AnalysisOutput | None = st.session_state.get("analysis_output")
@@ -510,11 +515,13 @@ def main() -> None:
     if "login_email" not in st.session_state:
         st.session_state["login_email"] = ""
     if login_clicked:
-        perms = user_permissions(db_path=db_path, email=login_email.strip())
-        if not perms:
-            st.error("Unknown user or no role assigned.")
+        user = authenticate_user(db_path=db_path, email=login_email.strip(), password=login_password)
+        perms = user_permissions(db_path=db_path, email=login_email.strip()) if user else {}
+        if user is None or not perms:
+            st.error("Invalid login or no role assigned.")
         else:
             st.session_state["login_email"] = login_email.strip().lower()
+            log_user_activity(db_path=db_path, actor_email=login_email.strip().lower(), action_code="LOGIN_SUCCESS")
             st.success(f"Logged in as {login_email.strip().lower()}")
 
     active_email = st.session_state.get("login_email", "")
@@ -542,7 +549,7 @@ def main() -> None:
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
-    tabs = st.tabs(["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master"])
+    tabs = st.tabs(["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master", "Activity Logs"])
     with tabs[0]:
         _render_overview(view_output)
     with tabs[1]:
@@ -570,12 +577,16 @@ def main() -> None:
             u_roles = st.text_input("Roles (comma)", value="store_user")
             if st.button("Create user"):
                 create_user(db_path, u_email, u_name, u_pwd, store_id=u_store, role_names=[x.strip() for x in u_roles.split(',') if x.strip()])
+                if active_email:
+                    log_user_activity(db_path=db_path, actor_email=active_email, action_code="CREATE_USER", store_id=u_store)
                 st.success("User created")
         with st.expander("Set user password"):
             p_email = st.text_input("User email for password reset")
             p_pwd = st.text_input("New password", type="password")
             if st.button("Set password"):
                 set_user_password(db_path, p_email, p_pwd)
+                if active_email:
+                    log_user_activity(db_path=db_path, actor_email=active_email, action_code="SET_PASSWORD")
                 st.success("Password updated")
         with st.expander("Create role and permissions"):
             r_name = st.text_input("Role name")
@@ -654,6 +665,13 @@ def main() -> None:
                         pass
         sm = pd.DataFrame(list_store_master(db_path))
         st.dataframe(sm, use_container_width=True)
+
+
+    with tabs[9]:
+        st.subheader("User Activity Logs")
+        filter_email = st.text_input("Filter by email (optional)", value=active_email or "")
+        logs_df = pd.DataFrame(list_user_activity(db_path=db_path, actor_email=filter_email.strip() or None, limit=1000))
+        st.dataframe(logs_df, use_container_width=True)
 
     st.caption(f"Exports folder: `{out_dir}`")
 

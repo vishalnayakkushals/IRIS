@@ -245,6 +245,16 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_email TEXT NOT NULL,
+                action_code TEXT NOT NULL,
+                store_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+        """)
         _seed_defaults(conn)
         conn.commit()
     finally:
@@ -770,3 +780,36 @@ def sync_store_from_drive(store: StoreRecord, data_root: Path) -> tuple[bool, st
         return True, f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed}"
     except Exception as exc:
         return False, f"{store.store_id}: sync failed ({exc}). Set GOOGLE_API_KEY for full Drive API sync support on large folders."
+
+
+def log_user_activity(db_path: Path, actor_email: str, action_code: str, store_id: str = "", payload_json: str = "{}") -> None:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO user_activity(actor_email, action_code, store_id, payload_json, created_at) VALUES(?,?,?,?,?)",
+            (actor_email.strip().lower(), action_code.strip(), store_id.strip(), payload_json, _now_utc()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_user_activity(db_path: Path, actor_email: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        if actor_email:
+            rows = conn.execute(
+                "SELECT actor_email,action_code,store_id,payload_json,created_at FROM user_activity WHERE lower(actor_email)=lower(?) ORDER BY id DESC LIMIT ?",
+                (actor_email.strip(), int(limit)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT actor_email,action_code,store_id,payload_json,created_at FROM user_activity ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        cols=["actor_email","action_code","store_id","payload_json","created_at"]
+        return [dict(zip(cols,r)) for r in rows]
+    finally:
+        conn.close()

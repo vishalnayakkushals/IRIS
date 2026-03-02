@@ -19,6 +19,7 @@ Reference assets:
 - `docs/actionable-review-checklist.md`
 - `docs/planning/execution-status.md`
 - `docs/operations/cloud-deployment.md`
+- `docs/operations/deployment-runbook.md`
 - `docs/operations/github-walkthrough-for-beginners.md`
 - `docs/templates/brd-template.md`
 - `docs/business/iris-brd.md`
@@ -174,3 +175,12 @@ Set API key for reliable full-folder sync (server env):
 ```bash
 export GOOGLE_API_KEY="<your_key>"
 ```
+
+
+## Run in Docker
+
+```bash
+docker compose up --build -d
+```
+
+Open: `http://localhost:8765`
