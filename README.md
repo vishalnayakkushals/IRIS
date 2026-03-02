@@ -24,6 +24,8 @@ Reference assets:
 - `docs/business/iris-brd.md`
 - `docs/templates/prd-template.md`
 - `docs/developer/developer-doc.md`
+- `docs/developer/data-flow-architecture.md`
+- `docs/prd/iris-platform-prd-v1.md`
 
 ## Implemented App (Current)
 

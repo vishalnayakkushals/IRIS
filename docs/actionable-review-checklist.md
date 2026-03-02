@@ -41,3 +41,9 @@ Legend:
 
 For sprint-level Done vs Pipeline view, use:
 - `docs/planning/execution-status.md`
+
+
+## Explicit pending integration note
+
+- 🟡 POS live integration adapters are pending.
+- 🟡 Full external dispatch providers (real Slack/WhatsApp APIs) are pending; current implementation is registry/log-first.

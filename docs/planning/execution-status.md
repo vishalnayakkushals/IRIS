@@ -29,6 +29,7 @@ This file translates the original checklist into a clear **Done / In Pipeline** 
 ### 🟡 In pipeline (next development waves)
 
 - POS integration for conversion/loss-of-sale validation.
+- Slack/WhatsApp live provider adapters for external alert dispatch.
 
 ---
 
