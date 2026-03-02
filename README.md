@@ -16,6 +16,11 @@ Reference assets:
 - `schemas/event-envelope.schema.json`
 - `docs/process/system-foundations.md`
 - `docs/planning/project-delivery-plan.md`
+- `docs/actionable-review-checklist.md`
+- `docs/planning/execution-status.md`
+- `docs/organization/org-architecture-and-sdlc.md`
+- `docs/operations/cloud-deployment.md`
+- `docs/operations/github-walkthrough-for-beginners.md`
 
 ## Implemented App (Current)
 
@@ -78,7 +83,7 @@ python -m pip install -r requirements.txt
 ## Run Batch Analysis
 
 ```powershell
-python analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1
+python analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1 --gzip-exports
 ```
 
 CSV outputs:
@@ -106,6 +111,10 @@ From `Store Admin`:
 - Upload employee images per store
 - Sync snapshots from linked Google Drive folders
 
+Google Drive sync modes:
+- If `GOOGLE_API_KEY` is set, app uses Google Drive API recursive sync (recommended for large folders).
+- If not set, app falls back to `gdown` folder sync (can be limited for very large folders).
+
 Sidebar:
 - `Access Email (optional)` filters dashboard view to mapped store
 - `Auto-sync linked drives before analysis` syncs data points before run
@@ -115,3 +124,43 @@ Sidebar:
 - Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.
 - If detector is unavailable, pipeline continues and records `detection_error`.
 - Use `--detector mock` for deterministic local testing.
+
+
+## Server Deployment Readiness (Low-Space Mode)
+
+Implemented optimizations for server-grade, low-storage runtime:
+- Employee uploads are normalized/compressed to optimized JPEG.
+- Drive-synced store images are auto-optimized in-place after sync.
+- Analysis exports can be written as `.csv.gz` to reduce disk usage.
+- Dashboard supports compressed export toggles (`Write compressed CSV`, `Keep plain CSV`).
+
+Recommended production defaults:
+- Enable compressed exports.
+- Disable plain CSV once downstream consumers read `.csv.gz`.
+- Keep detector as `mock` for low-CPU fallback environments.
+
+CLI for compressed-only exports:
+
+```powershell
+python analyze_stores.py --root data/stores --out data/exports/current --detector yolo --gzip-exports --drop-plain-csv
+```
+
+## Stack Direction (React + NodeJS + SQL)
+
+Your target stack is correct for production hardening:
+- **Frontend**: React (dashboard UI)
+- **Backend**: NodeJS (API/auth/jobs/webhooks)
+- **DB**: SQL (PostgreSQL recommended)
+
+What to change next (without breaking current app):
+1. Keep current Python analysis engine as a worker service.
+2. Introduce NodeJS API as orchestration layer (store mapping, auth, job triggers).
+3. Move registry from SQLite to PostgreSQL for multi-instance concurrency.
+4. Keep React UI as the long-term replacement for Streamlit while preserving current analytics contracts.
+
+
+Set API key for reliable full-folder sync (server env):
+
+```bash
+export GOOGLE_API_KEY="<your_key>"
+```

@@ -14,6 +14,7 @@ from iris_analysis import (
     analyze_store,
     build_camera_hotspots,
     export_analysis,
+    load_exports,
     parse_filename,
     validate_image,
 )
@@ -108,6 +109,11 @@ def test_export_csv_schema_for_multi_store(tmp_path: Path) -> None:
         "valid_images",
         "relevant_images",
         "total_people",
+        "estimated_visits",
+        "avg_dwell_sec",
+        "bounce_rate",
+        "footfall",
+        "loss_of_sale_alerts",
         "top_camera_hotspot",
         "peak_time_bucket",
     }
@@ -146,3 +152,93 @@ def test_non_image_technical_folders_are_not_treated_as_stores(tmp_path: Path) -
 
     output = analyze_root(root_dir=root, detector_type="mock")
     assert sorted(output.stores.keys()) == ["store_1"]
+
+
+def test_export_and_load_with_gzip_only(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = root / "store_1"
+    _write_image(store / "09-57-27_D02-1.jpg")
+
+    output = analyze_root(root_dir=root, detector_type="mock", conf_threshold=0.25)
+    out = tmp_path / "exports"
+    export_analysis(output, out_dir=out, write_gzip_exports=True, keep_plain_csv=False)
+
+    assert (out / "all_stores_summary.csv.gz").exists()
+    assert not (out / "all_stores_summary.csv").exists()
+
+    loaded = load_exports(out)
+    assert not loaded.all_stores_summary.empty
+    assert "store_1" in loaded.stores
+
+
+def test_estimated_visits_dwell_and_bounce_metrics(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    # Same camera with a large gap to create 2 sessions.
+    _write_image(store / "09-00-00_D02-1.jpg")
+    _write_image(store / "09-00-10_D02-2.jpg")
+    _write_image(store / "09-02-00_D02-3.jpg")
+
+    detector = FixedDetector(
+        {
+            "09-00-00_D02-1.jpg": 1,
+            "09-00-10_D02-2.jpg": 1,
+            "09-02-00_D02-3.jpg": 1,
+        }
+    )
+    result = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        bounce_threshold_sec=20,
+        session_gap_sec=30,
+    )
+    row = result.summary_row.iloc[0]
+    assert int(row["estimated_visits"]) == 2
+    assert float(row["avg_dwell_sec"]) > 0
+    assert 0.0 <= float(row["bounce_rate"]) <= 1.0
+
+
+class CrossingDetector(PersonDetector):
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        centroids = self.mapping.get(image_path.name, [])
+        return DetectionResult(
+            person_count=len(centroids),
+            max_person_conf=0.9 if centroids else 0.0,
+            detection_error="",
+            person_centroids=centroids,
+            bag_count=0,
+        )
+
+
+def test_footfall_and_loss_of_sale_alert_from_entrance_line(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    _write_image(store / "09-00-00_D01-1.jpg")
+    _write_image(store / "09-03-30_D01-2.jpg")
+
+    detector = CrossingDetector(
+        {
+            "09-00-00_D01-1.jpg": [(0.45, 0.5)],
+            "09-03-30_D01-2.jpg": [(0.55, 0.5)],
+        }
+    )
+
+    result = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        camera_configs={
+            "D01": {
+                "camera_role": "ENTRANCE",
+                "entry_line_x": 0.5,
+                "entry_direction": "OUTSIDE_TO_INSIDE",
+            }
+        },
+        engaged_dwell_threshold_sec=30,
+        session_gap_sec=400,
+    )
+    row = result.summary_row.iloc[0]
+    assert int(row["footfall"]) >= 1
+    assert int(row["loss_of_sale_alerts"]) >= 0

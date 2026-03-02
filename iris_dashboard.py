@@ -9,11 +9,14 @@ import streamlit as st
 from iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
 from store_registry import (
     add_employee_image,
+    camera_config_map,
     get_store_by_email,
     init_db,
+    list_camera_configs,
     list_employees,
     list_stores,
     sync_store_from_drive,
+    upsert_camera_config,
     upsert_store,
 )
 
@@ -24,15 +27,27 @@ def _ensure_session_state() -> None:
 
 
 def _run_analysis(
-    root_dir: Path, out_dir: Path, conf_threshold: float, detector_type: str, time_bucket_minutes: int
+    root_dir: Path,
+    out_dir: Path,
+    conf_threshold: float,
+    detector_type: str,
+    time_bucket_minutes: int,
+    bounce_threshold_sec: int,
+    session_gap_sec: int,
+    write_gzip_exports: bool,
+    keep_plain_csv: bool,
+    camera_configs_by_store: dict[str, dict[str, dict[str, object]]],
 ) -> AnalysisOutput:
     output = analyze_root(
         root_dir=root_dir,
         conf_threshold=conf_threshold,
         detector_type=detector_type,
         time_bucket_minutes=time_bucket_minutes,
+        bounce_threshold_sec=bounce_threshold_sec,
+        session_gap_sec=session_gap_sec,
+        camera_configs_by_store=camera_configs_by_store,
     )
-    export_analysis(output, out_dir=out_dir)
+    export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
     return output
 
 
@@ -64,6 +79,11 @@ def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
         conf_threshold=0.25,
         detector_type="yolo",
         time_bucket_minutes=1,
+        bounce_threshold_sec=120,
+        session_gap_sec=30,
+        write_gzip_exports=True,
+        keep_plain_csv=True,
+        camera_configs_by_store={},
     )
     return output
 
@@ -94,6 +114,11 @@ def _render_overview(output: AnalysisOutput) -> None:
     metric_cols[1].metric("Total Images", f"{int(df['total_images'].sum())}")
     metric_cols[2].metric("Relevant Images", f"{int(df['relevant_images'].sum())}")
     metric_cols[3].metric("Detected People", f"{int(df['total_people'].sum())}")
+    if "estimated_visits" in df.columns:
+        st.caption(
+            f"Estimated Visits: {int(df['estimated_visits'].sum())} | "
+            f"Avg Bounce Rate: {df['bounce_rate'].mean():.2%}"
+        )
 
 
 def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> None:
@@ -111,12 +136,16 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     row = output.all_stores_summary[
         output.all_stores_summary["store_id"] == selected_store
     ].iloc[0]
-    cols = st.columns(5)
+    cols = st.columns(9)
     cols[0].metric("Total Images", int(row["total_images"]))
     cols[1].metric("Valid Images", int(row["valid_images"]))
     cols[2].metric("Relevant Images", int(row["relevant_images"]))
     cols[3].metric("Total People", int(row["total_people"]))
-    cols[4].metric("Top Hotspot Camera", row["top_camera_hotspot"] or "-")
+    cols[4].metric("Estimated Visits", int(row.get("estimated_visits", 0)))
+    cols[5].metric("Avg Dwell (sec)", float(row.get("avg_dwell_sec", 0.0)))
+    cols[6].metric("Bounce Rate", f"{float(row.get('bounce_rate', 0.0)):.2%}")
+    cols[7].metric("Footfall", int(row.get("footfall", 0)))
+    cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
 
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")
@@ -301,6 +330,32 @@ def _render_store_admin(
         st.caption("Create a store first to sync from Google Drive.")
 
     st.subheader("Employee Image Upload")
+    st.markdown("---")
+    st.markdown("**Camera Onboarding + Calibration (Entrance Line)**")
+    if stores:
+        cfg_store_id = st.selectbox("Config Store", options=[s.store_id for s in stores], key="cfg_store")
+        cfg_camera_id = st.text_input("Camera ID (e.g., D02)", value="", key="cfg_camera_id")
+        cfg_role = st.selectbox("Camera Role", options=["ENTRANCE", "INSIDE"], index=0, key="cfg_role")
+        cfg_line_x = st.slider("Entry Line X (0=left,1=right)", min_value=0.0, max_value=1.0, value=0.5, step=0.01, key="cfg_line")
+        cfg_dir = st.selectbox("Entry Direction", options=["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"], index=0, key="cfg_dir")
+        if st.button("Save Camera Calibration", key="save_camera_cfg"):
+            if not cfg_camera_id.strip():
+                st.error("Camera ID is required")
+            else:
+                upsert_camera_config(
+                    db_path=db_path,
+                    store_id=cfg_store_id,
+                    camera_id=cfg_camera_id.strip().upper(),
+                    camera_role=cfg_role,
+                    entry_line_x=float(cfg_line_x),
+                    entry_direction=cfg_dir,
+                )
+                st.success("Camera calibration saved.")
+
+        cfg_df = pd.DataFrame([c.__dict__ for c in list_camera_configs(db_path=db_path, store_id=cfg_store_id)])
+        if not cfg_df.empty:
+            st.dataframe(cfg_df, use_container_width=True)
+
     stores = list_stores(db_path)
     if not stores:
         st.caption("Create a store before uploading employees.")
@@ -373,7 +428,11 @@ def main() -> None:
             step=0.05,
         )
         time_bucket_minutes = st.selectbox("Time Bucket (minutes)", options=[1, 5, 15], index=0)
+        bounce_threshold_sec = st.number_input("Bounce Threshold (sec)", min_value=10, max_value=3600, value=120, step=10)
+        session_gap_sec = st.number_input("Session Gap (sec)", min_value=5, max_value=600, value=30, step=5)
         detector_type = st.selectbox("Detector", options=["yolo", "mock"], index=0)
+        write_gzip_exports = st.checkbox("Write compressed CSV (.csv.gz)", value=True)
+        keep_plain_csv = st.checkbox("Keep plain CSV files", value=True)
         auto_sync_linked_drives = st.checkbox("Auto-sync linked drives before analysis", value=True)
         auto_sync_on_save = st.checkbox("Auto-sync when saving store mapping", value=False)
         rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
@@ -392,12 +451,29 @@ def main() -> None:
                     st.caption("Drive sync status:")
                     for message in sync_messages:
                         st.write(f"- {message}")
+            cfg_map_obj = camera_config_map(db_path=db_path)
+            cfg_map = {
+                sid: {
+                    cid: {
+                        "camera_role": cfg.camera_role,
+                        "entry_line_x": cfg.entry_line_x,
+                        "entry_direction": cfg.entry_direction,
+                    }
+                    for cid, cfg in cams.items()
+                }
+                for sid, cams in cfg_map_obj.items()
+            }
             output = _run_analysis(
                 root_dir=root_dir,
                 out_dir=out_dir,
                 conf_threshold=conf_threshold,
                 detector_type=detector_type,
                 time_bucket_minutes=time_bucket_minutes,
+                bounce_threshold_sec=int(bounce_threshold_sec),
+                session_gap_sec=int(session_gap_sec),
+                write_gzip_exports=write_gzip_exports,
+                keep_plain_csv=keep_plain_csv,
+                camera_configs_by_store=cfg_map,
             )
             st.session_state["analysis_output"] = output
             st.success("Analysis completed and CSV exports updated.")

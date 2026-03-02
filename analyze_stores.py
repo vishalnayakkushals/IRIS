@@ -41,6 +41,28 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Time bucket in minutes for peak-time aggregation.",
     )
+    parser.add_argument(
+        "--bounce-threshold-sec",
+        type=int,
+        default=120,
+        help="Bounce threshold in seconds for estimated visit sessions.",
+    )
+    parser.add_argument(
+        "--session-gap-sec",
+        type=int,
+        default=30,
+        help="Gap in seconds to split estimated visit sessions.",
+    )
+    parser.add_argument(
+        "--gzip-exports",
+        action="store_true",
+        help="Also write gzip-compressed CSV exports to reduce storage footprint.",
+    )
+    parser.add_argument(
+        "--drop-plain-csv",
+        action="store_true",
+        help="Do not write plain CSV files; keep only .csv.gz exports.",
+    )
     return parser.parse_args()
 
 
@@ -51,8 +73,10 @@ def main() -> None:
         conf_threshold=args.conf,
         detector_type=args.detector,
         time_bucket_minutes=args.time_bucket,
+        bounce_threshold_sec=args.bounce_threshold_sec,
+        session_gap_sec=args.session_gap_sec,
     )
-    export_analysis(output=output, out_dir=args.out)
+    export_analysis(output=output, out_dir=args.out, write_gzip_exports=args.gzip_exports, keep_plain_csv=not args.drop_plain_csv)
 
     print(f"Stores analyzed: {len(output.stores)}")
     print(f"Summary CSV: {(args.out / 'all_stores_summary.csv').resolve()}")
