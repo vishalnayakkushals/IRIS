@@ -183,3 +183,14 @@ docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 Open: `http://localhost:8765`
+
+
+## Why `requirements.txt` and `environment.yml` are in root
+
+These two files are intentionally kept at the project root (standard practice):
+
+- `requirements.txt`: pip install source for local/dev/CI/container builds.
+- `environment.yml`: Conda environment definition for teams using Conda.
+
+Many tools (Docker, CI runners, IDEs, pip/conda commands) expect these files at root by default.
+Keeping them in a nested folder usually adds unnecessary path complexity.

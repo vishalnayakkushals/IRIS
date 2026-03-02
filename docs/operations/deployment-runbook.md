@@ -43,3 +43,38 @@ Immediately change using **Auth/RBAC** tab.
 2. Activity logs capture actor + action + timestamp.
 3. Ops/CTO module reads logs and identifies failure patterns.
 4. Patches are deployed via CI/CD.
+
+
+## Troubleshooting: "docker is not recognized" (Windows)
+
+If you see:
+
+```text
+'docker' is not recognized as an internal or external command
+```
+
+It means Docker is not installed (or Docker Desktop is not running / PATH not loaded).
+
+### Fix steps (Windows)
+1. Install **Docker Desktop for Windows** (official installer).
+2. Restart your machine after install (important for PATH updates).
+3. Start Docker Desktop and wait until it shows **Engine running**.
+4. Open a **new** terminal and run:
+   ```bash
+   docker --version
+   docker compose version
+   ```
+5. Then run IRIS:
+   ```bash
+   docker compose -f deploy/docker-compose.yml up --build -d
+   ```
+
+### If Docker is not available yet (temporary local run)
+You can still run IRIS without Docker:
+
+```bash
+python -m pip install -r requirements.txt
+streamlit run src/iris/iris_dashboard.py --server.port 8765
+```
+
+Open: `http://localhost:8765`
