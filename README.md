@@ -22,6 +22,7 @@ Reference assets:
 - `docs/operations/github-walkthrough-for-beginners.md`
 - `docs/templates/brd-template.md`
 - `docs/business/iris-brd.md`
+- `docs/business/management-process-diagram.md`
 - `docs/templates/prd-template.md`
 - `docs/developer/developer-doc.md`
 - `docs/developer/data-flow-architecture.md`
