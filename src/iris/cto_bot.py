@@ -56,9 +56,9 @@ def _run_command(command: str, env: dict[str, str] | None = None) -> tuple[int, 
 def _checks(include_pytest: bool = True) -> list[tuple[str, str, dict[str, str] | None]]:
     checks: list[tuple[str, str, dict[str, str] | None]] = []
     if include_pytest:
-        checks.append(("QA", "PYTHONPATH=. pytest -q", {**os.environ, "PYTHONPATH": "."}))
+        checks.append(("QA", "PYTHONPATH=src pytest -q", {**os.environ, "PYTHONPATH": "src"}))
     checks.extend([
-        ("CTO", "python -m py_compile iris_analysis.py store_registry.py iris_dashboard.py cto_bot.py", None),
+        ("CTO", "python -m py_compile src/iris/iris_analysis.py src/iris/store_registry.py src/iris/iris_dashboard.py src/iris/cto_bot.py", None),
         ("DevOps", "python -m pip --version", None),
     ])
     return checks
@@ -68,7 +68,7 @@ def _attempt_remediation(failed: Iterable[CheckResult]) -> list[str]:
     actions: list[str] = []
     for item in failed:
         if "pytest" in item.command:
-            code, _ = _run_command("PYTHONPATH=. pytest -q")
+            code, _ = _run_command("PYTHONPATH=src pytest -q")
             actions.append(f"retest_after_env_guard={'ok' if code == 0 else 'failed'}")
         elif "py_compile" in item.command:
             actions.append("py_compile_failure_requires_code_fix")

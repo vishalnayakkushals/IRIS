@@ -26,7 +26,7 @@ jobs:
 
       - name: Run CTO bot
         run: |
-          python cto_bot.py --log-dir data/ops_logs
+          python src/iris/cto_bot.py --log-dir data/ops_logs
 
       - name: Upload CTO bot logs
         uses: actions/upload-artifact@v4

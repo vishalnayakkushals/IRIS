@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from store_registry import (
+from iris.store_registry import (
     _sync_store_from_drive_api,
     camera_config_map,
     list_camera_configs,
@@ -148,7 +148,7 @@ def test_employee_upload_is_optimized_to_jpeg(tmp_path: Path) -> None:
 
 
 def test_drive_api_sync_path_with_mocked_requests(tmp_path: Path, monkeypatch) -> None:
-    from store_registry import StoreRecord
+    from iris.store_registry import StoreRecord
 
     target = tmp_path / "stores" / "s1"
     target.mkdir(parents=True)
@@ -177,7 +177,7 @@ def test_drive_api_sync_path_with_mocked_requests(tmp_path: Path, monkeypatch) -
         # minimal jpeg bytes
         return Resp(content=b"\xff\xd8\xff\xe0" + b"0" * 10)
 
-    monkeypatch.setattr("store_registry.requests.get", fake_get)
+    monkeypatch.setattr("iris.store_registry.requests.get", fake_get)
     ok, msg = _sync_store_from_drive_api(store=store, target_dir=target, api_key="k")
     assert ok is True
     assert "api_sync" in msg

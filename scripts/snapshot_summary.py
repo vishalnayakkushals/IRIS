@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 import re
 
 from PIL import Image
@@ -26,7 +31,7 @@ def main() -> None:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(__file__).resolve().parent / "data" / "stores" / "IRIS",
+        default=Path(__file__).resolve().parents[1] / "data" / "stores" / "IRIS",
         help="Folder containing snapshot images to summarize.",
     )
     args = parser.parse_args()

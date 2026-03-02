@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cto_bot import run_once
+from iris.cto_bot import run_once
 
 
 def test_cto_bot_generates_logs(tmp_path: Path) -> None:

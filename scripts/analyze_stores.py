@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from iris_analysis import analyze_root, export_analysis
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from iris.iris_analysis import analyze_root, export_analysis
 
 
 def parse_args() -> argparse.Namespace:
-    app_dir = Path(__file__).resolve().parent
+    app_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
         description="Analyze store folders and export customer/hotspot insights."
     )

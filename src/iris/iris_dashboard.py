@@ -6,8 +6,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
-from store_registry import (
+from .iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
+from .store_registry import (
     add_employee_image,
     camera_config_map,
     get_store_by_email,

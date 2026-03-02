@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image
 import pandas as pd
 
-from iris_analysis import (
+from iris.iris_analysis import (
     AnalysisOutput,
     DetectionResult,
     PersonDetector,

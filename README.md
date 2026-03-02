@@ -24,7 +24,7 @@ Reference assets:
 - `docs/business/iris-brd.md`
 - `docs/templates/prd-template.md`
 - `docs/developer/developer-doc.md`
-- `cto_bot.py`
+- `src/iris/cto_bot.py`
 
 ## Implemented App (Current)
 
@@ -53,10 +53,15 @@ IRIS/
     exports/day1/           # day-1 run snapshots (optional)
     employee_assets/        # uploaded employee images
     store_registry.db       # sqlite store/email/drive mapping
-  analyze_stores.py
-  iris_dashboard.py
-  iris_analysis.py
-  store_registry.py
+  scripts/
+    analyze_stores.py
+    snapshot_summary.py
+  src/
+    iris/
+      iris_dashboard.py
+      iris_analysis.py
+      store_registry.py
+      cto_bot.py
   requirements.txt
   environment.yml
 ```
@@ -87,7 +92,7 @@ python -m pip install -r requirements.txt
 ## Run Batch Analysis
 
 ```powershell
-python analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1 --gzip-exports
+python scripts/analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1 --gzip-exports
 ```
 
 CSV outputs:
@@ -98,7 +103,7 @@ CSV outputs:
 ## Run Dashboard
 
 ```powershell
-streamlit run iris_dashboard.py --server.port 8765
+streamlit run src/iris/iris_dashboard.py --server.port 8765
 ```
 
 Dashboard tabs:
@@ -146,7 +151,7 @@ Recommended production defaults:
 CLI for compressed-only exports:
 
 ```powershell
-python analyze_stores.py --root data/stores --out data/exports/current --detector yolo --gzip-exports --drop-plain-csv
+python scripts/analyze_stores.py --root data/stores --out data/exports/current --detector yolo --gzip-exports --drop-plain-csv
 ```
 
 ## Stack Direction (React + NodeJS + SQL)
@@ -173,7 +178,7 @@ export GOOGLE_API_KEY="<your_key>"
 ## Run CTO bot health orchestrator
 
 ```bash
-python cto_bot.py --log-dir data/ops_logs
+python src/iris/cto_bot.py --log-dir data/ops_logs
 ```
 
 This runs QA/CTO/DevOps checks, records role-based logs, and exits non-zero on failures.

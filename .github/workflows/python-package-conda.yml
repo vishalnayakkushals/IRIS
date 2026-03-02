@@ -30,6 +30,6 @@ jobs:
 
       - name: Test with pytest
         env:
-          PYTHONPATH: .
+          PYTHONPATH: src
         run: |
           pytest -q
