@@ -1,7 +1,5 @@
 # Product Requirements Document (PRD) Template
 
-Use this structure for every major module/feature PRD.
-
 ## 1) Document Header
 - **Feature Name:**
 - **Owner:**
@@ -11,19 +9,19 @@ Use this structure for every major module/feature PRD.
 
 ## 2) Problem Statement
 - What problem are we solving?
-- Why is this important?
-- What happens if we don’t solve this?
+- Why this matters now?
+- What happens if not solved?
 
-## 3) Objective / Goal
-- Clear measurable goal
-- Success criteria (metrics if applicable)
+## 3) Product Objective
+- Measurable feature goal.
+- Acceptance success criteria.
 
 ## 4) Scope
-### ✅ In Scope
+### In Scope
 - Item 1
 - Item 2
 
-### ❌ Out of Scope
+### Out of Scope
 - Item 1
 - Item 2
 
@@ -32,52 +30,31 @@ Use this structure for every major module/feature PRD.
 - As an admin, I want to ___ so that ___.
 
 ## 6) Functional Requirements
-- Detailed behavior of the feature.
-- Example: System should validate API key before OTP trigger.
-- Example: Limit OTP attempts to X per number per day.
+- FR-001
+- FR-002
 
 ## 7) Non-Functional Requirements
 - Performance
 - Security
-- Scalability
-- Logging
-- Monitoring
+- Reliability
+- Logging/Monitoring
 
 ## 8) Edge Cases
-- What happens if API key is invalid?
-- What happens if user exceeds OTP limit?
+- Invalid input paths
+- Missing camera config
+- Detector unavailable fallback behavior
 
 ## 9) Dependencies
-- Backend team
-- Third-party APIs/integrations
-- Analytics tools
-- External systems
+- API/schema dependencies
+- Storage/database dependencies
+- Third-party service dependencies
 
 ## 10) Analytics / Tracking
-- Events to be tracked
-- Dashboards required
+- Events/metrics to track
+- Dashboard/report consumers
 
-## 11) Release Notes (Excerpt-ready section)
-Keep this section short, non-technical, and stakeholder-friendly.
-
-- 4–6 bullet points max.
-- Mention what is new and why it matters.
-- Mention impact on users/business.
-
-### Jira paste block (below ticket description)
-- **Feature Name:** [Short feature title]
-- **What’s New:**
-  - Bullet 1
-  - Bullet 2
-  - Bullet 3
-- **Impact:**
-  - Improves performance/security/user experience
-  - Reduces errors/manual effort
-  - Supports business objective
-- **Metrics / Monitoring:**
-  - KPI being tracked
-  - Expected improvement
-  - Dashboard/tool used
-  - Monitoring owner
-- **Availability:** Web / App / Both
-- **Release version (if applicable):**
+## 11) Release Notes Section (Excerpt-ready)
+- What’s New (4–6 bullets max)
+- Impact
+- Metrics / Monitoring
+- Availability

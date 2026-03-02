@@ -18,10 +18,12 @@ Reference assets:
 - `docs/planning/project-delivery-plan.md`
 - `docs/actionable-review-checklist.md`
 - `docs/planning/execution-status.md`
-- `docs/organization/org-architecture-and-sdlc.md`
 - `docs/operations/cloud-deployment.md`
 - `docs/operations/github-walkthrough-for-beginners.md`
+- `docs/templates/brd-template.md`
+- `docs/business/iris-brd.md`
 - `docs/templates/prd-template.md`
+- `docs/developer/developer-doc.md`
 
 ## Implemented App (Current)
 
