@@ -1,35 +1,25 @@
-name: IRIS CTO Bot
+name: CTO Bot (Portable)
 
 on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   cto-bot-run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-
-      - name: Run CTO bot
-        run: |
-          python src/iris/cto_bot.py --log-dir data/ops_logs
-
-      - name: Upload CTO bot logs
-        uses: actions/upload-artifact@v4
+      - run: |
+          python tools/cto_bot/cto_bot.py --log-dir data/ops_logs
+      - uses: actions/upload-artifact@v4
         with:
           name: cto-bot-logs
           path: data/ops_logs/
