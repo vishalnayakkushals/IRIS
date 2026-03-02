@@ -1,4 +1,4 @@
-# GitHub Walkthrough (Explain Like You Are 11)
+# GitHub Walkthrough
 
 Think of GitHub like a giant school notebook for code.
 
