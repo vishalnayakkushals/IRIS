@@ -11,9 +11,9 @@ IRIS is an anonymous retail intelligence platform for low-frame-rate camera snap
 
 Reference assets:
 - `docs/mvp-blueprint.md`
-- `api/openapi.yaml`
-- `schemas/store-config.schema.json`
-- `schemas/event-envelope.schema.json`
+- `contracts/openapi.yaml`
+- `contracts/schemas/store-config.schema.json`
+- `contracts/schemas/event-envelope.schema.json`
 - `docs/process/system-foundations.md`
 - `docs/planning/project-delivery-plan.md`
 - `docs/actionable-review-checklist.md`
@@ -44,11 +44,10 @@ This repository now includes a working store-level analysis app with:
 
 ```text
 IRIS/
-  api/
+  contracts/
   docs/
   ideas/
   release-notes/
-  schemas/
   tests/
   data/
     stores/                 # one folder per store with snapshots
@@ -180,7 +179,7 @@ export GOOGLE_API_KEY="<your_key>"
 ## Run in Docker
 
 ```bash
-docker compose up --build -d
+docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 Open: `http://localhost:8765`

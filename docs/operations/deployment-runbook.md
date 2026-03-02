@@ -3,7 +3,7 @@
 ## Local container run
 
 ```bash
-docker compose up --build -d
+docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 UI: `http://localhost:8765`
@@ -30,7 +30,7 @@ Immediately change using **Auth/RBAC** tab.
 ### Option B: VM (AWS Lightsail / GCP e2-small)
 1. Install Docker + Compose.
 2. Clone repo.
-3. `docker compose up --build -d`
+3. `docker compose -f deploy/docker-compose.yml up --build -d`
 4. Add reverse proxy (Nginx + TLS).
 
 ## Activity logging and bug loop
