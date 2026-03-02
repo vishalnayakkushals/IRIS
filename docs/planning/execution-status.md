@@ -8,6 +8,7 @@ This file translates the original checklist into a clear **Done / In Pipeline** 
 
 ### ✅ Done in repository
 
+- Autonomous CTO bot health run with role-based checks and log persistence.
 - Store onboarding + mapping + drive links + email mapping.
 - Camera configuration persistence (`camera_id`, role, entry line x, entry direction).
 - Person detection pipeline (YOLO + mock fallback).
@@ -29,6 +30,7 @@ This file translates the original checklist into a clear **Done / In Pipeline** 
 - Multi-camera handoff and cross-camera visit stitching.
 - POS integration for conversion/loss-of-sale validation.
 - Production-grade auth/RBAC and per-role dashboards.
+- Auto-remediation with safe code patch proposals from failing runs (next enhancement).
 
 ---
 

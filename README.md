@@ -24,6 +24,7 @@ Reference assets:
 - `docs/business/iris-brd.md`
 - `docs/templates/prd-template.md`
 - `docs/developer/developer-doc.md`
+- `cto_bot.py`
 
 ## Implemented App (Current)
 
@@ -167,3 +168,12 @@ Set API key for reliable full-folder sync (server env):
 ```bash
 export GOOGLE_API_KEY="<your_key>"
 ```
+
+
+## Run CTO bot health orchestrator
+
+```bash
+python cto_bot.py --log-dir data/ops_logs
+```
+
+This runs QA/CTO/DevOps checks, records role-based logs, and exits non-zero on failures.

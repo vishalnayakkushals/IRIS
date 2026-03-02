@@ -31,3 +31,10 @@ PYTHONPATH=. pytest -q
   - `docs/actionable-review-checklist.md`
   - `release-notes/*.md`
 - Keep API/schema contracts in sync when interface changes.
+
+
+## 7) Autonomous CTO bot
+- Entrypoint: `cto_bot.py`
+- Roles inside run: QA, CTO, DevOps checks
+- Logs: `data/ops_logs/cto-bot.log` and `data/ops_logs/cto-bot-<run_id>.json`
+- CI scheduler: `.github/workflows/cto-bot.yml` (every 30 minutes + push + manual trigger).
