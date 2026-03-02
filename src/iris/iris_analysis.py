@@ -532,6 +532,31 @@ def compute_footfall_and_alerts(
     return footfall, pd.DataFrame(alerts)
 
 
+
+
+def stitch_multi_camera_visits(image_insights: pd.DataFrame, max_delta_sec: int = 2) -> pd.DataFrame:
+    df = image_insights.copy()
+    df["global_visit_id"] = ""
+    if df.empty or "timestamp" not in df.columns:
+        return df
+    rows = df[df["timestamp"].notna()].sort_values("timestamp")
+    gid = 0
+    active: list[tuple[pd.Timestamp, str]] = []
+    for idx, row in rows.iterrows():
+        ts = row["timestamp"]
+        matched = None
+        for at, visit_id in active:
+            if abs((ts - at).total_seconds()) <= max_delta_sec:
+                matched = visit_id
+                break
+        if matched is None:
+            gid += 1
+            matched = f"V{gid:06d}"
+        df.at[idx, "global_visit_id"] = matched
+        active = [(t, v) for t, v in active if abs((ts - t).total_seconds()) <= max_delta_sec]
+        active.append((ts, matched))
+    return df
+
 def analyze_store(
     store_id: str,
     store_dir: Path,
@@ -631,7 +656,13 @@ def analyze_store(
             by=["timestamp", "camera_id", "filename"], na_position="last"
         ).reset_index(drop=True)
 
+    # Exclude billing/backroom cameras from customer analytics while retaining raw rows
+    role_map = {cid: (cfg.get("camera_role", "INSIDE") if isinstance(cfg, dict) else "INSIDE") for cid, cfg in (camera_configs or {}).items()}
+    if "camera_id" in image_insights.columns:
+        mask = image_insights["camera_id"].map(lambda c: str(role_map.get(str(c), "INSIDE")).upper() in {"BILLING", "BACKROOM"})
+        image_insights.loc[mask, "relevant"] = False
     image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
+    image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
 
     footfall, alerts_df = compute_footfall_and_alerts(
         image_insights=image_insights,

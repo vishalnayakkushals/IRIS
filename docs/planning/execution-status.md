@@ -8,6 +8,11 @@ This file translates the original checklist into a clear **Done / In Pipeline** 
 
 ### ✅ Done in repository
 
+- Auth/RBAC runtime with DB-backed users, passwords, default admin seeding, and custom roles.
+- License workflow runtime with status transitions and audit timeline logging.
+- Alert route configuration and route event logging for email/webhook/slack/whatsapp channels.
+- Store Master bulk import with DB persistence and admin UI.
+- Operator QA timeline view and multi-camera visit stitching field (`global_visit_id`).
 - Store onboarding + mapping + drive links + email mapping.
 - Camera configuration persistence (`camera_id`, role, entry line x, entry direction).
 - Person detection pipeline (YOLO + mock fallback).
@@ -23,12 +28,7 @@ This file translates the original checklist into a clear **Done / In Pipeline** 
 
 ### 🟡 In pipeline (next development waves)
 
-- Trade/display license workflow runtime (API endpoints, state machine UI, audit timeline).
-- Alert routing integrations (email/webhook/Slack/WhatsApp).
-- Operator QA timeline view with keyframe review.
-- Multi-camera handoff and cross-camera visit stitching.
 - POS integration for conversion/loss-of-sale validation.
-- Production-grade auth/RBAC and per-role dashboards.
 
 ---
 

@@ -10,14 +10,32 @@ from .iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_e
 from .store_registry import (
     add_employee_image,
     camera_config_map,
+    create_license,
+    create_role,
+    create_user,
+    delete_store,
+    ensure_default_admins,
     get_store_by_email,
     init_db,
+    list_alert_routes,
     list_camera_configs,
     list_employees,
+    list_license_audit,
+    list_licenses,
+    list_roles,
+    list_store_master,
     list_stores,
+    list_users,
+    route_alert,
+    set_role_permissions,
+    set_user_password,
     sync_store_from_drive,
+    transition_license,
+    upsert_alert_route,
     upsert_camera_config,
     upsert_store,
+    upsert_store_master_rows,
+    user_permissions,
 )
 
 
@@ -404,7 +422,7 @@ def main() -> None:
     st.title("IRIS Store Analysis Dashboard")
     _ensure_session_state()
 
-    app_dir = Path(__file__).resolve().parent
+    app_dir = Path(__file__).resolve().parents[2]
     data_dir = app_dir / "data"
     default_stores_root = data_dir / "stores"
     default_exports_dir = data_dir / "exports" / "current"
@@ -414,6 +432,7 @@ def main() -> None:
     data_root.mkdir(parents=True, exist_ok=True)
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
+    ensure_default_admins(db_path, ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"])
 
     with st.sidebar:
         st.header("Analysis Controls")
@@ -436,6 +455,11 @@ def main() -> None:
         auto_sync_linked_drives = st.checkbox("Auto-sync linked drives before analysis", value=True)
         auto_sync_on_save = st.checkbox("Auto-sync when saving store mapping", value=False)
         rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
+
+        st.subheader("Login")
+        login_email = st.text_input("Login email", value="vishal.nayak@kushals.com")
+        login_password = st.text_input("Password", value="ChangeMe123!", type="password")
+        login_clicked = st.button("Login")
 
     root_dir = Path(root_str).expanduser().resolve()
     out_dir = Path(out_str).expanduser().resolve()
@@ -483,6 +507,19 @@ def main() -> None:
         output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
         st.session_state["analysis_output"] = output
 
+    if "login_email" not in st.session_state:
+        st.session_state["login_email"] = ""
+    if login_clicked:
+        perms = user_permissions(db_path=db_path, email=login_email.strip())
+        if not perms:
+            st.error("Unknown user or no role assigned.")
+        else:
+            st.session_state["login_email"] = login_email.strip().lower()
+            st.success(f"Logged in as {login_email.strip().lower()}")
+
+    active_email = st.session_state.get("login_email", "")
+    active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
+
     view_output = output
     if access_email.strip():
         mapped = get_store_by_email(db_path=db_path, email=access_email.strip())
@@ -505,7 +542,7 @@ def main() -> None:
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
-    tabs = st.tabs(["Overview", "Store Detail", "Quality", "Store Admin"])
+    tabs = st.tabs(["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master"])
     with tabs[0]:
         _render_overview(view_output)
     with tabs[1]:
@@ -519,6 +556,104 @@ def main() -> None:
             employee_assets_root=employee_assets_root,
             auto_sync_after_save=auto_sync_on_save,
         )
+
+
+    with tabs[4]:
+        st.subheader("Auth / RBAC")
+        st.caption(f"Active login: {active_email or '-'}")
+        st.write("Permissions:", active_perms)
+        with st.expander("Create user"):
+            u_email = st.text_input("New user email")
+            u_name = st.text_input("Full name")
+            u_pwd = st.text_input("Temp password", type="password", value="ChangeMe123!")
+            u_store = st.text_input("Store scope (optional)")
+            u_roles = st.text_input("Roles (comma)", value="store_user")
+            if st.button("Create user"):
+                create_user(db_path, u_email, u_name, u_pwd, store_id=u_store, role_names=[x.strip() for x in u_roles.split(',') if x.strip()])
+                st.success("User created")
+        with st.expander("Set user password"):
+            p_email = st.text_input("User email for password reset")
+            p_pwd = st.text_input("New password", type="password")
+            if st.button("Set password"):
+                set_user_password(db_path, p_email, p_pwd)
+                st.success("Password updated")
+        with st.expander("Create role and permissions"):
+            r_name = st.text_input("Role name")
+            r_desc = st.text_input("Role description")
+            if st.button("Create role"):
+                create_role(db_path, r_name, r_desc)
+                st.success("Role created")
+            perm_text = st.text_area("Permissions (permission,read,write per line)", value="dashboard,1,0")
+            if st.button("Save role permissions"):
+                rows=[]
+                for ln in perm_text.splitlines():
+                    parts=[x.strip() for x in ln.split(',')]
+                    if len(parts)==3: rows.append((parts[0], int(parts[1]), int(parts[2])))
+                set_role_permissions(db_path, r_name, rows)
+                st.success("Role permissions saved")
+        st.dataframe(pd.DataFrame(list_users(db_path)), use_container_width=True)
+        st.dataframe(pd.DataFrame(list_roles(db_path)), use_container_width=True)
+
+    with tabs[5]:
+        st.subheader("Trade/Display License Workflow")
+        lic_store = st.selectbox("License store", options=[s.store_id for s in list_stores(db_path)] or [""], key="lic_store")
+        lic_type = st.text_input("License type", value="trade_display")
+        if st.button("Create license") and lic_store:
+            lid = create_license(db_path, lic_store, lic_type, actor_email=active_email or "system@local")
+            st.success(f"Created {lid}")
+        licenses = pd.DataFrame(list_licenses(db_path))
+        st.dataframe(licenses, use_container_width=True)
+        if not licenses.empty:
+            sel = st.selectbox("License ID", options=licenses["license_id"].tolist())
+            new_status = st.selectbox("Transition to", options=["review", "approved", "rejected", "expired"])
+            note = st.text_input("Audit note")
+            if st.button("Apply transition"):
+                transition_license(db_path, sel, new_status, actor_email=active_email or "system@local", note=note)
+            st.dataframe(pd.DataFrame(list_license_audit(db_path, sel)), use_container_width=True)
+
+    with tabs[6]:
+        st.subheader("Alert Routing")
+        ar_store = st.selectbox("Route store", options=[s.store_id for s in list_stores(db_path)] or [""], key="route_store")
+        ch = st.selectbox("Channel", options=["email", "webhook", "slack", "whatsapp"])
+        tgt = st.text_input("Target")
+        if st.button("Add route") and ar_store and tgt:
+            upsert_alert_route(db_path, ar_store, ch, tgt, enabled=True)
+            st.success("Route saved")
+        if st.button("Test route") and ar_store:
+            delivered = route_alert(db_path, ar_store, "TEST_ALERT", '{"message":"test"}')
+            st.info("Delivered: " + ", ".join(delivered))
+        st.dataframe(pd.DataFrame(list_alert_routes(db_path, ar_store)) if ar_store else pd.DataFrame(), use_container_width=True)
+
+    with tabs[7]:
+        st.subheader("Operator QA Timeline")
+        if view_output.stores:
+            sid = st.selectbox("QA store", options=sorted(view_output.stores.keys()), key="qa_store")
+            idf = view_output.stores[sid].image_insights.copy()
+            if "timestamp" in idf.columns:
+                cols = [c for c in ["timestamp","camera_id","person_count","relevant","filename","track_ids","detection_error"] if c in idf.columns]
+                st.dataframe(idf.sort_values("timestamp")[cols].tail(500), use_container_width=True)
+
+    with tabs[8]:
+        st.subheader("Store Master")
+        st.caption("Paste TSV with headers: Short code, GoFrugal Name, Outlet id, City, State, Zone, Country, Mobile no., Store Email, Cluster Manager, Area Manager")
+        raw = st.text_area("Store master TSV paste", height=200)
+        if st.button("Import store master") and raw.strip():
+            lines=[x for x in raw.splitlines() if x.strip()]
+            hdr=[h.strip() for h in lines[0].split('	')]
+            rows=[]
+            for ln in lines[1:]:
+                vals=[v.strip() for v in ln.split('	')]
+                rows.append({hdr[i]: vals[i] if i < len(vals) else "" for i in range(len(hdr))})
+            n=upsert_store_master_rows(db_path, rows)
+            st.success(f"Imported {n} store-master rows")
+            for r in rows[:5]:
+                if r.get("Short code") and r.get("GoFrugal Name") and r.get("Store Email"):
+                    try:
+                        upsert_store(db_path, r.get("Short code",""), r.get("GoFrugal Name",""), r.get("Store Email",""), "")
+                    except Exception:
+                        pass
+        sm = pd.DataFrame(list_store_master(db_path))
+        st.dataframe(sm, use_container_width=True)
 
     st.caption(f"Exports folder: `{out_dir}`")
 

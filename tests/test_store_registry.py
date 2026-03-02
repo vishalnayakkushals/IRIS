@@ -208,3 +208,25 @@ def test_camera_config_persistence(tmp_path: Path) -> None:
     assert cfgs[0].camera_role == "ENTRANCE"
     mapped = camera_config_map(db_path=db)
     assert mapped["store_1"]["D01"].entry_line_x == 0.42
+
+
+def test_auth_and_license_workflow(tmp_path: Path) -> None:
+    from iris.store_registry import (
+        authenticate_user,
+        create_license,
+        create_user,
+        list_license_audit,
+        transition_license,
+        upsert_store,
+    )
+
+    db = tmp_path / "registry.db"
+    upsert_store(db_path=db, store_id="s1", store_name="S1", email="s1@example.com", drive_folder_url="")
+    create_user(db_path=db, email="admin@example.com", full_name="Admin", password="Secret123!", role_names=["admin"])
+    assert authenticate_user(db_path=db, email="admin@example.com", password="Secret123!") is not None
+
+    lid = create_license(db_path=db, store_id="s1", license_type="trade_display", actor_email="admin@example.com")
+    transition_license(db_path=db, license_id=lid, new_status="review", actor_email="admin@example.com")
+    transition_license(db_path=db, license_id=lid, new_status="approved", actor_email="admin@example.com")
+    audit = list_license_audit(db_path=db, license_id=lid)
+    assert len(audit) >= 3
