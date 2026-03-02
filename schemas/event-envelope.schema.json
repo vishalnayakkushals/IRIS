@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iris.local/schemas/event-envelope.schema.json",
+  "title": "IRIS Event Envelope",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "ts",
+    "store_id",
+    "confidence",
+    "payload"
+  ],
+  "properties": {
+    "event_id": { "type": "string" },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "FRAME_INGESTED",
+        "DETECTIONS_CREATED",
+        "TRACK_STARTED",
+        "TRACK_UPDATED",
+        "TRACK_ENDED",
+        "ENTRY_DETECTED",
+        "EXIT_DETECTED",
+        "VISIT_STARTED",
+        "VISIT_STITCHED",
+        "VISIT_ENDED",
+        "BOUNCE_DETECTED",
+        "HEATMAP_UPDATED",
+        "BAG_EVIDENCE_DETECTED",
+        "LOSS_OF_SALE_SUSPECTED",
+        "LICENSE_UPLOADED",
+        "LICENSE_SUBMITTED",
+        "LICENSE_APPROVED",
+        "LICENSE_REJECTED",
+        "LICENSE_EXPIRING_SOON",
+        "LICENSE_EXPIRED"
+      ]
+    },
+    "ts": { "type": "string", "format": "date-time" },
+    "store_id": { "type": "string" },
+    "camera_id": { "type": "string" },
+    "visit_id": { "type": "string" },
+    "track_id": { "type": "string" },
+    "confidence": {
+      "oneOf": [
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "string", "enum": ["LOW", "MED", "HIGH"] }
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

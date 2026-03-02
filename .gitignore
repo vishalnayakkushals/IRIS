@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Local runtime/artifacts
+exports/
+employee_assets/
+data/
+streamlit.out
+streamlit.err
+
+# Model weights
+*.pt
+
+# Local datasets / snapshots
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp

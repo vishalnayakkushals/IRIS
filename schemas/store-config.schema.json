@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iris.local/schemas/store-config.schema.json",
+  "title": "IRIS Store Configuration",
+  "type": "object",
+  "required": [
+    "store_id",
+    "dwell_definition",
+    "alert_strategy",
+    "retention",
+    "thresholds"
+  ],
+  "properties": {
+    "store_id": {
+      "type": "string"
+    },
+    "dwell_definition": {
+      "type": "string",
+      "enum": ["OBSERVED_DWELL", "STORE_DWELL"],
+      "default": "STORE_DWELL"
+    },
+    "alert_strategy": {
+      "type": "string",
+      "enum": ["HIGH_RECALL", "HIGH_PRECISION"],
+      "default": "HIGH_PRECISION"
+    },
+    "alert_channels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["IN_APP", "EMAIL", "SMS", "WHATSAPP", "WEBHOOK"]
+      },
+      "default": ["IN_APP", "EMAIL"],
+      "uniqueItems": true
+    },
+    "retention": {
+      "type": "object",
+      "required": ["keyframe_days", "retain_raw_video"],
+      "properties": {
+        "keyframe_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90,
+          "default": 14
+        },
+        "retain_raw_video": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "required": [
+        "reentry_cooldown_sec",
+        "bounce_threshold_sec",
+        "engaged_dwell_threshold_sec",
+        "bag_check_window_sec",
+        "hotspot_dwell_min_sec",
+        "los_alert_threshold",
+        "stitch_delta_sec"
+      ],
+      "properties": {
+        "reentry_cooldown_sec": { "type": "integer", "minimum": 10, "default": 60 },
+        "bounce_threshold_sec": { "type": "integer", "minimum": 30, "default": 120 },
+        "engaged_dwell_threshold_sec": { "type": "integer", "minimum": 30, "default": 180 },
+        "bag_check_window_sec": { "type": "integer", "minimum": 3, "default": 10 },
+        "hotspot_dwell_min_sec": { "type": "integer", "minimum": 0, "default": 30 },
+        "los_alert_threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.75 },
+        "stitch_delta_sec": { "type": "integer", "minimum": 2, "maximum": 20, "default": 8 }
+      }
+    },
+    "future_integrations": {
+      "type": "object",
+      "properties": {
+        "pos_expected_later": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  }
+}
