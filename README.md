@@ -21,6 +21,7 @@ Reference assets:
 - `docs/organization/org-architecture-and-sdlc.md`
 - `docs/operations/cloud-deployment.md`
 - `docs/operations/github-walkthrough-for-beginners.md`
+- `docs/templates/prd-template.md`
 
 ## Implemented App (Current)
 
