@@ -78,3 +78,26 @@ streamlit run src/iris/iris_dashboard.py --server.port 8765
 ```
 
 Open: `http://localhost:8765`
+
+## Troubleshooting: `COPY requirements.txt .` not found during Docker build
+
+If you see:
+
+```text
+COPY requirements.txt .
+... "/requirements.txt": not found
+```
+
+Cause: Docker build context is incorrectly set to `deploy/` instead of repo root.
+
+Fix in this repo (`deploy/docker-compose.yml`):
+- `build.context: ..`
+- `build.dockerfile: deploy/Dockerfile`
+
+Verify and rerun from project root:
+
+```bash
+git pull
+cat deploy/docker-compose.yml
+docker compose -f deploy/docker-compose.yml up --build -d
+```

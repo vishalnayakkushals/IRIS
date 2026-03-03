@@ -1,9 +1,11 @@
 services:
   iris:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     ports:
       - "8765:8765"
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}

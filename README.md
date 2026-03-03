@@ -194,3 +194,15 @@ These two files are intentionally kept at the project root (standard practice):
 
 Many tools (Docker, CI runners, IDEs, pip/conda commands) expect these files at root by default.
 Keeping them in a nested folder usually adds unnecessary path complexity.
+
+### If Docker build says `requirements.txt` not found
+Use the latest `deploy/docker-compose.yml` from repo. It must contain:
+
+- `build.context: ..`
+- `build.dockerfile: deploy/Dockerfile`
+
+Then rerun:
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build -d
+```
