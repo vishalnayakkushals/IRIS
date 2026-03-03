@@ -101,3 +101,18 @@ git pull
 cat deploy/docker-compose.yml
 docker compose -f deploy/docker-compose.yml up --build -d
 ```
+
+
+## Windows path sanity check (common mistake)
+
+Run Docker commands from the repo root (the folder that contains `.git`, `requirements.txt`, and `deploy/`).
+
+```powershell
+cd "C:\Users\<you>\Desktop\GitHub\IRIS"
+git pull
+Get-Content deploy\docker-compose.yml
+docker compose -f deploy/docker-compose.yml up --build -d
+```
+
+If `git pull` says `not a git repository`, you are one folder too high; run `cd IRIS` first.
+
