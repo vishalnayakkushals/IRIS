@@ -10,3 +10,4 @@ services:
       - ../data:/app/data
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    command: ["streamlit", "run", "src/run_dashboard.py", "--server.address=0.0.0.0", "--server.port=8765", "--browser.serverAddress=localhost"]
