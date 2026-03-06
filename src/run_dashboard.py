@@ -1,6 +1,9 @@
-"""Streamlit entrypoint that loads the dashboard as a package module.
+"""Streamlit entrypoint that loads and executes the dashboard module.
 
-This avoids relative-import errors when running inside containers.
+This preserves package imports and avoids relative-import errors in Docker.
 """
 
-from iris import iris_dashboard  # noqa: F401  # imported for Streamlit side effects
+from iris import iris_dashboard
+
+
+iris_dashboard.main()
