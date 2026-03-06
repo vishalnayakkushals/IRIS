@@ -104,7 +104,7 @@ CSV outputs:
 ## Run Dashboard
 
 ```powershell
-streamlit run src/iris/iris_dashboard.py --server.port 8765
+streamlit run src/run_dashboard.py --server.port 8765
 ```
 
 Dashboard tabs:
@@ -206,3 +206,40 @@ Then rerun:
 ```bash
 docker compose -f deploy/docker-compose.yml up --build -d
 ```
+
+
+### Why Docker downloads dependencies again and again
+This usually happens because:
+
+- You run `docker compose ... build --no-cache` (forces full reinstall every time).
+- `requirements.txt` changed (invalidates dependency layer).
+- First install includes very large ML wheels (`ultralytics` -> `torch`), so initial build is big.
+
+Use normal incremental builds after first success:
+
+```bash
+docker compose -f deploy/docker-compose.yml build
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Use `--no-cache` only for hard reset/debug builds.
+
+### If `docker compose build` + `up -d` does not pick your latest code
+Use a hard refresh once:
+
+```bash
+git pull origin main
+docker compose -f deploy/docker-compose.yml down
+docker image rm deploy-iris:latest || true
+docker compose -f deploy/docker-compose.yml up --build --force-recreate -d
+docker compose -f deploy/docker-compose.yml logs -f iris
+```
+
+If logs still show:
+
+```text
+from .iris_analysis import ...
+```
+
+your container is running an older image (before the import fix). Pull latest `main` and rebuild with `--force-recreate`.
+

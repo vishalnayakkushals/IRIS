@@ -74,7 +74,7 @@ You can still run IRIS without Docker:
 
 ```bash
 python -m pip install -r requirements.txt
-streamlit run src/iris/iris_dashboard.py --server.port 8765
+streamlit run src/run_dashboard.py --server.port 8765
 ```
 
 Open: `http://localhost:8765`
@@ -115,4 +115,65 @@ docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 If `git pull` says `not a git repository`, you are one folder too high; run `cd IRIS` first.
+
+
+## Troubleshooting: `ImportError: attempted relative import with no known parent package`
+
+If the container starts but `http://localhost:8765` shows:
+
+```text
+ImportError: attempted relative import with no known parent package
+```
+
+Use latest code where dashboard imports are package-based (`from iris...`) and Docker sets:
+- `PYTHONPATH=/app/src`
+
+Then rebuild and restart:
+
+```bash
+docker compose -f deploy/docker-compose.yml build --no-cache
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+
+## Troubleshooting: dependencies re-download on every build
+
+If each build re-downloads all Python packages, common causes are:
+
+- using `docker compose ... build --no-cache`
+- changed `requirements.txt`
+- first-time install of heavy ML deps (`ultralytics` / `torch`)
+
+Recommended day-to-day commands:
+
+```bash
+docker compose -f deploy/docker-compose.yml build
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Use `--no-cache` only when you intentionally need a clean rebuild.
+
+## Troubleshooting: container did not restart with latest code
+
+If `docker compose build` + `docker compose up -d` appears to keep old behavior, run a hard refresh:
+
+```bash
+git pull origin main
+docker compose -f deploy/docker-compose.yml down
+docker image rm deploy-iris:latest || true
+docker compose -f deploy/docker-compose.yml up --build --force-recreate -d
+docker compose -f deploy/docker-compose.yml logs -f iris
+```
+
+This forces container recreation from a newly built image.
+
+For the specific import issue, if logs show:
+
+```text
+from .iris_analysis import ...
+```
+
+then the container is from older code. Latest dashboard code uses:
+- `from iris.iris_analysis ...`
+- `from iris.store_registry ...`
 
