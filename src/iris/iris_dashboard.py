@@ -206,6 +206,8 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
         st.dataframe(hotspot_df, use_container_width=True)
 
     relevant_df = image_df[image_df["relevant"]].copy()
+    if "camera_id" not in relevant_df.columns:
+        relevant_df["camera_id"] = "UNKNOWN"
     if not relevant_df.empty:
         relevant_df["bucket"] = relevant_df["timestamp"].dt.floor(f"{time_bucket_minutes}min")
         trend_df = (
@@ -263,7 +265,10 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
         step=6,
         key=f"gallery_limit_{selected_store}",
     )
-    gallery_df = relevant_df[relevant_df["camera_id"].isin(selected_cameras)].head(max_images)
+    if "camera_id" in relevant_df.columns and selected_cameras:
+        gallery_df = relevant_df[relevant_df["camera_id"].isin(selected_cameras)].head(max_images)
+    else:
+        gallery_df = relevant_df.head(0)
     if gallery_df.empty:
         st.info("No relevant images for the selected camera filter.")
         return
@@ -271,13 +276,22 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     cols = st.columns(3)
     for idx, row_image in gallery_df.iterrows():
         col = cols[idx % 3]
+        ts_value = row_image.get("timestamp")
+        if pd.isna(ts_value):
+            ts_text = "NA"
+        else:
+            ts_text = ts_value.strftime('%H:%M:%S')
         caption = (
-            f"{row_image['timestamp'].strftime('%H:%M:%S')} "
-            f"{row_image['camera_id']} "
-            f"people={row_image['person_count']}"
+            f"{ts_text} "
+            f"{row_image.get('camera_id', 'UNKNOWN')} "
+            f"people={row_image.get('person_count', 0)}"
         )
         with col:
-            st.image(row_image["path"], caption=caption, use_container_width=True)
+            image_path = row_image.get("path", "")
+            if image_path:
+                st.image(image_path, caption=caption, use_container_width=True)
+            else:
+                st.caption(caption)
 
 
 def _render_quality_summary(output: AnalysisOutput) -> None:
