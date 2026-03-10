@@ -154,6 +154,27 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     image_df = store_result.image_insights.copy()
     hotspot_df = store_result.camera_hotspots.copy()
 
+    # Defensive normalization: some stores can have empty/partial frames after sync,
+    # so keep dashboard rendering stable even if columns are missing.
+    if "camera_id" not in image_df.columns:
+        image_df["camera_id"] = "UNKNOWN"
+    if "relevant" not in image_df.columns:
+        image_df["relevant"] = False
+    if "is_valid" not in image_df.columns:
+        image_df["is_valid"] = False
+    if "person_count" not in image_df.columns:
+        image_df["person_count"] = 0
+    if "timestamp" not in image_df.columns:
+        image_df["timestamp"] = pd.NaT
+    if "filename" not in image_df.columns:
+        image_df["filename"] = ""
+    if "path" not in image_df.columns:
+        image_df["path"] = ""
+    if "reject_reason" not in image_df.columns:
+        image_df["reject_reason"] = ""
+    if "detection_error" not in image_df.columns:
+        image_df["detection_error"] = ""
+
     row = output.all_stores_summary[
         output.all_stores_summary["store_id"] == selected_store
     ].iloc[0]
