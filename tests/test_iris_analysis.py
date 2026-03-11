@@ -116,6 +116,9 @@ def test_export_csv_schema_for_multi_store(tmp_path: Path) -> None:
         "loss_of_sale_alerts",
         "top_camera_hotspot",
         "peak_time_bucket",
+        "daily_walkins",
+        "daily_conversions",
+        "daily_conversion_rate",
     }
     assert sorted(summary["store_id"].tolist()) == ["store_1", "store_2"]
 

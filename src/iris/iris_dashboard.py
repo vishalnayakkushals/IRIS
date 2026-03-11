@@ -188,6 +188,14 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     cols[6].metric("Bounce Rate", f"{float(row.get('bounce_rate', 0.0)):.2%}")
     cols[7].metric("Footfall", int(row.get("footfall", 0)))
     cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
+    cols2 = st.columns(3)
+    cols2[0].metric("Daily Walk-ins (Actual)", int(row.get("daily_walkins", 0)))
+    cols2[1].metric("Daily Conversions", int(row.get("daily_conversions", 0)))
+    cols2[2].metric("Daily Conversion Rate", f"{float(row.get('daily_conversion_rate', 0.0)):.2%}")
+
+    if hasattr(store_result, "daily_report") and not store_result.daily_report.empty:
+        st.markdown("**Daily Walk-in & Conversion Report**")
+        st.dataframe(store_result.daily_report, use_container_width=True)
 
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")
@@ -584,14 +592,21 @@ def main() -> None:
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
-    tabs = st.tabs(["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master", "Activity Logs"])
-    with tabs[0]:
+    pages = ["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master", "Activity Logs"]
+    qp = st.query_params
+    page_from_url = qp.get("page", pages[0])
+    if page_from_url not in pages:
+        page_from_url = pages[0]
+    current_page = st.sidebar.selectbox("Page", options=pages, index=pages.index(page_from_url), key="active_page")
+    st.query_params["page"] = current_page
+
+    if current_page == "Overview":
         _render_overview(view_output)
-    with tabs[1]:
+    elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
-    with tabs[2]:
+    elif current_page == "Quality":
         _render_quality_summary(view_output)
-    with tabs[3]:
+    elif current_page == "Store Admin":
         _render_store_admin(
             db_path=db_path,
             data_root=root_dir,
@@ -600,7 +615,7 @@ def main() -> None:
         )
 
 
-    with tabs[4]:
+    elif current_page == "Auth/RBAC":
         st.subheader("Auth / RBAC")
         st.caption(f"Active login: {active_email or '-'}")
         st.write("Permissions:", active_perms)
@@ -640,7 +655,7 @@ def main() -> None:
         st.dataframe(pd.DataFrame(list_users(db_path)), use_container_width=True)
         st.dataframe(pd.DataFrame(list_roles(db_path)), use_container_width=True)
 
-    with tabs[5]:
+    elif current_page == "Licenses":
         st.subheader("Trade/Display License Workflow")
         lic_store = st.selectbox("License store", options=[s.store_id for s in list_stores(db_path)] or [""], key="lic_store")
         lic_type = st.text_input("License type", value="trade_display")
@@ -657,7 +672,7 @@ def main() -> None:
                 transition_license(db_path, sel, new_status, actor_email=active_email or "system@local", note=note)
             st.dataframe(pd.DataFrame(list_license_audit(db_path, sel)), use_container_width=True)
 
-    with tabs[6]:
+    elif current_page == "Alert Routes":
         st.subheader("Alert Routing")
         ar_store = st.selectbox("Route store", options=[s.store_id for s in list_stores(db_path)] or [""], key="route_store")
         ch = st.selectbox("Channel", options=["email", "webhook", "slack", "whatsapp"])
@@ -670,7 +685,7 @@ def main() -> None:
             st.info("Delivered: " + ", ".join(delivered))
         st.dataframe(pd.DataFrame(list_alert_routes(db_path, ar_store)) if ar_store else pd.DataFrame(), use_container_width=True)
 
-    with tabs[7]:
+    elif current_page == "QA Timeline":
         st.subheader("Operator QA Timeline")
         if view_output.stores:
             sid = st.selectbox("QA store", options=sorted(view_output.stores.keys()), key="qa_store")
@@ -679,7 +694,7 @@ def main() -> None:
                 cols = [c for c in ["timestamp","camera_id","person_count","relevant","filename","track_ids","detection_error"] if c in idf.columns]
                 st.dataframe(idf.sort_values("timestamp")[cols].tail(500), use_container_width=True)
 
-    with tabs[8]:
+    elif current_page == "Store Master":
         st.subheader("Store Master")
         st.caption("Paste TSV with headers: Short code, GoFrugal Name, Outlet id, City, State, Zone, Country, Mobile no., Store Email, Cluster Manager, Area Manager")
         raw = st.text_area("Store master TSV paste", height=200)
@@ -702,7 +717,7 @@ def main() -> None:
         st.dataframe(sm, use_container_width=True)
 
 
-    with tabs[9]:
+    elif current_page == "Activity Logs":
         st.subheader("User Activity Logs")
         filter_email = st.text_input("Filter by email (optional)", value=active_email or "")
         logs_df = pd.DataFrame(list_user_activity(db_path=db_path, actor_email=filter_email.strip() or None, limit=1000))

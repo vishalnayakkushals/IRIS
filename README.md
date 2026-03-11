@@ -58,6 +58,9 @@ IRIS/
   scripts/
     analyze_stores.py
     snapshot_summary.py
+    run_async_worker.py
+    build_training_dataset.py
+    daily_retrain.py
   src/
     iris/
       iris_dashboard.py
@@ -134,6 +137,34 @@ Sidebar:
 - Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.
 - If detector is unavailable, pipeline continues and records `detection_error`.
 - Use `--detector mock` for deterministic local testing.
+
+What these mean:
+- **YOLO**: real object detector model (higher accuracy, more compute).
+- **MOCK**: deterministic simulated detector for testing and low-resource fallback (fast, not real-world accurate).
+
+## Hotstar-like speed roadmap implemented (practical MVP steps)
+
+### Step 1: Queue + async worker
+- Added event queue abstraction (`src/iris/event_queue.py`).
+- Added async worker runner (`scripts/run_async_worker.py`) that consumes frame events and runs analysis/export.
+
+### Step 2: Training dataset + daily retrain
+- Added dataset writer (`scripts/build_training_dataset.py`) from exports.
+- Added daily retrain/calibration job (`scripts/daily_retrain.py`) that writes model metrics + artifact.
+
+### Step 3: Model registry + rollback
+- Added model registry table and helpers in store registry DB.
+- Added auto rollback rule using error-rate threshold.
+
+## Daily walk-in + conversion report
+
+- Store detail now includes a daily report with:
+  - unique individuals,
+  - unique groups,
+  - actual customers (= unique individuals + unique groups),
+  - actual conversions,
+  - conversion rate.
+- Conversion is currently based on BILLING camera-role evidence ("red box" equivalent in MVP config).
 
 
 ## Server Deployment Readiness (Low-Space Mode)
@@ -242,4 +273,3 @@ from .iris_analysis import ...
 ```
 
 your container is running an older image (before the import fix). Pull latest `main` and rebuild with `--force-recreate`.
-

@@ -40,6 +40,7 @@ class StoreAnalysisResult:
     camera_hotspots: pd.DataFrame
     summary_row: pd.DataFrame
     alerts: pd.DataFrame
+    daily_report: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -557,6 +558,151 @@ def stitch_multi_camera_visits(image_insights: pd.DataFrame, max_delta_sec: int 
         active.append((ts, matched))
     return df
 
+
+def build_daily_customer_report(
+    image_insights: pd.DataFrame,
+    camera_configs: dict[str, dict[str, object]] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build daily walk-in and conversion report with individual/group actual-customer metrics.
+
+    Heuristic IDs:
+    - Individual customer: stable `track_id` produced by tracker.
+    - Group customer: 2+ people appearing together in entrance frame-time buckets.
+    """
+    if camera_configs is None:
+        camera_configs = {}
+
+    df = image_insights.copy()
+    if df.empty or "timestamp" not in df.columns:
+        empty = pd.DataFrame(
+            columns=[
+                "date",
+                "unique_individuals",
+                "unique_groups",
+                "actual_customers",
+                "converted_individuals",
+                "converted_groups",
+                "actual_conversions",
+                "conversion_rate",
+            ]
+        )
+        return df, empty
+
+    # explode track ids per frame
+    exploded_rows: list[dict[str, object]] = []
+    group_members: dict[str, set[int]] = {}
+    entrance_cameras = {
+        str(cid)
+        for cid, cfg in camera_configs.items()
+        if str((cfg or {}).get("camera_role", "")).upper() == "ENTRANCE"
+    }
+    billing_cameras = {
+        str(cid)
+        for cid, cfg in camera_configs.items()
+        if str((cfg or {}).get("camera_role", "")).upper() == "BILLING"
+    }
+
+    for _, row in df[df["timestamp"].notna()].iterrows():
+        tids = row.get("track_ids", "[]")
+        if isinstance(tids, str):
+            try:
+                tids = json.loads(tids)
+            except Exception:
+                tids = []
+        camera = str(row.get("camera_id", ""))
+        ts = pd.Timestamp(row["timestamp"])
+        day = ts.date().isoformat()
+        for tid in tids:
+            exploded_rows.append(
+                {
+                    "timestamp": ts,
+                    "date": day,
+                    "camera_id": camera,
+                    "track_id": int(tid),
+                }
+            )
+
+        if camera in entrance_cameras and len(tids) >= 2:
+            grp_id = f"G_{day}_{camera}_{ts.floor('s').strftime('%H%M%S')}"
+            group_members.setdefault(grp_id, set()).update(int(t) for t in tids)
+
+    if not exploded_rows:
+        df["customer_ids"] = "[]"
+        df["group_ids"] = "[]"
+        empty = pd.DataFrame(
+            columns=[
+                "date",
+                "unique_individuals",
+                "unique_groups",
+                "actual_customers",
+                "converted_individuals",
+                "converted_groups",
+                "actual_conversions",
+                "conversion_rate",
+            ]
+        )
+        return df, empty
+
+    ex = pd.DataFrame(exploded_rows)
+
+    # conversion by red box -> BILLING camera role
+    converted_ids = set()
+    if billing_cameras:
+        converted_ids = set(ex[ex["camera_id"].isin(billing_cameras)]["track_id"].astype(int).tolist())
+
+    rows: list[dict[str, object]] = []
+    for day, dfg in ex.groupby("date"):
+        unique_individuals = set(dfg["track_id"].astype(int).tolist())
+        day_groups = {gid: members for gid, members in group_members.items() if gid.startswith(f"G_{day}_")}
+        unique_groups = set(day_groups.keys())
+        converted_individuals = {tid for tid in unique_individuals if tid in converted_ids}
+        converted_groups = {
+            gid for gid, members in day_groups.items() if any(tid in converted_ids for tid in members)
+        }
+        actual_customers = len(unique_individuals) + len(unique_groups)
+        actual_conversions = len(converted_individuals) + len(converted_groups)
+        conversion_rate = (actual_conversions / actual_customers) if actual_customers > 0 else 0.0
+        rows.append(
+            {
+                "date": day,
+                "unique_individuals": len(unique_individuals),
+                "unique_groups": len(unique_groups),
+                "actual_customers": actual_customers,
+                "converted_individuals": len(converted_individuals),
+                "converted_groups": len(converted_groups),
+                "actual_conversions": actual_conversions,
+                "conversion_rate": conversion_rate,
+            }
+        )
+
+    # annotate frame-level with ids for downstream UI/debug
+    track_to_customer = {int(tid): f"C_{int(tid):06d}" for tid in ex["track_id"].unique().tolist()}
+    track_to_groups: dict[int, list[str]] = {}
+    for gid, members in group_members.items():
+        for tid in members:
+            track_to_groups.setdefault(int(tid), []).append(gid)
+
+    customer_ids_col: list[str] = []
+    group_ids_col: list[str] = []
+    for _, row in df.iterrows():
+        tids = row.get("track_ids", "[]")
+        if isinstance(tids, str):
+            try:
+                tids = json.loads(tids)
+            except Exception:
+                tids = []
+        customers = [track_to_customer.get(int(tid), f"C_{int(tid):06d}") for tid in tids]
+        groups: list[str] = []
+        for tid in tids:
+            groups.extend(track_to_groups.get(int(tid), []))
+        customer_ids_col.append(json.dumps(sorted(set(customers))))
+        group_ids_col.append(json.dumps(sorted(set(groups))))
+
+    df["customer_ids"] = customer_ids_col
+    df["group_ids"] = group_ids_col
+    daily_report = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    return df, daily_report
+
 def analyze_store(
     store_id: str,
     store_dir: Path,
@@ -663,6 +809,10 @@ def analyze_store(
         image_insights.loc[mask, "relevant"] = False
     image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
     image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
+    image_insights, daily_report = build_daily_customer_report(
+        image_insights=image_insights,
+        camera_configs=camera_configs,
+    )
 
     footfall, alerts_df = compute_footfall_and_alerts(
         image_insights=image_insights,
@@ -681,12 +831,23 @@ def analyze_store(
     )
     summary_row["footfall"] = int(footfall)
     summary_row["loss_of_sale_alerts"] = int(len(alerts_df))
+    if not daily_report.empty:
+        summary_row["daily_walkins"] = int(daily_report["actual_customers"].sum())
+        summary_row["daily_conversions"] = int(daily_report["actual_conversions"].sum())
+        summary_row["daily_conversion_rate"] = float(
+            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
+        )
+    else:
+        summary_row["daily_walkins"] = 0
+        summary_row["daily_conversions"] = 0
+        summary_row["daily_conversion_rate"] = 0.0
 
     return StoreAnalysisResult(
         image_insights=image_insights,
         camera_hotspots=camera_hotspots,
         summary_row=summary_row,
         alerts=alerts_df,
+        daily_report=daily_report,
     )
 
 
@@ -745,6 +906,9 @@ def analyze_root(
                 "loss_of_sale_alerts",
                 "top_camera_hotspot",
                 "peak_time_bucket",
+                "daily_walkins",
+                "daily_conversions",
+                "daily_conversion_rate",
             ]
         )
 
@@ -806,6 +970,8 @@ def export_analysis(
             ],
             hotspot_path,
         )
+        if not store_result.daily_report.empty:
+            _write(store_result.daily_report, out_dir / f"store_{store_id}_daily_report.csv")
         if not store_result.alerts.empty:
             _write(store_result.alerts, out_dir / f"store_{store_id}_alerts.csv")
 
@@ -830,6 +996,9 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
                     "loss_of_sale_alerts",
                     "top_camera_hotspot",
                     "peak_time_bucket",
+                    "daily_walkins",
+                    "daily_conversions",
+                    "daily_conversion_rate",
                 ]
             ),
             detector_warning="",
@@ -854,12 +1023,18 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
         alerts_df = pd.DataFrame(columns=["alert_type","camera_id","track_id","dwell_sec","risk_score","reason_codes"])
         if alerts_path.exists() or alerts_gz_path.exists():
             alerts_df = pd.read_csv(alerts_path if alerts_path.exists() else alerts_gz_path)
+        daily_path = out_dir / f"store_{store_id}_daily_report.csv"
+        daily_gz_path = daily_path.with_suffix(daily_path.suffix + ".gz")
+        daily_df = pd.DataFrame(columns=["date","unique_individuals","unique_groups","actual_customers","converted_individuals","converted_groups","actual_conversions","conversion_rate"])
+        if daily_path.exists() or daily_gz_path.exists():
+            daily_df = pd.read_csv(daily_path if daily_path.exists() else daily_gz_path)
 
         stores[store_id] = StoreAnalysisResult(
             image_insights=image_df,
             camera_hotspots=hotspot_df,
             summary_row=summary_row,
             alerts=alerts_df,
+            daily_report=daily_df,
         )
 
     return AnalysisOutput(

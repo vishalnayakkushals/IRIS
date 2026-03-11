@@ -17,6 +17,10 @@ from iris.store_registry import (
     list_employees,
     list_stores,
     parse_drive_folder_id,
+    list_model_versions,
+    maybe_auto_rollback_model,
+    promote_model_version,
+    register_model_version,
     upsert_store,
 )
 
@@ -250,3 +254,43 @@ def test_auth_and_license_workflow(tmp_path: Path) -> None:
     transition_license(db_path=db, license_id=lid, new_status="approved", actor_email="admin@example.com")
     audit = list_license_audit(db_path=db, license_id=lid)
     assert len(audit) >= 3
+
+
+def test_model_registry_and_auto_rollback(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    bad_id = register_model_version(
+        db_path=db,
+        model_name="iris_customer_model",
+        version_tag="v_bad",
+        metrics_json='{"error_rate": 0.55}',
+        artifact_path="data/models/bad.json",
+        status="candidate",
+    )
+    good_id = register_model_version(
+        db_path=db,
+        model_name="iris_customer_model",
+        version_tag="v_good",
+        metrics_json='{"error_rate": 0.05}',
+        artifact_path="data/models/good.json",
+        status="candidate",
+    )
+    promote_model_version(db_path=db, model_name="iris_customer_model", model_id=bad_id)
+
+    # configure rollback target on bad model
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE model_versions SET rollback_target_model_id=? WHERE model_id=?",
+        (good_id, bad_id),
+    )
+    conn.commit()
+    conn.close()
+
+    rolled, msg = maybe_auto_rollback_model(db_path=db, model_name="iris_customer_model", max_error_rate=0.35)
+    assert rolled is True
+    assert "rolled back" in msg
+
+    versions = list_model_versions(db_path=db, model_name="iris_customer_model")
+    statuses = {v["model_id"]: v["status"] for v in versions}
+    assert statuses[good_id] == "active"

@@ -7,6 +7,7 @@ from pathlib import Path
 import hashlib
 import hmac
 import io
+import json
 import os
 import re
 import secrets
@@ -254,6 +255,20 @@ def init_db(db_path: Path) -> None:
                 store_id TEXT NOT NULL DEFAULT '',
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_versions (
+                model_id TEXT PRIMARY KEY,
+                model_name TEXT NOT NULL,
+                version_tag TEXT NOT NULL,
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL,
+                artifact_path TEXT NOT NULL DEFAULT '',
+                rollback_target_model_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(model_name, version_tag)
             )
         """)
         _seed_defaults(conn)
@@ -836,5 +851,119 @@ def list_user_activity(db_path: Path, actor_email: str | None = None, limit: int
             ).fetchall()
         cols=["actor_email","action_code","store_id","payload_json","created_at"]
         return [dict(zip(cols,r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def register_model_version(
+    db_path: Path,
+    model_name: str,
+    version_tag: str,
+    metrics_json: str,
+    artifact_path: str,
+    status: str = "candidate",
+    rollback_target_model_id: str = "",
+) -> str:
+    init_db(db_path)
+    model_id = f"mdl_{uuid4().hex[:12]}"
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO model_versions(model_id,model_name,version_tag,metrics_json,status,artifact_path,rollback_target_model_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                model_id,
+                model_name.strip(),
+                version_tag.strip(),
+                metrics_json,
+                status.strip(),
+                artifact_path.strip(),
+                rollback_target_model_id.strip(),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        return model_id
+    finally:
+        conn.close()
+
+
+def promote_model_version(db_path: Path, model_name: str, model_id: str) -> None:
+    init_db(db_path)
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE model_versions SET status='archived', updated_at=? WHERE model_name=? AND status='active'",
+            (now, model_name.strip()),
+        )
+        conn.execute(
+            "UPDATE model_versions SET status='active', updated_at=? WHERE model_id=?",
+            (now, model_id.strip()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def maybe_auto_rollback_model(
+    db_path: Path,
+    model_name: str,
+    max_error_rate: float = 0.35,
+) -> tuple[bool, str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT model_id,metrics_json,rollback_target_model_id FROM model_versions WHERE model_name=? AND status='active' ORDER BY updated_at DESC LIMIT 1",
+            (model_name.strip(),),
+        ).fetchone()
+        if not row:
+            return False, "no active model"
+        model_id, metrics_json, rollback_target = row
+        try:
+            metrics = json.loads(metrics_json or "{}")
+        except Exception:
+            metrics = {}
+        error_rate = float(metrics.get("error_rate", 0.0))
+        if error_rate <= max_error_rate:
+            return False, f"active model healthy ({error_rate:.3f})"
+        if rollback_target:
+            promote_model_version(db_path, model_name, rollback_target)
+            return True, f"rolled back from {model_id} to {rollback_target}"
+        return False, "rollback target not configured"
+    finally:
+        conn.close()
+
+
+def list_model_versions(db_path: Path, model_name: str | None = None) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        if model_name:
+            rows = conn.execute(
+                "SELECT model_id,model_name,version_tag,metrics_json,status,artifact_path,rollback_target_model_id,created_at,updated_at FROM model_versions WHERE model_name=? ORDER BY updated_at DESC",
+                (model_name.strip(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT model_id,model_name,version_tag,metrics_json,status,artifact_path,rollback_target_model_id,created_at,updated_at FROM model_versions ORDER BY updated_at DESC"
+            ).fetchall()
+        cols = [
+            "model_id",
+            "model_name",
+            "version_tag",
+            "metrics_json",
+            "status",
+            "artifact_path",
+            "rollback_target_model_id",
+            "created_at",
+            "updated_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
     finally:
         conn.close()
