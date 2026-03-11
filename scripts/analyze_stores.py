@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         help="Gap in seconds to split estimated visit sessions.",
     )
     parser.add_argument(
+        "--max-images-per-store",
+        type=int,
+        default=20,
+        help="Sample limit per store for faster first-pass runs. Use 0 to process all images.",
+    )
+    parser.add_argument(
         "--gzip-exports",
         action="store_true",
         help="Also write gzip-compressed CSV exports to reduce storage footprint.",
@@ -80,6 +86,7 @@ def main() -> None:
         time_bucket_minutes=args.time_bucket,
         bounce_threshold_sec=args.bounce_threshold_sec,
         session_gap_sec=args.session_gap_sec,
+        max_images_per_store=(None if args.max_images_per_store == 0 else args.max_images_per_store),
     )
     export_analysis(output=output, out_dir=args.out, write_gzip_exports=args.gzip_exports, keep_plain_csv=not args.drop_plain_csv)
 

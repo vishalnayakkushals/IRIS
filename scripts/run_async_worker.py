@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import time
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from iris.event_queue import JsonlEventQueue
 from iris.iris_analysis import analyze_root, export_analysis
@@ -23,6 +28,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--detector", choices=["yolo", "mock"], default="mock")
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--idle-sleep", type=float, default=1.0)
+    p.add_argument("--max-events", type=int, default=0, help="Stop after processing N events. 0 means run forever.")
+    p.add_argument(
+        "--max-images-per-store",
+        type=int,
+        default=20,
+        help="Sample limit per store during each analysis cycle. 0 means process all.",
+    )
     return p.parse_args()
 
 
@@ -30,6 +42,7 @@ def main() -> None:
     args = parse_args()
     q = JsonlEventQueue(args.queue_file)
     print(f"Worker started. queue={args.queue_file}")
+    processed = 0
 
     while True:
         evt = q.pull(timeout_sec=0.1)
@@ -48,6 +61,7 @@ def main() -> None:
             detector_type=args.detector,
             conf_threshold=args.conf,
             camera_configs_by_store=cfg_map,
+            max_images_per_store=(None if args.max_images_per_store == 0 else args.max_images_per_store),
         )
         export_analysis(output, out_dir=args.out, write_gzip_exports=True, keep_plain_csv=True)
 
@@ -59,6 +73,10 @@ def main() -> None:
             store_id=evt.store_id,
             payload_json=json.dumps({"event_id": evt.event_id, "rollback": rolled, "rollback_message": msg}),
         )
+        processed += 1
+        if args.max_events > 0 and processed >= args.max_events:
+            print(f"Processed {processed} events. Exiting worker by --max-events.")
+            return
 
 
 if __name__ == "__main__":

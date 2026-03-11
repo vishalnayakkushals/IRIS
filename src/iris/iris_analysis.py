@@ -192,8 +192,10 @@ def _list_store_dirs(root_dir: Path) -> tuple[list[Path], bool]:
     for path in sorted([p for p in root_dir.iterdir() if p.is_dir()]):
         if path.name.startswith("."):
             continue
+        has_images = any(
+            child.suffix.lower() in IMAGE_EXTENSIONS for child in path.rglob("*") if child.is_file()
+        )
         files = [child for child in path.iterdir() if child.is_file()]
-        has_images = any(child.suffix.lower() in IMAGE_EXTENSIONS for child in files)
         is_empty = len(files) == 0 and not any(child.is_dir() for child in path.iterdir())
         if has_images or is_empty:
             store_dirs.append(path)
@@ -212,9 +214,10 @@ def _iter_store_images(store_dir: Path) -> list[Path]:
     return sorted(
         [
             path
-            for path in store_dir.iterdir()
+            for path in store_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-        ]
+        ],
+        key=lambda p: str(p.relative_to(store_dir)),
     )
 
 
@@ -713,9 +716,14 @@ def analyze_store(
     session_gap_sec: int = 30,
     camera_configs: dict[str, dict[str, object]] | None = None,
     engaged_dwell_threshold_sec: int = 180,
+    max_images_per_store: int | None = None,
 ) -> StoreAnalysisResult:
     rows: list[dict[str, object]] = []
-    for image_path in _iter_store_images(store_dir):
+    image_paths = _iter_store_images(store_dir)
+    if max_images_per_store is not None and max_images_per_store > 0:
+        image_paths = image_paths[:max_images_per_store]
+
+    for image_path in image_paths:
         parsed = parse_filename(image_path.name, reference_day=reference_day)
         if parsed is None:
             rows.append(
@@ -861,6 +869,7 @@ def analyze_root(
     session_gap_sec: int = 30,
     camera_configs_by_store: dict[str, dict[str, dict[str, object]]] | None = None,
     engaged_dwell_threshold_sec: int = 180,
+    max_images_per_store: int | None = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -884,6 +893,7 @@ def analyze_root(
             session_gap_sec=session_gap_sec,
             camera_configs=camera_configs_by_store.get(store_id, {}),
             engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+            max_images_per_store=max_images_per_store,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)

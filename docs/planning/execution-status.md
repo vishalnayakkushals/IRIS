@@ -1,8 +1,37 @@
 # IRIS Execution Status (Live Tracker)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-11
 
 This file translates the original checklist into a clear **Done / In Pipeline** tracker.
+
+## Hotstar-fast Buildout Checklist
+
+Legend:
+- ✅ Implemented baseline in repo
+- 🟡 Partial / hardening in progress
+- ⏳ Not started
+
+1. Ingestion layer (near-real-time queue backbone): 🟡
+   - ✅ Queue abstraction exists: `src/iris/event_queue.py` (`InMemoryEventQueue`, `JsonlEventQueue`)
+   - ✅ Async consumer exists: `scripts/run_async_worker.py`
+   - ✅ Event producer added for practical rollout: `scripts/enqueue_store_frames.py`
+   - 🟡 Next hardening: Kafka/PubSub adapter + backlog lag metrics
+2. Async workers autoscaled by queue lag: 🟡
+   - ✅ Worker process is operational for local queue
+   - 🟡 Next hardening: multi-worker orchestration + autoscale policy
+3. Feature + label store: 🟡
+   - ✅ Dataset writer exists: `scripts/build_training_dataset.py`
+   - 🟡 Next hardening: partitioned feature store schema + label QA checks
+4. Daily training pipeline: 🟡
+   - ✅ Daily retrain script exists: `scripts/daily_retrain.py`
+   - 🟡 Next hardening: scheduler integration (Airflow/Prefect) + validation gate + canary promotion
+5. Model registry + rollback: ✅
+   - ✅ Version table and promotion/rollback helpers in `src/iris/store_registry.py`
+6. Serving split (online vs offline): 🟡
+   - ✅ Offline analytics/export path exists
+   - 🟡 Next hardening: dedicated online inference service endpoint
+7. Observability (latency, drop-rate, sync-failure, drift): ⏳
+   - ⏳ Dashboard/metrics service not yet implemented
 
 ## 1) Delivery status snapshot
 

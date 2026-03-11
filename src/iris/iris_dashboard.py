@@ -128,6 +128,7 @@ def _run_analysis(
     write_gzip_exports: bool,
     keep_plain_csv: bool,
     camera_configs_by_store: dict[str, dict[str, dict[str, object]]],
+    max_images_per_store: int,
 ) -> AnalysisOutput:
     output = analyze_root(
         root_dir=root_dir,
@@ -137,6 +138,7 @@ def _run_analysis(
         bounce_threshold_sec=bounce_threshold_sec,
         session_gap_sec=session_gap_sec,
         camera_configs_by_store=camera_configs_by_store,
+        max_images_per_store=max_images_per_store,
     )
     export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
     return output
@@ -175,6 +177,7 @@ def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
         write_gzip_exports=True,
         keep_plain_csv=True,
         camera_configs_by_store={},
+        max_images_per_store=20,
     )
     return output
 
@@ -534,7 +537,11 @@ def _render_store_admin(
 
 
 def main() -> None:
-    st.set_page_config(page_title="IRIS Store Analysis Dashboard", layout="wide")
+    st.set_page_config(
+        page_title="IRIS Store Analysis Dashboard",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
     st.title("IRIS Store Analysis Dashboard")
     _ensure_session_state()
 
@@ -555,55 +562,86 @@ def main() -> None:
     active_email = st.session_state.get("login_email", "")
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
     module_from_url, page_from_url = _resolve_menu_from_query()
+    module_names = list(MODULE_PAGES.keys())
+    current_module = st.radio(
+        "Module",
+        options=module_names,
+        index=module_names.index(module_from_url),
+        horizontal=True,
+    )
+    module_pages = MODULE_PAGES[current_module]
+    page_default = page_from_url if page_from_url in module_pages else module_pages[0]
+    current_page = st.radio(
+        "Submodule",
+        options=module_pages,
+        index=module_pages.index(page_default),
+        horizontal=True,
+    )
 
-    with st.sidebar:
-        st.header("Analysis Controls")
-        root_str = st.text_input("Root Directory", value=str(data_root))
-        out_str = st.text_input("Export Directory", value=str(default_exports_dir))
-        access_email = st.text_input("Access Email (optional)", value="")
-        conf_threshold = st.slider(
+    util_cols = st.columns([3, 2, 1])
+    access_email_default = _query_value("access_email", "")
+    access_email = util_cols[0].text_input("Access Email (optional)", value=access_email_default)
+    util_cols[1].caption(f"Logged in: {active_email}")
+    if util_cols[2].button("Logout"):
+        st.session_state["is_authenticated"] = False
+        st.session_state["login_email"] = ""
+        st.rerun()
+
+    st.query_params["module"] = current_module
+    st.query_params["page"] = current_page
+    st.query_params["access_email"] = access_email.strip()
+
+    with st.expander("Analysis Controls", expanded=False):
+        ctrl_cols_1 = st.columns(2)
+        root_str = ctrl_cols_1[0].text_input("Root Directory", value=str(data_root))
+        out_str = ctrl_cols_1[1].text_input("Export Directory", value=str(default_exports_dir))
+
+        ctrl_cols_2 = st.columns(5)
+        conf_threshold = ctrl_cols_2[0].slider(
             "Detection Confidence",
             min_value=0.05,
             max_value=0.9,
             value=0.25,
             step=0.05,
         )
-        time_bucket_minutes = st.selectbox("Time Bucket (minutes)", options=[1, 5, 15], index=0)
-        bounce_threshold_sec = st.number_input("Bounce Threshold (sec)", min_value=10, max_value=3600, value=120, step=10)
-        session_gap_sec = st.number_input("Session Gap (sec)", min_value=5, max_value=600, value=30, step=5)
+        time_bucket_minutes = ctrl_cols_2[1].selectbox(
+            "Time Bucket (minutes)",
+            options=[1, 5, 15],
+            index=0,
+        )
+        bounce_threshold_sec = ctrl_cols_2[2].number_input(
+            "Bounce Threshold (sec)",
+            min_value=10,
+            max_value=3600,
+            value=120,
+            step=10,
+        )
+        session_gap_sec = ctrl_cols_2[3].number_input(
+            "Session Gap (sec)",
+            min_value=5,
+            max_value=600,
+            value=30,
+            step=5,
+        )
+        max_images_per_store = ctrl_cols_2[4].selectbox(
+            "Images / Store",
+            options=[10, 20, 50, 100, 0],
+            index=1,
+            help="Use 0 to process all images.",
+        )
+
+        ctrl_cols_3 = st.columns(5)
         yolo_available = _is_yolo_available()
         detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
-        detector_type = st.selectbox("Detector", options=detector_options, index=0)
+        detector_type = ctrl_cols_3[0].selectbox("Detector", options=detector_options, index=0)
+        write_gzip_exports = ctrl_cols_3[1].checkbox("Write .csv.gz", value=True)
+        keep_plain_csv = ctrl_cols_3[2].checkbox("Keep plain CSV", value=True)
+        auto_sync_linked_drives = ctrl_cols_3[3].checkbox("Auto-sync drives", value=True)
+        auto_sync_on_save = ctrl_cols_3[4].checkbox("Auto-sync on save", value=False)
+        rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
+
         if not yolo_available:
             st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
-        write_gzip_exports = st.checkbox("Write compressed CSV (.csv.gz)", value=True)
-        keep_plain_csv = st.checkbox("Keep plain CSV files", value=True)
-        auto_sync_linked_drives = st.checkbox("Auto-sync linked drives before analysis", value=True)
-        auto_sync_on_save = st.checkbox("Auto-sync when saving store mapping", value=False)
-        rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
-        st.divider()
-        st.subheader("Menu")
-        module_names = list(MODULE_PAGES.keys())
-        current_module = st.selectbox(
-            "Module",
-            options=module_names,
-            index=module_names.index(module_from_url),
-        )
-        module_pages = MODULE_PAGES[current_module]
-        page_default = page_from_url if page_from_url in module_pages else module_pages[0]
-        current_page = st.selectbox(
-            "Submodule",
-            options=module_pages,
-            index=module_pages.index(page_default),
-        )
-        st.query_params["module"] = current_module
-        st.query_params["page"] = current_page
-        st.divider()
-        st.caption(f"Logged in: {active_email}")
-        if st.button("Logout"):
-            st.session_state["is_authenticated"] = False
-            st.session_state["login_email"] = ""
-            st.rerun()
 
     root_dir = Path(root_str).expanduser().resolve()
     out_dir = Path(out_str).expanduser().resolve()
@@ -642,6 +680,7 @@ def main() -> None:
                 write_gzip_exports=write_gzip_exports,
                 keep_plain_csv=keep_plain_csv,
                 camera_configs_by_store=cfg_map,
+                max_images_per_store=int(max_images_per_store),
             )
             st.session_state["analysis_output"] = output
             if st.session_state.get("login_email"):

@@ -99,6 +99,12 @@ python -m pip install -r requirements.txt
 python scripts/analyze_stores.py --conf 0.25 --detector yolo --time-bucket 1 --gzip-exports
 ```
 
+Fast first-pass (first 20 images per store, blank/unreadable frames ignored):
+
+```powershell
+python scripts/analyze_stores.py --detector mock --max-images-per-store 20
+```
+
 CSV outputs:
 - `data/exports/current/all_stores_summary.csv`
 - `data/exports/current/store_<store_id>_image_insights.csv`
@@ -149,6 +155,7 @@ What these mean:
 ### Step 1: Queue + async worker
 - Added event queue abstraction (`src/iris/event_queue.py`).
 - Added async worker runner (`scripts/run_async_worker.py`) that consumes frame events and runs analysis/export.
+- Added event producer (`scripts/enqueue_store_frames.py`) to queue first N valid frames per store.
 
 ### Step 2: Training dataset + daily retrain
 - Added dataset writer (`scripts/build_training_dataset.py`) from exports.
