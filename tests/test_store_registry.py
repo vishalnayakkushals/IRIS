@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from PIL import Image
 
 from iris.store_registry import (
+    _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
     camera_config_map,
     list_camera_configs,
@@ -183,6 +184,25 @@ def test_drive_api_sync_path_with_mocked_requests(tmp_path: Path, monkeypatch) -
     assert "api_sync" in msg
     assert calls["list"] >= 1
     assert calls["download"] >= 1
+
+
+def test_drive_api_list_non_json_response_is_explained(monkeypatch) -> None:
+    class Resp:
+        status_code = 200
+        text = "<html>quota exceeded</html>"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr("iris.store_registry.requests.get", lambda *args, **kwargs: Resp())
+    try:
+        _drive_api_list_files_recursive(folder_id="f123", api_key="k")
+        assert False, "Expected non-JSON response handling to fail"
+    except RuntimeError as exc:
+        assert "non-JSON response" in str(exc)
 
 
 def test_camera_config_persistence(tmp_path: Path) -> None:

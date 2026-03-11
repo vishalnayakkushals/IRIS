@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from pathlib import Path
 import hashlib
 import hmac
@@ -720,13 +721,30 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
     while stack:
         cur=stack.pop(); token=None
         while True:
-            params={"q":f"'{cur}' in parents and trashed = false","fields":"nextPageToken,files(id,name,mimeType)","pageSize":1000,"key":api_key}
+            params={
+                "q":f"'{cur}' in parents and trashed = false",
+                "fields":"nextPageToken,files(id,name,mimeType)",
+                "pageSize":1000,
+                "supportsAllDrives":"true",
+                "includeItemsFromAllDrives":"true",
+                "key":api_key,
+            }
             if token: params["pageToken"]=token
             resp=requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
-            resp.raise_for_status(); payload=resp.json()
+            resp.raise_for_status()
+            try:
+                payload=resp.json()
+            except (JSONDecodeError, ValueError) as exc:
+                snippet = (resp.text or "")[:180].replace("\n", " ")
+                raise RuntimeError(
+                    "Drive API returned a non-JSON response. "
+                    "Check GOOGLE_API_KEY validity, API quota, and folder sharing. "
+                    f"response_snippet='{snippet}'"
+                ) from exc
             for item in payload.get("files", []):
                 if item.get("mimeType","")=="application/vnd.google-apps.folder": stack.append(item["id"])
-                else: files.append({"id":item["id"],"name":item.get("name", item["id"])})
+                elif Path(item.get("name", "")).suffix.lower() in _IMAGE_EXTS:
+                    files.append({"id":item["id"],"name":item.get("name", item["id"])})
             token=payload.get("nextPageToken")
             if not token: break
     return files
@@ -773,12 +791,19 @@ def sync_store_from_drive(store: StoreRecord, data_root: Path) -> tuple[bool, st
     except Exception as exc:
         return False, f"{store.store_id}: gdown not available ({exc})"
     try:
-        gdown.download_folder(url=store.drive_folder_url, output=str(target_dir), quiet=True, remaining_ok=False)
+        gdown.download_folder(url=store.drive_folder_url, output=str(target_dir), quiet=True, remaining_ok=True)
         processed,failed=optimize_store_image_files(target_dir)
         if not api_key:
             return True, f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed} (tip: set GOOGLE_API_KEY to bypass 50-file gdown limit)"
         return True, f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed}"
     except Exception as exc:
+        error_text = str(exc)
+        if "Expecting value" in error_text:
+            return False, (
+                f"{store.store_id}: sync failed because Drive returned non-JSON content. "
+                "Please ensure folder is shared as 'Anyone with the link (Viewer)' and "
+                "configure GOOGLE_API_KEY for reliable Drive API sync."
+            )
         return False, f"{store.store_id}: sync failed ({exc}). Set GOOGLE_API_KEY for full Drive API sync support on large folders."
 
 
