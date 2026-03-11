@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.express as px
@@ -41,14 +43,23 @@ from iris.store_registry import (
     user_permissions,
 )
 
-MODULE_PAGES: dict[str, list[str]] = {
-    "Reports": ["Overview", "Store Detail", "Quality", "QA Timeline"],
-    "Operations": ["Store Admin", "Store Master"],
-    "Access": ["Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
+NAV_TREE: dict[str, dict[str, list[str]]] = {
+    "Reports": {
+        "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline"],
+    },
+    "Operations": {
+        "Store Operations": ["Store Admin", "Store Master"],
+    },
+    "Access": {
+        "Security": ["Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
+    },
 }
 
-PAGE_TO_MODULE: dict[str, str] = {
-    page: module for module, pages in MODULE_PAGES.items() for page in pages
+PAGE_TO_PATH: dict[str, tuple[str, str]] = {
+    page: (module, section)
+    for module, sections in NAV_TREE.items()
+    for section, pages in sections.items()
+    for page in pages
 }
 
 
@@ -77,15 +88,118 @@ def _query_value(name: str, default: str = "") -> str:
     return str(value)
 
 
-def _resolve_menu_from_query() -> tuple[str, str]:
-    module_names = list(MODULE_PAGES.keys())
+def _resolve_menu_from_query() -> tuple[str, str, str]:
+    module_names = list(NAV_TREE.keys())
     page_param = _query_value("page", "")
-    if page_param in PAGE_TO_MODULE:
-        return PAGE_TO_MODULE[page_param], page_param
+    if page_param in PAGE_TO_PATH:
+        module, section = PAGE_TO_PATH[page_param]
+        return module, section, page_param
 
-    module_param = _query_value("module", module_names[0])
-    module = module_param if module_param in MODULE_PAGES else module_names[0]
-    return module, MODULE_PAGES[module][0]
+    module = _query_value("module", module_names[0])
+    if module not in NAV_TREE:
+        module = module_names[0]
+
+    sections = NAV_TREE[module]
+    section_names = list(sections.keys())
+    section = _query_value("section", section_names[0])
+    if section not in sections:
+        section = section_names[0]
+
+    return module, section, sections[section][0]
+
+
+def _render_hover_nav(current_module: str, current_section: str, current_page: str, access_email: str) -> None:
+    extra_query = f"&access_email={quote(access_email)}" if access_email else ""
+    module_nodes: list[str] = []
+    for module, sections in NAV_TREE.items():
+        section_nodes: list[str] = []
+        for section, pages in sections.items():
+            page_nodes: list[str] = []
+            for page in pages:
+                href = (
+                    f"?module={quote(module)}&section={quote(section)}"
+                    f"&page={quote(page)}{extra_query}"
+                )
+                active_class = " active" if page == current_page else ""
+                page_nodes.append(
+                    f'<li><a class="iris-page{active_class}" href="{href}" target="_self">{html.escape(page)}</a></li>'
+                )
+            section_active_class = " active" if section == current_section and module == current_module else ""
+            section_nodes.append(
+                f'<div class="iris-section{section_active_class}">'
+                f'<div class="iris-section-title">{html.escape(section)}</div>'
+                f'<ul>{"".join(page_nodes)}</ul>'
+                f"</div>"
+            )
+
+        module_active_class = " active" if module == current_module else ""
+        module_nodes.append(
+            f'<li class="iris-module{module_active_class}">'
+            f'<a href="?module={quote(module)}{extra_query}" target="_self">{html.escape(module)}</a>'
+            f'<div class="iris-dropdown">{"".join(section_nodes)}</div>'
+            f"</li>"
+        )
+
+    st.markdown(
+        """
+<style>
+.iris-nav {margin: 0 0 0.5rem 0;}
+.iris-nav ul {list-style: none; margin: 0; padding: 0;}
+.iris-nav .iris-menu {display: flex; gap: 0.25rem; background: #1f3044; border-radius: 10px; padding: 0.35rem 0.45rem;}
+.iris-nav .iris-module {position: relative;}
+.iris-nav .iris-module > a {display: block; padding: 0.55rem 0.9rem; color: #f4f7fb; text-decoration: none; border-radius: 8px; font-weight: 600;}
+.iris-nav .iris-module.active > a, .iris-nav .iris-module > a:hover {background: #2a7fd9;}
+.iris-nav .iris-dropdown {display: none; position: absolute; top: 2.35rem; left: 0; min-width: 520px; background: #f7fbff; border: 1px solid #d8e3f0; border-radius: 10px; box-shadow: 0 12px 24px rgba(9, 30, 66, 0.18); padding: 0.6rem; z-index: 999;}
+.iris-nav .iris-module:hover .iris-dropdown {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem;}
+.iris-nav .iris-section {border: 1px solid #e3edf8; border-radius: 8px; background: #ffffff; padding: 0.45rem 0.55rem;}
+.iris-nav .iris-section.active {border-color: #70a9eb; background: #eef6ff;}
+.iris-nav .iris-section-title {font-size: 0.85rem; color: #35506b; font-weight: 700; margin-bottom: 0.35rem;}
+.iris-nav .iris-section ul {display: grid; gap: 0.2rem;}
+.iris-nav .iris-page {display: block; padding: 0.35rem 0.45rem; border-radius: 6px; text-decoration: none; color: #233142; font-size: 0.92rem;}
+.iris-nav .iris-page:hover {background: #e8f2ff;}
+.iris-nav .iris-page.active {background: #d7e9ff; color: #0f4fa8; font-weight: 700;}
+.iris-breadcrumb {margin: 0.45rem 0 0.85rem 0; color: #5a6777; font-size: 0.9rem;}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<nav class="iris-nav"><ul class="iris-menu">{"".join(module_nodes)}</ul></nav>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            f'<div class="iris-breadcrumb"><strong>Path:</strong> '
+            f'{html.escape(current_module)} &gt; {html.escape(current_section)} &gt; {html.escape(current_page)}</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _permissions_frame(perms: dict[str, dict[str, bool]]) -> pd.DataFrame:
+    if not perms:
+        return pd.DataFrame(columns=["Module", "Read", "Write", "Access"])
+    rows: list[dict[str, object]] = []
+    for module, rights in sorted(perms.items(), key=lambda kv: kv[0]):
+        read_value = bool(rights.get("read"))
+        write_value = bool(rights.get("write"))
+        if read_value and write_value:
+            access = "Read + Write"
+        elif read_value:
+            access = "Read Only"
+        elif write_value:
+            access = "Write Only"
+        else:
+            access = "No Access"
+        rows.append(
+            {
+                "Module": module.replace("_", " ").title(),
+                "Read": "Yes" if read_value else "No",
+                "Write": "Yes" if write_value else "No",
+                "Access": access,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _render_login_gate(db_path: Path) -> None:
@@ -163,23 +277,7 @@ def _filter_output_to_store(output: AnalysisOutput, store_id: str) -> AnalysisOu
 
 
 def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
-    output = load_exports(out_dir=out_dir)
-    if not output.all_stores_summary.empty:
-        return output
-    output = _run_analysis(
-        root_dir=root_dir,
-        out_dir=out_dir,
-        conf_threshold=0.25,
-        detector_type="yolo",
-        time_bucket_minutes=1,
-        bounce_threshold_sec=120,
-        session_gap_sec=30,
-        write_gzip_exports=True,
-        keep_plain_csv=True,
-        camera_configs_by_store={},
-        max_images_per_store=20,
-    )
-    return output
+    return load_exports(out_dir=out_dir)
 
 
 def _render_overview(output: AnalysisOutput) -> None:
@@ -559,92 +657,128 @@ def main() -> None:
     if not st.session_state.get("is_authenticated", False):
         _render_login_gate(db_path)
 
+    if "ctrl_root_str" not in st.session_state:
+        st.session_state["ctrl_root_str"] = str(data_root)
+    if "ctrl_out_str" not in st.session_state:
+        st.session_state["ctrl_out_str"] = str(default_exports_dir)
+    if "ctrl_access_email" not in st.session_state:
+        st.session_state["ctrl_access_email"] = _query_value("access_email", "")
+    if "ctrl_conf_threshold" not in st.session_state:
+        st.session_state["ctrl_conf_threshold"] = 0.25
+    if "ctrl_time_bucket_minutes" not in st.session_state:
+        st.session_state["ctrl_time_bucket_minutes"] = 1
+    if "ctrl_bounce_threshold_sec" not in st.session_state:
+        st.session_state["ctrl_bounce_threshold_sec"] = 120
+    if "ctrl_session_gap_sec" not in st.session_state:
+        st.session_state["ctrl_session_gap_sec"] = 30
+    if "ctrl_max_images_per_store" not in st.session_state:
+        st.session_state["ctrl_max_images_per_store"] = 20
+    if "ctrl_detector_type" not in st.session_state:
+        st.session_state["ctrl_detector_type"] = "mock"
+    if "ctrl_write_gzip_exports" not in st.session_state:
+        st.session_state["ctrl_write_gzip_exports"] = True
+    if "ctrl_keep_plain_csv" not in st.session_state:
+        st.session_state["ctrl_keep_plain_csv"] = True
+    if "ctrl_auto_sync_linked_drives" not in st.session_state:
+        st.session_state["ctrl_auto_sync_linked_drives"] = True
+    if "ctrl_auto_sync_on_save" not in st.session_state:
+        st.session_state["ctrl_auto_sync_on_save"] = False
+
     active_email = st.session_state.get("login_email", "")
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
-    module_from_url, page_from_url = _resolve_menu_from_query()
-    module_names = list(MODULE_PAGES.keys())
-    current_module = st.radio(
-        "Module",
-        options=module_names,
-        index=module_names.index(module_from_url),
-        horizontal=True,
-    )
-    module_pages = MODULE_PAGES[current_module]
-    page_default = page_from_url if page_from_url in module_pages else module_pages[0]
-    current_page = st.radio(
-        "Submodule",
-        options=module_pages,
-        index=module_pages.index(page_default),
-        horizontal=True,
-    )
+    current_module, current_section, current_page = _resolve_menu_from_query()
 
-    util_cols = st.columns([3, 2, 1])
-    access_email_default = _query_value("access_email", "")
-    access_email = util_cols[0].text_input("Access Email (optional)", value=access_email_default)
-    util_cols[1].caption(f"Logged in: {active_email}")
-    if util_cols[2].button("Logout"):
+    access_bar_cols = st.columns([3, 2, 1])
+    access_email = access_bar_cols[0].text_input(
+        "Access Email (optional)",
+        key="ctrl_access_email",
+        placeholder="store-user@company.com",
+    )
+    access_bar_cols[1].caption(f"Logged in: {active_email}")
+    if access_bar_cols[2].button("Logout"):
         st.session_state["is_authenticated"] = False
         st.session_state["login_email"] = ""
         st.rerun()
 
+    _render_hover_nav(
+        current_module=current_module,
+        current_section=current_section,
+        current_page=current_page,
+        access_email=access_email.strip(),
+    )
+
     st.query_params["module"] = current_module
+    st.query_params["section"] = current_section
     st.query_params["page"] = current_page
     st.query_params["access_email"] = access_email.strip()
 
     with st.expander("Analysis Controls", expanded=False):
-        ctrl_cols_1 = st.columns(2)
-        root_str = ctrl_cols_1[0].text_input("Root Directory", value=str(data_root))
-        out_str = ctrl_cols_1[1].text_input("Export Directory", value=str(default_exports_dir))
+        with st.form("analysis_controls_form", clear_on_submit=False):
+            ctrl_cols_1 = st.columns(2)
+            ctrl_cols_1[0].text_input("Root Directory", key="ctrl_root_str")
+            ctrl_cols_1[1].text_input("Export Directory", key="ctrl_out_str")
 
-        ctrl_cols_2 = st.columns(5)
-        conf_threshold = ctrl_cols_2[0].slider(
-            "Detection Confidence",
-            min_value=0.05,
-            max_value=0.9,
-            value=0.25,
-            step=0.05,
-        )
-        time_bucket_minutes = ctrl_cols_2[1].selectbox(
-            "Time Bucket (minutes)",
-            options=[1, 5, 15],
-            index=0,
-        )
-        bounce_threshold_sec = ctrl_cols_2[2].number_input(
-            "Bounce Threshold (sec)",
-            min_value=10,
-            max_value=3600,
-            value=120,
-            step=10,
-        )
-        session_gap_sec = ctrl_cols_2[3].number_input(
-            "Session Gap (sec)",
-            min_value=5,
-            max_value=600,
-            value=30,
-            step=5,
-        )
-        max_images_per_store = ctrl_cols_2[4].selectbox(
-            "Images / Store",
-            options=[10, 20, 50, 100, 0],
-            index=1,
-            help="Use 0 to process all images.",
-        )
+            ctrl_cols_2 = st.columns(5)
+            ctrl_cols_2[0].slider(
+                "Detection Confidence",
+                min_value=0.05,
+                max_value=0.9,
+                step=0.05,
+                key="ctrl_conf_threshold",
+            )
+            ctrl_cols_2[1].selectbox(
+                "Time Bucket (minutes)",
+                options=[1, 5, 15],
+                key="ctrl_time_bucket_minutes",
+            )
+            ctrl_cols_2[2].number_input(
+                "Bounce Threshold (sec)",
+                min_value=10,
+                max_value=3600,
+                step=10,
+                key="ctrl_bounce_threshold_sec",
+            )
+            ctrl_cols_2[3].number_input(
+                "Session Gap (sec)",
+                min_value=5,
+                max_value=600,
+                step=5,
+                key="ctrl_session_gap_sec",
+            )
+            ctrl_cols_2[4].selectbox(
+                "Images / Store",
+                options=[10, 20, 50, 100, 0],
+                help="Use 0 to process all images.",
+                key="ctrl_max_images_per_store",
+            )
 
-        ctrl_cols_3 = st.columns(5)
-        yolo_available = _is_yolo_available()
-        detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
-        detector_type = ctrl_cols_3[0].selectbox("Detector", options=detector_options, index=0)
-        write_gzip_exports = ctrl_cols_3[1].checkbox("Write .csv.gz", value=True)
-        keep_plain_csv = ctrl_cols_3[2].checkbox("Keep plain CSV", value=True)
-        auto_sync_linked_drives = ctrl_cols_3[3].checkbox("Auto-sync drives", value=True)
-        auto_sync_on_save = ctrl_cols_3[4].checkbox("Auto-sync on save", value=False)
-        rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
+            ctrl_cols_3 = st.columns(5)
+            yolo_available = _is_yolo_available()
+            detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
+            if st.session_state["ctrl_detector_type"] not in detector_options:
+                st.session_state["ctrl_detector_type"] = detector_options[0]
+            ctrl_cols_3[0].selectbox("Detector", options=detector_options, key="ctrl_detector_type")
+            ctrl_cols_3[1].checkbox("Write .csv.gz", key="ctrl_write_gzip_exports")
+            ctrl_cols_3[2].checkbox("Keep plain CSV", key="ctrl_keep_plain_csv")
+            ctrl_cols_3[3].checkbox("Auto-sync drives", key="ctrl_auto_sync_linked_drives")
+            ctrl_cols_3[4].checkbox("Auto-sync on save", key="ctrl_auto_sync_on_save")
+            rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
 
-        if not yolo_available:
-            st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
+            if not yolo_available:
+                st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
 
-    root_dir = Path(root_str).expanduser().resolve()
-    out_dir = Path(out_str).expanduser().resolve()
+    root_dir = Path(st.session_state["ctrl_root_str"]).expanduser().resolve()
+    out_dir = Path(st.session_state["ctrl_out_str"]).expanduser().resolve()
+    conf_threshold = float(st.session_state["ctrl_conf_threshold"])
+    time_bucket_minutes = int(st.session_state["ctrl_time_bucket_minutes"])
+    bounce_threshold_sec = int(st.session_state["ctrl_bounce_threshold_sec"])
+    session_gap_sec = int(st.session_state["ctrl_session_gap_sec"])
+    max_images_per_store = int(st.session_state["ctrl_max_images_per_store"])
+    detector_type = str(st.session_state["ctrl_detector_type"])
+    write_gzip_exports = bool(st.session_state["ctrl_write_gzip_exports"])
+    keep_plain_csv = bool(st.session_state["ctrl_keep_plain_csv"])
+    auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
+    auto_sync_on_save = bool(st.session_state["ctrl_auto_sync_on_save"])
 
     if rerun_clicked:
         with st.spinner("Running analysis..."):
@@ -732,7 +866,17 @@ def main() -> None:
     elif current_page == "Auth/RBAC":
         st.subheader("Auth / RBAC")
         st.caption(f"Active login: {active_email or '-'}")
-        st.write("Permissions:", active_perms)
+        perms_df = _permissions_frame(active_perms)
+        if perms_df.empty:
+            st.warning("No permissions mapped for this user.")
+        else:
+            st.markdown("**Permission Matrix**")
+            st.dataframe(perms_df, use_container_width=True, hide_index=True)
+            read_count = int((perms_df["Read"] == "Yes").sum())
+            write_count = int((perms_df["Write"] == "Yes").sum())
+            st.caption(
+                f"Access summary: read on {read_count} modules, write on {write_count} modules."
+            )
         with st.expander("Create user"):
             u_email = st.text_input("New user email")
             u_name = st.text_input("Full name")
