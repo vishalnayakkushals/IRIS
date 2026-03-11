@@ -41,6 +41,16 @@ from iris.store_registry import (
     user_permissions,
 )
 
+MODULE_PAGES: dict[str, list[str]] = {
+    "Reports": ["Overview", "Store Detail", "Quality", "QA Timeline"],
+    "Operations": ["Store Admin", "Store Master"],
+    "Access": ["Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
+}
+
+PAGE_TO_MODULE: dict[str, str] = {
+    page: module for module, pages in MODULE_PAGES.items() for page in pages
+}
+
 
 def _is_yolo_available() -> bool:
     try:
@@ -54,6 +64,57 @@ def _is_yolo_available() -> bool:
 def _ensure_session_state() -> None:
     if "analysis_output" not in st.session_state:
         st.session_state["analysis_output"] = None
+    if "login_email" not in st.session_state:
+        st.session_state["login_email"] = ""
+    if "is_authenticated" not in st.session_state:
+        st.session_state["is_authenticated"] = False
+
+
+def _query_value(name: str, default: str = "") -> str:
+    value = st.query_params.get(name, default)
+    if isinstance(value, list):
+        return str(value[0]) if value else default
+    return str(value)
+
+
+def _resolve_menu_from_query() -> tuple[str, str]:
+    module_names = list(MODULE_PAGES.keys())
+    page_param = _query_value("page", "")
+    if page_param in PAGE_TO_MODULE:
+        return PAGE_TO_MODULE[page_param], page_param
+
+    module_param = _query_value("module", module_names[0])
+    module = module_param if module_param in MODULE_PAGES else module_names[0]
+    return module, MODULE_PAGES[module][0]
+
+
+def _render_login_gate(db_path: Path) -> None:
+    st.subheader("Login")
+    st.caption("Sign in to continue.")
+    _left, center, _right = st.columns([1, 1.2, 1])
+    with center:
+        with st.form("login_gate_form", clear_on_submit=False):
+            email = st.text_input("Email", value="", placeholder="name@company.com")
+            password = st.text_input("Password", value="", type="password")
+            submitted = st.form_submit_button("Login", type="primary")
+
+        if submitted:
+            normalized_email = email.strip().lower()
+            user = authenticate_user(db_path=db_path, email=normalized_email, password=password)
+            perms = user_permissions(db_path=db_path, email=normalized_email) if user else {}
+            if user is None or not perms:
+                st.error("Invalid login or no role assigned.")
+            else:
+                st.session_state["login_email"] = normalized_email
+                st.session_state["is_authenticated"] = True
+                log_user_activity(
+                    db_path=db_path,
+                    actor_email=normalized_email,
+                    action_code="LOGIN_SUCCESS",
+                )
+                st.rerun()
+
+    st.stop()
 
 
 def _run_analysis(
@@ -488,6 +549,12 @@ def main() -> None:
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
     ensure_default_admins(db_path, ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"])
+    if not st.session_state.get("is_authenticated", False):
+        _render_login_gate(db_path)
+
+    active_email = st.session_state.get("login_email", "")
+    active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
+    module_from_url, page_from_url = _resolve_menu_from_query()
 
     with st.sidebar:
         st.header("Analysis Controls")
@@ -514,11 +581,29 @@ def main() -> None:
         auto_sync_linked_drives = st.checkbox("Auto-sync linked drives before analysis", value=True)
         auto_sync_on_save = st.checkbox("Auto-sync when saving store mapping", value=False)
         rerun_clicked = st.button("Regenerate Analysis + CSV", type="primary")
-
-        st.subheader("Login")
-        login_email = st.text_input("Login email", value="vishal.nayak@kushals.com")
-        login_password = st.text_input("Password", value="ChangeMe123!", type="password")
-        login_clicked = st.button("Login")
+        st.divider()
+        st.subheader("Menu")
+        module_names = list(MODULE_PAGES.keys())
+        current_module = st.selectbox(
+            "Module",
+            options=module_names,
+            index=module_names.index(module_from_url),
+        )
+        module_pages = MODULE_PAGES[current_module]
+        page_default = page_from_url if page_from_url in module_pages else module_pages[0]
+        current_page = st.selectbox(
+            "Submodule",
+            options=module_pages,
+            index=module_pages.index(page_default),
+        )
+        st.query_params["module"] = current_module
+        st.query_params["page"] = current_page
+        st.divider()
+        st.caption(f"Logged in: {active_email}")
+        if st.button("Logout"):
+            st.session_state["is_authenticated"] = False
+            st.session_state["login_email"] = ""
+            st.rerun()
 
     root_dir = Path(root_str).expanduser().resolve()
     out_dir = Path(out_str).expanduser().resolve()
@@ -568,21 +653,6 @@ def main() -> None:
         output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
         st.session_state["analysis_output"] = output
 
-    if "login_email" not in st.session_state:
-        st.session_state["login_email"] = ""
-    if login_clicked:
-        user = authenticate_user(db_path=db_path, email=login_email.strip(), password=login_password)
-        perms = user_permissions(db_path=db_path, email=login_email.strip()) if user else {}
-        if user is None or not perms:
-            st.error("Invalid login or no role assigned.")
-        else:
-            st.session_state["login_email"] = login_email.strip().lower()
-            log_user_activity(db_path=db_path, actor_email=login_email.strip().lower(), action_code="LOGIN_SUCCESS")
-            st.success(f"Logged in as {login_email.strip().lower()}")
-
-    active_email = st.session_state.get("login_email", "")
-    active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
-
     view_output = output
     if access_email.strip():
         mapped = get_store_by_email(db_path=db_path, email=access_email.strip())
@@ -604,14 +674,6 @@ def main() -> None:
         st.info(
             "No store subfolders found in root; root folder was treated as a single store."
         )
-
-    pages = ["Overview", "Store Detail", "Quality", "Store Admin", "Auth/RBAC", "Licenses", "Alert Routes", "QA Timeline", "Store Master", "Activity Logs"]
-    qp = st.query_params
-    page_from_url = qp.get("page", pages[0])
-    if page_from_url not in pages:
-        page_from_url = pages[0]
-    current_page = st.sidebar.selectbox("Page", options=pages, index=pages.index(page_from_url), key="active_page")
-    st.query_params["page"] = current_page
 
     if current_page == "Overview":
         _render_overview(view_output)
