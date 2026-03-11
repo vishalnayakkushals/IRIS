@@ -137,6 +137,8 @@ Sidebar:
 - Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.
 - If detector is unavailable, pipeline continues and records `detection_error`.
 - Use `--detector mock` for deterministic local testing.
+- Docker default (`IRIS_ENABLE_YOLO=0`) is lightweight and does not install YOLO deps.
+- Enable YOLO in Docker by setting `IRIS_ENABLE_YOLO=1` before build.
 
 What these mean:
 - **YOLO**: real object detector model (higher accuracy, more compute).
@@ -214,6 +216,13 @@ docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 Open: `http://localhost:8765`
+
+To enable YOLO dependencies in Docker:
+
+```bash
+export IRIS_ENABLE_YOLO=1
+docker compose -f deploy/docker-compose.yml up --build -d
+```
 
 
 ## Why `requirements.txt` and `environment.yml` are in root

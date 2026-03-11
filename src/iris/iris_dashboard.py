@@ -42,6 +42,15 @@ from iris.store_registry import (
 )
 
 
+def _is_yolo_available() -> bool:
+    try:
+        import ultralytics  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 def _ensure_session_state() -> None:
     if "analysis_output" not in st.session_state:
         st.session_state["analysis_output"] = None
@@ -495,7 +504,11 @@ def main() -> None:
         time_bucket_minutes = st.selectbox("Time Bucket (minutes)", options=[1, 5, 15], index=0)
         bounce_threshold_sec = st.number_input("Bounce Threshold (sec)", min_value=10, max_value=3600, value=120, step=10)
         session_gap_sec = st.number_input("Session Gap (sec)", min_value=5, max_value=600, value=30, step=5)
-        detector_type = st.selectbox("Detector", options=["yolo", "mock"], index=0)
+        yolo_available = _is_yolo_available()
+        detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
+        detector_type = st.selectbox("Detector", options=detector_options, index=0)
+        if not yolo_available:
+            st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
         write_gzip_exports = st.checkbox("Write compressed CSV (.csv.gz)", value=True)
         keep_plain_csv = st.checkbox("Keep plain CSV files", value=True)
         auto_sync_linked_drives = st.checkbox("Auto-sync linked drives before analysis", value=True)

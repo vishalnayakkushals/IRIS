@@ -8,8 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/src
 
 WORKDIR /app
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+ARG IRIS_ENABLE_YOLO=0
+COPY deploy/requirements.docker.txt ./requirements.docker.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.docker.txt && \
+    if [ "$IRIS_ENABLE_YOLO" = "1" ]; then \
+      pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
+      pip install "ultralytics>=8.3,<9.0"; \
+    fi
 COPY . .
 
 EXPOSE 8765

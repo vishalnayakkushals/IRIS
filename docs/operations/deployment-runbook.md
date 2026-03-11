@@ -8,6 +8,14 @@ docker compose -f deploy/docker-compose.yml up --build -d
 
 UI: `http://localhost:8765`
 
+By default Docker uses lightweight dependencies (`IRIS_ENABLE_YOLO=0`) for faster startup.
+If you want full YOLO detection in container builds:
+
+```bash
+export IRIS_ENABLE_YOLO=1
+docker compose -f deploy/docker-compose.yml up --build -d
+```
+
 ## Admin login (first run)
 Default seeded admin emails:
 - `vishal.nayak@kushals.com`
