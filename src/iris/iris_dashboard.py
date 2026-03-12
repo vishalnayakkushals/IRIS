@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from pathlib import Path
 import re
 from urllib.parse import quote
@@ -132,6 +133,18 @@ PAGE_TO_PATH: dict[str, tuple[str, str]] = {
 def _is_yolo_available() -> bool:
     try:
         import ultralytics  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _is_tf_frcnn_available() -> bool:
+    model_path = os.getenv("TF_FRCNN_MODEL_PATH", "data/models/frozen_inference_graph.pb").strip()
+    if not Path(model_path).exists():
+        return False
+    try:
+        import tensorflow.compat.v1 as tf  # type: ignore  # noqa: F401
 
         return True
     except Exception:
@@ -2318,14 +2331,15 @@ def _render_pipeline_configuration_controls() -> bool:
 
         ctrl_cols_3 = st.columns(5)
         yolo_available = _is_yolo_available()
-        detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
+        tf_frcnn_available = _is_tf_frcnn_available()
+        detector_options = ["yolo", "tf_frcnn", "mock"] if yolo_available else ["mock", "tf_frcnn", "yolo"]
         if st.session_state["ctrl_detector_type"] not in detector_options:
             st.session_state["ctrl_detector_type"] = detector_options[0]
         ctrl_cols_3[0].selectbox(
             "Detector",
             options=detector_options,
             key="ctrl_detector_type",
-            help="YOLO for real detection, MOCK for testing fallback.",
+            help="YOLO (recommended), TF_FRCNN (legacy TensorFlow), MOCK (testing).",
         )
         ctrl_cols_3[1].selectbox(
             "Write Gzip CSV",
@@ -2358,6 +2372,11 @@ def _render_pipeline_configuration_controls() -> bool:
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
         if not yolo_available:
             st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
+        if not tf_frcnn_available:
+            st.caption(
+                "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
+                "`data/models/frozen_inference_graph.pb` (or `TF_FRCNN_MODEL_PATH`)."
+            )
 
     st.session_state["ctrl_write_gzip_exports"] = st.session_state.get("cfg_write_gzip_select", "Yes") == "Yes"
     st.session_state["ctrl_keep_plain_csv"] = st.session_state.get("cfg_keep_plain_select", "Yes") == "Yes"

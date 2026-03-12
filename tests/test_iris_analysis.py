@@ -12,6 +12,7 @@ from iris.iris_analysis import (
     PersonDetector,
     analyze_root,
     analyze_store,
+    build_detector,
     build_camera_hotspots,
     export_analysis,
     load_exports,
@@ -133,6 +134,12 @@ def test_export_csv_schema_for_multi_store(tmp_path: Path) -> None:
         "max_person_conf",
         "relevant",
     }.issubset(set(image_csv.columns))
+
+
+def test_build_detector_accepts_tf_frcnn_option() -> None:
+    detector, warning = build_detector(detector_type="tf_frcnn", conf_threshold=0.25)
+    assert detector is not None
+    assert "Unsupported detector_type" not in warning
 
 
 def test_empty_store_folder_is_in_summary(tmp_path: Path) -> None:

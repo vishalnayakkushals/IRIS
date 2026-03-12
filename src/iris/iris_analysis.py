@@ -6,9 +6,11 @@ from pathlib import Path
 import math
 import csv
 import json
+import os
 import re
 from typing import Protocol
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 
@@ -171,10 +173,111 @@ class YoloPersonDetector:
             return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=str(exc), person_centroids=[], person_boxes=[], bag_count=0)
 
 
+class LegacyTfPersonDetector:
+    """TensorFlow Faster-RCNN detector compatible with legacy frozen graph pipelines."""
+
+    def __init__(
+        self,
+        model_path: str = "data/models/frozen_inference_graph.pb",
+        conf_threshold: float = 0.25,
+    ) -> None:
+        import tensorflow.compat.v1 as tf  # type: ignore
+
+        tf.disable_v2_behavior()
+        self._tf = tf
+        self.conf_threshold = float(conf_threshold)
+        resolved = Path(model_path)
+        if not resolved.exists():
+            raise FileNotFoundError(
+                f"frozen graph not found at '{resolved}'. "
+                "Set TF_FRCNN_MODEL_PATH or place file under data/models/."
+            )
+
+        self.graph = tf.Graph()
+        with self.graph.as_default():
+            graph_def = tf.GraphDef()
+            with tf.gfile.GFile(str(resolved), "rb") as f:
+                graph_def.ParseFromString(f.read())
+                tf.import_graph_def(graph_def, name="")
+            self.image_tensor = self.graph.get_tensor_by_name("image_tensor:0")
+            self.detection_boxes = self.graph.get_tensor_by_name("detection_boxes:0")
+            self.detection_scores = self.graph.get_tensor_by_name("detection_scores:0")
+            self.detection_classes = self.graph.get_tensor_by_name("detection_classes:0")
+            self.num_detections = self.graph.get_tensor_by_name("num_detections:0")
+            self.sess = tf.Session(graph=self.graph)
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        try:
+            with Image.open(image_path) as img:
+                rgb = img.convert("RGB")
+                image_np = np.array(rgb)
+            image_expanded = np.expand_dims(image_np, axis=0)
+            boxes, scores, classes, num = self.sess.run(
+                [
+                    self.detection_boxes,
+                    self.detection_scores,
+                    self.detection_classes,
+                    self.num_detections,
+                ],
+                feed_dict={self.image_tensor: image_expanded},
+            )
+
+            num_det = int(float(num[0])) if num is not None else 0
+            person_centroids: list[tuple[float, float]] = []
+            person_boxes: list[tuple[float, float, float, float]] = []
+            person_conf: list[float] = []
+            for i in range(num_det):
+                cls_id = int(classes[0][i])
+                score = float(scores[0][i])
+                if cls_id != 1 or score < self.conf_threshold:
+                    continue
+                # TensorFlow object detection format: [ymin, xmin, ymax, xmax]
+                y1, x1, y2, x2 = [float(v) for v in boxes[0][i]]
+                person_boxes.append((x1, y1, x2, y2))
+                person_centroids.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+                person_conf.append(score)
+
+            if not person_conf:
+                return DetectionResult(
+                    person_count=0,
+                    max_person_conf=0.0,
+                    detection_error="",
+                    person_centroids=[],
+                    person_boxes=[],
+                    bag_count=0,
+                )
+            return DetectionResult(
+                person_count=len(person_conf),
+                max_person_conf=float(max(person_conf)),
+                detection_error="",
+                person_centroids=person_centroids,
+                person_boxes=person_boxes,
+                bag_count=0,
+            )
+        except Exception as exc:
+            return DetectionResult(
+                person_count=0,
+                max_person_conf=0.0,
+                detection_error=str(exc),
+                person_centroids=[],
+                person_boxes=[],
+                bag_count=0,
+            )
+
+
 def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.25) -> tuple[PersonDetector, str]:
-    if detector_type == "mock":
+    normalized = str(detector_type).strip().lower()
+    if normalized in {"tensorflow_frcnn", "tf_frcnn", "legacy_tf_frcnn"}:
+        model_path = os.getenv("TF_FRCNN_MODEL_PATH", "data/models/frozen_inference_graph.pb").strip()
+        try:
+            return LegacyTfPersonDetector(model_path=model_path, conf_threshold=conf_threshold), ""
+        except Exception as exc:
+            reason = f"TF_FRCNN detector unavailable: {exc}"
+            return UnavailableDetector(reason), reason
+
+    if normalized == "mock":
         return MockPersonDetector(conf_threshold=conf_threshold), ""
-    if detector_type != "yolo":
+    if normalized != "yolo":
         return (
             UnavailableDetector(f"Unsupported detector_type='{detector_type}'"),
             f"Unsupported detector_type='{detector_type}', using unavailable detector fallback.",
