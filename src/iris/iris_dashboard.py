@@ -200,7 +200,7 @@ def _render_hover_nav(
         module_active_class = " active" if module == current_module else ""
         module_nodes.append(
             f'<li class="iris-module{module_active_class}">'
-            f'<a href="?module={quote(module)}{extra_query}" target="_self">{html.escape(module)}</a>'
+            f'<span class="iris-module-label">{html.escape(module)}</span>'
             f'<div class="iris-dropdown">{"".join(section_nodes)}</div>'
             f"</li>"
         )
@@ -212,8 +212,8 @@ def _render_hover_nav(
 .iris-nav ul {list-style: none; margin: 0; padding: 0;}
 .iris-nav .iris-menu {display: flex; gap: 0.25rem; background: #1f3044; border-radius: 8px; padding: 0.25rem 0.35rem;}
 .iris-nav .iris-module {position: relative;}
-.iris-nav .iris-module > a {display: block; padding: 0.44rem 0.72rem; color: #f4f7fb; text-decoration: none; border-radius: 7px; font-weight: 600; font-size: 0.9rem;}
-.iris-nav .iris-module.active > a, .iris-nav .iris-module > a:hover {background: #2a7fd9;}
+.iris-nav .iris-module .iris-module-label {display: block; padding: 0.44rem 0.72rem; color: #f4f7fb; border-radius: 7px; font-weight: 600; font-size: 0.9rem; cursor: default; user-select: none;}
+.iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {background: #2a7fd9;}
 .iris-nav .iris-dropdown {display: none; position: absolute; top: 2rem; left: 0; min-width: 520px; background: #f7fbff; border: 1px solid #d8e3f0; border-radius: 10px; box-shadow: 0 12px 24px rgba(9, 30, 66, 0.18); padding: 0.6rem; z-index: 999;}
 .iris-nav .iris-module:hover .iris-dropdown {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem;}
 .iris-nav .iris-section {border: 1px solid #e3edf8; border-radius: 8px; background: #ffffff; padding: 0.45rem 0.55rem;}
