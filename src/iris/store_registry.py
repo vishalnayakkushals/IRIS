@@ -20,6 +20,7 @@ import requests
 
 DRIVE_FOLDER_ID_PATTERN = re.compile(r"/folders/([a-zA-Z0-9_-]+)")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+DEFAULT_PERMISSION_CODES = ("config", "dashboard", "licenses", "roles", "stores", "users")
 
 
 @dataclass(frozen=True)
@@ -320,16 +321,23 @@ def create_user(db_path: Path, email: str, full_name: str, password: str, store_
     init_db(db_path)
     conn = sqlite3.connect(db_path)
     try:
+        normalized_roles = [r.strip().lower() for r in (role_names or ["store_user"]) if r.strip()]
+        if not normalized_roles:
+            normalized_roles = ["store_user"]
+        role_ids: list[int] = []
+        for role in normalized_roles:
+            row = conn.execute("SELECT role_id FROM roles WHERE role_name=?", (role,)).fetchone()
+            if not row:
+                raise ValueError(f"role '{role}' not found")
+            role_ids.append(int(row[0]))
         now = _now_utc()
         conn.execute(
             "INSERT INTO users(email, full_name, password_hash, is_active, store_id, created_at) VALUES(?,?,?,?,?,?)",
             (email.strip().lower(), full_name.strip(), _hash_password(password), 1, store_id.strip(), now),
         )
         user_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-        for role in (role_names or ["store_user"]):
-            row = conn.execute("SELECT role_id FROM roles WHERE role_name=?", (role.strip(),)).fetchone()
-            if row:
-                conn.execute("INSERT OR IGNORE INTO user_roles(user_id, role_id) VALUES(?,?)", (user_id, int(row[0])))
+        for role_id in role_ids:
+            conn.execute("INSERT OR IGNORE INTO user_roles(user_id, role_id) VALUES(?,?)", (user_id, role_id))
         conn.commit()
         return user_id
     finally:
@@ -412,6 +420,57 @@ def list_roles(db_path: Path) -> list[dict[str, Any]]:
             perms=conn.execute("SELECT permission_code,can_read,can_write FROM role_permissions WHERE role_id=? ORDER BY permission_code",(rid,)).fetchall()
             out.append({"role_name":name,"description":desc,"permissions":"|".join([f"{p[0]}:{p[1]}:{p[2]}" for p in perms])})
         return out
+    finally:
+        conn.close()
+
+
+def list_role_names(db_path: Path) -> list[str]:
+    return [row["role_name"] for row in list_roles(db_path)]
+
+
+def list_permission_codes(db_path: Path) -> list[str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT permission_code FROM role_permissions ORDER BY permission_code"
+        ).fetchall()
+        dynamic_codes = [str(r[0]).strip().lower() for r in rows if str(r[0]).strip()]
+    finally:
+        conn.close()
+    all_codes = sorted(set(DEFAULT_PERMISSION_CODES).union(dynamic_codes))
+    return all_codes
+
+
+def delete_role(db_path: Path, role_name: str) -> tuple[bool, str]:
+    init_db(db_path)
+    normalized_role = role_name.strip().lower()
+    if not normalized_role:
+        raise ValueError("role_name is required")
+    if normalized_role == "admin":
+        return False, "admin role is protected and cannot be deleted"
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT role_id FROM roles WHERE role_name=?",
+            (normalized_role,),
+        ).fetchone()
+        if not row:
+            return False, f"role '{normalized_role}' not found"
+        role_id = int(row[0])
+        assigned_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM user_roles WHERE role_id=?",
+                (role_id,),
+            ).fetchone()[0]
+        )
+        if assigned_count > 0:
+            return False, f"role '{normalized_role}' is assigned to {assigned_count} user(s)"
+        conn.execute("DELETE FROM role_permissions WHERE role_id=?", (role_id,))
+        conn.execute("DELETE FROM user_roles WHERE role_id=?", (role_id,))
+        conn.execute("DELETE FROM roles WHERE role_id=?", (role_id,))
+        conn.commit()
+        return True, f"role '{normalized_role}' deleted"
     finally:
         conn.close()
 

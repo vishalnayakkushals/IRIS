@@ -10,11 +10,16 @@ from iris.store_registry import (
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
     camera_config_map,
+    create_role,
+    create_user,
+    delete_role,
     list_camera_configs,
     upsert_camera_config,
     add_employee_image,
     get_store_by_email,
     list_employees,
+    list_roles,
+    set_role_permissions,
     list_stores,
     parse_drive_folder_id,
     list_model_versions,
@@ -294,3 +299,40 @@ def test_model_registry_and_auto_rollback(tmp_path: Path) -> None:
     versions = list_model_versions(db_path=db, model_name="iris_customer_model")
     statuses = {v["model_id"]: v["status"] for v in versions}
     assert statuses[good_id] == "active"
+
+
+def test_delete_role_blocks_admin(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    ok, message = delete_role(db_path=db, role_name="admin")
+    assert ok is False
+    assert "protected" in message
+
+
+def test_delete_role_blocks_assigned_role(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    create_role(db_path=db, role_name="auditor", description="Audit role")
+    create_user(
+        db_path=db,
+        email="auditor.user@example.com",
+        full_name="Auditor User",
+        password="Secret123!",
+        role_names=["auditor"],
+    )
+    ok, message = delete_role(db_path=db, role_name="auditor")
+    assert ok is False
+    assert "assigned" in message
+
+
+def test_delete_role_removes_unassigned_role(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    create_role(db_path=db, role_name="auditor", description="Audit role")
+    set_role_permissions(
+        db_path=db,
+        role_name="auditor",
+        permissions=[("dashboard", 1, 0), ("stores", 1, 1)],
+    )
+    ok, message = delete_role(db_path=db, role_name="auditor")
+    assert ok is True
+    assert "deleted" in message
+    role_names = [x["role_name"] for x in list_roles(db)]
+    assert "auditor" not in role_names

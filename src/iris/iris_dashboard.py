@@ -14,6 +14,7 @@ from iris.store_registry import (
     camera_config_map,
     create_user_session,
     create_license,
+    delete_role,
     create_role,
     create_user,
     delete_employee,
@@ -30,6 +31,7 @@ from iris.store_registry import (
     list_employees,
     list_license_audit,
     list_licenses,
+    list_permission_codes,
     list_roles,
     list_store_master,
     list_stores,
@@ -263,6 +265,21 @@ def _permissions_frame(perms: dict[str, dict[str, bool]]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _parse_permission_blob(blob: str) -> dict[str, tuple[bool, bool]]:
+    parsed: dict[str, tuple[bool, bool]] = {}
+    if not blob:
+        return parsed
+    for token in str(blob).split("|"):
+        parts = [x.strip() for x in token.split(":")]
+        if len(parts) != 3:
+            continue
+        code = parts[0].lower()
+        read_ok = parts[1] == "1"
+        write_ok = parts[2] == "1"
+        parsed[code] = (read_ok, write_ok)
+    return parsed
 
 
 def _render_login_gate(db_path: Path) -> None:
@@ -1198,6 +1215,10 @@ def main() -> None:
         st.subheader("Auth / RBAC")
         st.caption(f"Active login: {active_email or '-'}")
         perms_df = _permissions_frame(active_perms)
+        role_rows = list_roles(db_path)
+        role_names = [str(row.get("role_name", "")).strip() for row in role_rows if str(row.get("role_name", "")).strip()]
+        permission_codes = list_permission_codes(db_path)
+        role_lookup = {str(row.get("role_name", "")).strip(): row for row in role_rows}
         if perms_df.empty:
             st.warning("No permissions mapped for this user.")
         else:
@@ -1213,34 +1234,131 @@ def main() -> None:
             u_name = st.text_input("Full name")
             u_pwd = st.text_input("Temp password", type="password", value="ChangeMe123!")
             u_store = st.text_input("Store scope (optional)")
-            u_roles = st.text_input("Roles (comma)", value="store_user")
+            default_roles = ["store_user"] if "store_user" in role_names else role_names[:1]
+            u_roles = st.multiselect(
+                "Assign roles",
+                options=role_names,
+                default=default_roles,
+                help="Roles available in this list are loaded from current RBAC setup.",
+            )
             if st.button("Create user"):
-                create_user(db_path, u_email, u_name, u_pwd, store_id=u_store, role_names=[x.strip() for x in u_roles.split(',') if x.strip()])
-                if active_email:
-                    log_user_activity(db_path=db_path, actor_email=active_email, action_code="CREATE_USER", store_id=u_store)
-                st.success("User created")
+                if not u_email.strip() or not u_name.strip() or not u_pwd.strip():
+                    st.error("Email, full name, and password are required.")
+                elif not u_roles:
+                    st.error("Select at least one role.")
+                else:
+                    try:
+                        create_user(
+                            db_path,
+                            u_email,
+                            u_name,
+                            u_pwd,
+                            store_id=u_store,
+                            role_names=u_roles,
+                        )
+                        if active_email:
+                            log_user_activity(
+                                db_path=db_path,
+                                actor_email=active_email,
+                                action_code="CREATE_USER",
+                                store_id=u_store,
+                            )
+                        st.success("User created")
+                    except Exception as exc:
+                        st.error(str(exc))
         with st.expander("Set user password"):
             p_email = st.text_input("User email for password reset")
             p_pwd = st.text_input("New password", type="password")
             if st.button("Set password"):
-                set_user_password(db_path, p_email, p_pwd)
-                if active_email:
-                    log_user_activity(db_path=db_path, actor_email=active_email, action_code="SET_PASSWORD")
-                st.success("Password updated")
-        with st.expander("Create role and permissions"):
-            r_name = st.text_input("Role name")
+                if not p_email.strip() or not p_pwd.strip():
+                    st.error("Email and password are required.")
+                else:
+                    set_user_password(db_path, p_email, p_pwd)
+                    if active_email:
+                        log_user_activity(
+                            db_path=db_path,
+                            actor_email=active_email,
+                            action_code="SET_PASSWORD",
+                        )
+                    st.success("Password updated")
+        with st.expander("Role management"):
+            st.markdown("**Create role**")
+            r_name = st.text_input("Role name (new)")
             r_desc = st.text_input("Role description")
             if st.button("Create role"):
-                create_role(db_path, r_name, r_desc)
-                st.success("Role created")
-            perm_text = st.text_area("Permissions (permission,read,write per line)", value="dashboard,1,0")
-            if st.button("Save role permissions"):
-                rows=[]
-                for ln in perm_text.splitlines():
-                    parts=[x.strip() for x in ln.split(',')]
-                    if len(parts)==3: rows.append((parts[0], int(parts[1]), int(parts[2])))
-                set_role_permissions(db_path, r_name, rows)
-                st.success("Role permissions saved")
+                if not r_name.strip():
+                    st.error("Role name is required.")
+                else:
+                    create_role(db_path, r_name, r_desc)
+                    st.success("Role created")
+                    st.rerun()
+
+            st.markdown("**Set permissions (tick Read/Write)**")
+            if not role_names:
+                st.caption("No roles found.")
+            else:
+                selected_perm_role = st.selectbox(
+                    "Role for permission setup",
+                    options=role_names,
+                    key="rbac_permission_role_select",
+                )
+                selected_blob = str(role_lookup[selected_perm_role].get("permissions", ""))
+                selected_map = _parse_permission_blob(selected_blob)
+                for code in permission_codes:
+                    read_default, write_default = selected_map.get(code, (False, False))
+                    role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
+                    read_key = f"rbac_{role_key}_{code}_read"
+                    write_key = f"rbac_{role_key}_{code}_write"
+                    cols_perm = st.columns([1.6, 0.7, 0.7])
+                    cols_perm[0].markdown(f"`{code}`")
+                    cols_perm[1].checkbox("Read", key=read_key, value=read_default)
+                    cols_perm[2].checkbox("Write", key=write_key, value=write_default)
+
+                if st.button("Save role permissions"):
+                    rows: list[tuple[str, int, int]] = []
+                    role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
+                    for code in permission_codes:
+                        read_key = f"rbac_{role_key}_{code}_read"
+                        write_key = f"rbac_{role_key}_{code}_write"
+                        read_flag = 1 if st.session_state.get(read_key, False) else 0
+                        write_flag = 1 if st.session_state.get(write_key, False) else 0
+                        rows.append((code, read_flag, write_flag))
+                    set_role_permissions(db_path, selected_perm_role, rows)
+                    if active_email:
+                        log_user_activity(
+                            db_path=db_path,
+                            actor_email=active_email,
+                            action_code="SET_ROLE_PERMISSIONS",
+                        )
+                    st.success("Role permissions saved")
+                    st.rerun()
+
+                st.markdown("**Delete role**")
+                delete_role_name = st.selectbox(
+                    "Role to delete",
+                    options=role_names,
+                    key="rbac_delete_role_select",
+                )
+                confirm_role_delete = st.checkbox(
+                    "Confirm role deletion",
+                    key="rbac_confirm_role_delete",
+                )
+                if st.button("Delete selected role"):
+                    if not confirm_role_delete:
+                        st.warning("Tick confirm role deletion first.")
+                    else:
+                        ok, message = delete_role(db_path=db_path, role_name=delete_role_name)
+                        if ok:
+                            if active_email:
+                                log_user_activity(
+                                    db_path=db_path,
+                                    actor_email=active_email,
+                                    action_code="DELETE_ROLE",
+                                )
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.warning(message)
         st.dataframe(pd.DataFrame(list_users(db_path)), use_container_width=True)
         st.dataframe(pd.DataFrame(list_roles(db_path)), use_container_width=True)
 
