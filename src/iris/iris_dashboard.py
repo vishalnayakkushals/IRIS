@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import os
@@ -253,15 +254,16 @@ header[data-testid="stHeader"] {{height: 0.1rem;}}
     background: {surface};
     border: 1px solid #d7dee8;
     border-radius: 8px;
-    padding: 0.4rem 0.65rem;
+    padding: 0.35rem 0.55rem;
     margin: 0 0 0.3rem 0;
     display: flex;
     align-items: center;
     gap: 0.6rem;
+    min-height: 56px;
 }}
 .iris-brand-fallback {{
-    width: 40px;
-    height: 40px;
+    width: 42px;
+    height: 42px;
     border-radius: 8px;
     background: {nav};
     color: #ffffff;
@@ -277,6 +279,15 @@ header[data-testid="stHeader"] {{height: 0.1rem;}}
     letter-spacing: 0.02rem;
     color: #1d2d3f;
 }}
+.iris-header-logo {{
+    width: 42px;
+    height: 42px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    padding: 2px;
+}}
 .iris-nav .iris-menu {{background: {nav};}}
 .iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {{background: {accent};}}
 div[data-testid="stWidgetLabel"] p {{
@@ -288,6 +299,46 @@ div[data-testid="stWidgetLabel"] p {{
     )
 
 
+def _resolve_logo_file(logo_path: str) -> Path | None:
+    raw = str(logo_path or "").strip()
+    if not raw:
+        return None
+    app_root = Path(__file__).resolve().parents[2]
+    candidates: list[Path] = []
+    p = Path(raw).expanduser()
+    candidates.append(p)
+    if not p.is_absolute():
+        candidates.append((app_root / p).resolve())
+    # If absolute path is stale (e.g., moved local->docker), recover by basename from branding dir.
+    candidates.append(app_root / "data" / "branding" / Path(raw).name)
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _logo_data_uri(logo_file: Path | None) -> str:
+    if logo_file is None:
+        return ""
+    try:
+        suffix = logo_file.suffix.lower()
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+            ".gif": "image/gif",
+        }.get(suffix, "image/png")
+        data = base64.b64encode(logo_file.read_bytes()).decode("ascii")
+        return f"data:{mime};base64,{data}"
+    except Exception:
+        return ""
+
+
 def _render_header_bar(
     app_name: str,
     logo_path: str,
@@ -297,18 +348,31 @@ def _render_header_bar(
     db_path: Path,
     auth_token: str,
 ) -> str:
-    header_cols = st.columns([4, 2], gap="small")
+    app_label = (str(app_name or "").strip() or "IRIS")[:60]
+    header_cols = st.columns([5, 2], gap="small")
     with header_cols[0]:
-        inner = st.columns([1, 8], gap="small")
-        logo_file = Path(logo_path).expanduser() if logo_path.strip() else None
-        if logo_file and logo_file.exists():
-            inner[0].image(str(logo_file), width=40)
+        logo_file = _resolve_logo_file(logo_path=logo_path)
+        logo_uri = _logo_data_uri(logo_file)
+        if logo_uri:
+            st.markdown(
+                (
+                    '<div class="iris-header">'
+                    f'<img class="iris-header-logo" src="{logo_uri}" alt="logo" />'
+                    f'<div class="iris-app-name">{html.escape(app_label)}</div>'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
         else:
-            inner[0].markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
-        inner[1].markdown(
-            f'<div class="iris-app-name">{html.escape(app_name)}</div>',
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                (
+                    '<div class="iris-header">'
+                    '<div class="iris-brand-fallback">IR</div>'
+                    f'<div class="iris-app-name">{html.escape(app_label)}</div>'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
     with header_cols[1]:
         with st.expander("👤 Profile", expanded=False):
             display_name = active_full_name.strip() or active_email.strip() or "User"
