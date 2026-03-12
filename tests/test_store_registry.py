@@ -9,8 +9,10 @@ from PIL import Image
 from iris.store_registry import (
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
+    detect_source_provider,
     ensure_store_login,
     camera_config_map,
+    list_synced_stores,
     list_user_store_access,
     replace_user_store_access,
     create_role,
@@ -26,6 +28,7 @@ from iris.store_registry import (
     set_role_permissions,
     list_stores,
     parse_drive_folder_id,
+    sync_store_from_drive,
     list_model_versions,
     maybe_auto_rollback_model,
     promote_model_version,
@@ -416,3 +419,57 @@ def test_replace_user_store_access_overwrites_previous_mapping(tmp_path: Path) -
     rows = list_user_store_access(db_path=db, email="manager@example.com")
     assert len(rows) == 1
     assert rows[0]["store_id"] == "S002"
+
+
+def test_detect_source_provider_supports_gdrive_s3_local(tmp_path: Path) -> None:
+    local_dir = tmp_path / "images"
+    local_dir.mkdir(parents=True)
+    assert detect_source_provider("https://drive.google.com/drive/folders/abc123") == "gdrive"
+    assert detect_source_provider("s3://my-bucket/store-a") == "s3"
+    assert detect_source_provider(str(local_dir)) == "local"
+
+
+def test_list_synced_stores_can_filter_by_provider(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "registry.db"
+    data_root = tmp_path / "stores"
+    local_source = tmp_path / "local_src"
+    local_source.mkdir(parents=True)
+    Image.new("RGB", (16, 16), color=(120, 90, 60)).save(local_source / "09-00-00_D01-1.jpg")
+
+    upsert_store(
+        db_path=db,
+        store_id="LOCAL1",
+        store_name="Local Store",
+        email="local@example.com",
+        drive_folder_url=str(local_source),
+    )
+    local_store = [s for s in list_stores(db) if s.store_id == "LOCAL1"][0]
+    ok_local, _ = sync_store_from_drive(local_store, data_root=data_root, db_path=db)
+    assert ok_local is True
+
+    upsert_store(
+        db_path=db,
+        store_id="GDRIVE1",
+        store_name="Drive Store",
+        email="drive@example.com",
+        drive_folder_url="https://drive.google.com/drive/folders/f123",
+    )
+    drive_store = [s for s in list_stores(db) if s.store_id == "GDRIVE1"][0]
+
+    class _FakeGdown:
+        @staticmethod
+        def download_folder(url: str, output: str, quiet: bool, remaining_ok: bool) -> None:
+            out = Path(output)
+            out.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (16, 16), color=(100, 80, 70)).save(out / "09-00-00_D01-1.jpg")
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "gdown", _FakeGdown)
+    ok_drive, _ = sync_store_from_drive(drive_store, data_root=data_root, db_path=db)
+    assert ok_drive is True
+
+    only_gdrive = list_synced_stores(db_path=db, provider_filter="gdrive")
+    only_local = list_synced_stores(db_path=db, provider_filter="local")
+    assert [r["store_id"] for r in only_gdrive] == ["GDRIVE1"]
+    assert [r["store_id"] for r in only_local] == ["LOCAL1"]

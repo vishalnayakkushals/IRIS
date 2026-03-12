@@ -20,6 +20,12 @@ from PIL import Image
 import requests
 
 DRIVE_FOLDER_ID_PATTERN = re.compile(r"/folders/([a-zA-Z0-9_-]+)")
+S3_BUCKET_URL_PATTERN = re.compile(
+    r"^https?://(?P<bucket>[a-zA-Z0-9.\-_]+)\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com/(?P<prefix>.*)$"
+)
+S3_PATH_URL_PATTERN = re.compile(
+    r"^https?://s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com/(?P<bucket>[a-zA-Z0-9.\-_]+)/(?P<prefix>.*)$"
+)
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_PERMISSION_CODES = ("config", "dashboard", "licenses", "roles", "stores", "users")
 
@@ -146,6 +152,18 @@ def init_db(db_path: Path) -> None:
                 store_email TEXT,
                 cluster_manager TEXT,
                 area_manager TEXT,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS store_sync_state (
+                store_id TEXT PRIMARY KEY,
+                source_provider TEXT NOT NULL DEFAULT 'none',
+                source_uri TEXT NOT NULL DEFAULT '',
+                last_status TEXT NOT NULL DEFAULT 'never',
+                synced_files INTEGER NOT NULL DEFAULT 0,
+                last_message TEXT NOT NULL DEFAULT '',
+                last_sync_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
             )
         """)
@@ -1345,6 +1363,82 @@ def list_stores(db_path: Path) -> list[StoreRecord]:
         conn.close()
 
 
+def _upsert_store_sync_state(
+    db_path: Path,
+    store_id: str,
+    source_provider: str,
+    source_uri: str,
+    ok: bool,
+    synced_files: int,
+    message: str,
+) -> None:
+    init_db(db_path)
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO store_sync_state(
+                store_id,source_provider,source_uri,last_status,synced_files,last_message,last_sync_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(store_id) DO UPDATE SET
+                source_provider=excluded.source_provider,
+                source_uri=excluded.source_uri,
+                last_status=excluded.last_status,
+                synced_files=excluded.synced_files,
+                last_message=excluded.last_message,
+                last_sync_at=excluded.last_sync_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                store_id.strip(),
+                source_provider.strip(),
+                source_uri.strip(),
+                "ok" if ok else "failed",
+                int(synced_files),
+                message.strip(),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_synced_stores(db_path: Path, provider_filter: str | None = "gdrive") -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        query = (
+            "SELECT s.store_id,s.store_name,s.email,s.drive_folder_url,s.created_at,s.updated_at,"
+            "ss.source_provider,ss.last_status,ss.synced_files,ss.last_message,ss.last_sync_at "
+            "FROM stores s JOIN store_sync_state ss ON ss.store_id=s.store_id WHERE ss.last_status='ok'"
+        )
+        params: list[Any] = []
+        if provider_filter:
+            query += " AND lower(ss.source_provider)=lower(?)"
+            params.append(provider_filter.strip())
+        query += " ORDER BY s.store_id"
+        rows = conn.execute(query, tuple(params)).fetchall()
+        cols = [
+            "store_id",
+            "store_name",
+            "email",
+            "source_url",
+            "created_at",
+            "updated_at",
+            "source_provider",
+            "last_status",
+            "synced_files",
+            "last_message",
+            "last_sync_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_store_by_email(db_path: Path, email: str) -> StoreRecord | None:
     init_db(db_path)
     conn=sqlite3.connect(db_path)
@@ -1531,6 +1625,45 @@ def parse_drive_folder_id(drive_folder_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def parse_s3_location(source_uri: str) -> tuple[str, str] | None:
+    text = (source_uri or "").strip()
+    if not text:
+        return None
+    if text.lower().startswith("s3://"):
+        parsed = re.match(r"^s3://([^/]+)/?(.*)$", text)
+        if not parsed:
+            return None
+        return str(parsed.group(1)).strip(), str(parsed.group(2)).strip().lstrip("/")
+    m = S3_BUCKET_URL_PATTERN.match(text)
+    if m:
+        return m.group("bucket"), m.group("prefix").lstrip("/")
+    m = S3_PATH_URL_PATTERN.match(text)
+    if m:
+        return m.group("bucket"), m.group("prefix").lstrip("/")
+    return None
+
+
+def _normalize_local_source(source_uri: str) -> Path:
+    text = (source_uri or "").strip()
+    if text.lower().startswith("file://"):
+        text = text[7:]
+    return Path(text).expanduser()
+
+
+def detect_source_provider(source_uri: str) -> str:
+    text = (source_uri or "").strip()
+    if not text:
+        return "none"
+    if parse_drive_folder_id(text):
+        return "gdrive"
+    if parse_s3_location(text):
+        return "s3"
+    p = _normalize_local_source(text)
+    if p.exists():
+        return "local"
+    return "unknown"
+
+
 def ensure_store_snapshot_dir(data_root: Path, store_id: str) -> Path:
     target = data_root / store_id
     target.mkdir(parents=True, exist_ok=True)
@@ -1636,36 +1769,134 @@ def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: st
         return False, f"{store.store_id}: Drive API sync failed ({exc})"
 
 
-def sync_store_from_drive(store: StoreRecord, data_root: Path) -> tuple[bool, str]:
-    if not store.drive_folder_url.strip():
-        return False, f"{store.store_id}: no drive folder URL configured"
-    folder_id=parse_drive_folder_id(store.drive_folder_url)
-    if folder_id is None:
-        return False, f"{store.store_id}: invalid Google Drive folder URL"
-    target_dir=ensure_store_snapshot_dir(data_root=data_root, store_id=store.store_id)
-    api_key=os.getenv("GOOGLE_API_KEY","").strip()
-    if api_key:
-        ok,msg=_sync_store_from_drive_api(store=store, target_dir=target_dir, api_key=api_key)
-        if ok: return ok,msg
+def _sync_store_from_s3_uri(store: StoreRecord, target_dir: Path) -> tuple[bool, str, int]:
+    parsed = parse_s3_location(store.drive_folder_url)
+    if parsed is None:
+        return False, f"{store.store_id}: invalid S3 source URL", 0
+    bucket, prefix = parsed
     try:
-        import gdown  # type: ignore
+        import boto3  # type: ignore
     except Exception as exc:
-        return False, f"{store.store_id}: gdown not available ({exc})"
+        return False, f"{store.store_id}: boto3 not available ({exc})", 0
+
     try:
-        gdown.download_folder(url=store.drive_folder_url, output=str(target_dir), quiet=True, remaining_ok=True)
-        processed,failed=optimize_store_image_files(target_dir)
-        if not api_key:
-            return True, f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed} (tip: set GOOGLE_API_KEY to bypass 50-file gdown limit)"
-        return True, f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed}"
+        client = boto3.client("s3")
+        paginator = client.get_paginator("list_objects_v2")
+        downloaded = 0
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = str(obj.get("Key", "")).strip()
+                if not key or key.endswith("/"):
+                    continue
+                if Path(key).suffix.lower() not in _IMAGE_EXTS:
+                    continue
+                rel = key[len(prefix):].lstrip("/") if prefix and key.startswith(prefix) else Path(key).name
+                dest = target_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                client.download_file(bucket, key, str(dest))
+                downloaded += 1
+        processed, failed = optimize_store_image_files(target_dir)
+        return True, (
+            f"{store.store_id}: s3_sync bucket={bucket} downloaded={downloaded} "
+            f"optimized={processed} failed={failed} dir={target_dir}"
+        ), downloaded
     except Exception as exc:
-        error_text = str(exc)
-        if "Expecting value" in error_text:
-            return False, (
-                f"{store.store_id}: sync failed because Drive returned non-JSON content. "
-                "Please ensure folder is shared as 'Anyone with the link (Viewer)' and "
-                "configure GOOGLE_API_KEY for reliable Drive API sync."
-            )
-        return False, f"{store.store_id}: sync failed ({exc}). Set GOOGLE_API_KEY for full Drive API sync support on large folders."
+        return False, f"{store.store_id}: S3 sync failed ({exc})", 0
+
+
+def _sync_store_from_local_path(store: StoreRecord, target_dir: Path) -> tuple[bool, str, int]:
+    source = _normalize_local_source(store.drive_folder_url)
+    if not source.exists():
+        return False, f"{store.store_id}: local source not found ({source})", 0
+    downloaded = 0
+    for path in source.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        rel = path.relative_to(source)
+        dest = target_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(path.read_bytes())
+        downloaded += 1
+    processed, failed = optimize_store_image_files(target_dir)
+    return True, (
+        f"{store.store_id}: local_sync copied={downloaded} "
+        f"optimized={processed} failed={failed} dir={target_dir}"
+    ), downloaded
+
+
+def sync_store_from_source(store: StoreRecord, data_root: Path, db_path: Path | None = None) -> tuple[bool, str]:
+    source_uri = (store.drive_folder_url or "").strip()
+    provider = detect_source_provider(source_uri)
+    target_dir = ensure_store_snapshot_dir(data_root=data_root, store_id=store.store_id)
+    ok = False
+    msg = f"{store.store_id}: no source URL configured"
+    synced_files = 0
+
+    if provider == "gdrive":
+        api_key=os.getenv("GOOGLE_API_KEY","").strip()
+        if api_key:
+            ok,msg=_sync_store_from_drive_api(store=store, target_dir=target_dir, api_key=api_key)
+            if ok:
+                synced_files = len([p for p in target_dir.rglob("*") if p.is_file() and p.suffix.lower() in _IMAGE_EXTS])
+        if not ok:
+            try:
+                import gdown  # type: ignore
+            except Exception as exc:
+                msg = f"{store.store_id}: gdown not available ({exc})"
+            else:
+                try:
+                    gdown.download_folder(url=store.drive_folder_url, output=str(target_dir), quiet=True, remaining_ok=True)
+                    processed,failed=optimize_store_image_files(target_dir)
+                    synced_files = len([p for p in target_dir.rglob("*") if p.is_file() and p.suffix.lower() in _IMAGE_EXTS])
+                    ok = True
+                    if not api_key:
+                        msg = (
+                            f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed} "
+                            "(tip: set GOOGLE_API_KEY to bypass 50-file gdown limit)"
+                        )
+                    else:
+                        msg = f"{store.store_id}: synced snapshots into {target_dir} | optimized={processed} failed={failed}"
+                except Exception as exc:
+                    error_text = str(exc)
+                    if "Expecting value" in error_text:
+                        msg = (
+                            f"{store.store_id}: sync failed because Drive returned non-JSON content. "
+                            "Please ensure folder is shared as 'Anyone with the link (Viewer)' and "
+                            "configure GOOGLE_API_KEY for reliable Drive API sync."
+                        )
+                    else:
+                        msg = (
+                            f"{store.store_id}: sync failed ({exc}). "
+                            "Set GOOGLE_API_KEY for full Drive API sync support on large folders."
+                        )
+    elif provider == "s3":
+        ok, msg, synced_files = _sync_store_from_s3_uri(store=store, target_dir=target_dir)
+    elif provider == "local":
+        ok, msg, synced_files = _sync_store_from_local_path(store=store, target_dir=target_dir)
+    elif provider == "none":
+        msg = f"{store.store_id}: no source URL configured"
+    else:
+        msg = (
+            f"{store.store_id}: unsupported source URL. "
+            "Supported: Google Drive folder URL, s3://bucket/prefix (or S3 HTTPS), local folder path."
+        )
+
+    if db_path is not None:
+        _upsert_store_sync_state(
+            db_path=db_path,
+            store_id=store.store_id,
+            source_provider=provider,
+            source_uri=source_uri,
+            ok=ok,
+            synced_files=synced_files,
+            message=msg,
+        )
+    return ok, msg
+
+
+def sync_store_from_drive(store: StoreRecord, data_root: Path, db_path: Path | None = None) -> tuple[bool, str]:
+    # Backward-compatible name. Supports Google Drive + AWS S3 + local path sources.
+    return sync_store_from_source(store=store, data_root=data_root, db_path=db_path)
 
 
 def log_user_activity(db_path: Path, actor_email: str, action_code: str, store_id: str = "", payload_json: str = "{}") -> None:

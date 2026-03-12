@@ -32,6 +32,7 @@ from iris.store_registry import (
     get_store_by_email,
     init_db,
     list_alert_routes,
+    list_synced_stores,
     list_qa_feedback,
     list_user_activity,
     log_user_activity,
@@ -47,6 +48,7 @@ from iris.store_registry import (
     revoke_user_session,
     route_alert,
     authenticate_user,
+    detect_source_provider,
     set_employee_active,
     set_role_permissions,
     set_user_password,
@@ -1298,10 +1300,20 @@ def _render_store_admin(
     db_path: Path, data_root: Path, employee_assets_root: Path, auto_sync_after_save: bool
 ) -> None:
     st.subheader("Store Registry")
+    synced_gdrive = list_synced_stores(db_path=db_path, provider_filter="gdrive")
     stores = list_stores(db_path)
-    if stores:
-        store_df = pd.DataFrame([store.__dict__ for store in stores])
-        st.dataframe(store_df, use_container_width=True)
+    if synced_gdrive:
+        st.markdown("**Registered Stores (Synced to Google Drive)**")
+        st.dataframe(pd.DataFrame(synced_gdrive), use_container_width=True)
+        with st.expander("Show all mapped stores"):
+            all_df = pd.DataFrame([store.__dict__ for store in stores])
+            all_df["source_provider"] = all_df["drive_folder_url"].map(detect_source_provider)
+            st.dataframe(all_df, use_container_width=True)
+    elif stores:
+        st.info("No Google Drive store has completed sync yet.")
+        all_df = pd.DataFrame([store.__dict__ for store in stores])
+        all_df["source_provider"] = all_df["drive_folder_url"].map(detect_source_provider)
+        st.dataframe(all_df, use_container_width=True)
     else:
         st.info("No stores registered yet.")
 
@@ -1310,7 +1322,14 @@ def _render_store_admin(
         store_id = st.text_input("Store ID (unique)", value="")
         store_name = st.text_input("Store Name", value="")
         email = st.text_input("Store Email", value="")
-        drive_folder_url = st.text_input("Google Drive Folder URL", value="")
+        drive_folder_url = st.text_input(
+            "Source URL",
+            value="",
+            help=(
+                "Supported: Google Drive folder URL, s3://bucket/prefix, "
+                "S3 HTTPS URL, or local folder path."
+            ),
+        )
         submitted = st.form_submit_button("Save Store")
 
     if submitted:
@@ -1330,7 +1349,7 @@ def _render_store_admin(
                 if auto_sync_after_save and drive_folder_url.strip():
                     matched = [s for s in list_stores(db_path) if s.store_id == store_id.strip()]
                     if matched:
-                        ok, message = sync_store_from_drive(matched[0], data_root=data_root)
+                        ok, message = sync_store_from_drive(matched[0], data_root=data_root, db_path=db_path)
                         if ok:
                             st.info(message)
                         else:
@@ -1338,7 +1357,7 @@ def _render_store_admin(
             except Exception as exc:
                 st.error(str(exc))
 
-    st.markdown("**Sync Store Snapshots From Drive**")
+    st.markdown("**Sync Store Snapshots From Source**")
     stores = list_stores(db_path)
     if stores:
         sync_store_id = st.selectbox(
@@ -1348,13 +1367,13 @@ def _render_store_admin(
         )
         if st.button("Sync Selected Store", key="sync_selected_store_button"):
             store_record = [s for s in stores if s.store_id == sync_store_id][0]
-            ok, message = sync_store_from_drive(store_record, data_root=data_root)
+            ok, message = sync_store_from_drive(store_record, data_root=data_root, db_path=db_path)
             if ok:
                 st.success(message)
             else:
                 st.warning(message)
     else:
-        st.caption("Create a store first to sync from Google Drive.")
+        st.caption("Create a store first to sync from source.")
 
     st.subheader("Employee Image Upload")
     st.markdown("---")
@@ -1460,7 +1479,9 @@ def _render_store_mapping(
     active_email: str,
 ) -> None:
     st.subheader("Store Mapping")
-    st.caption("On save, store login is auto-created using Store Email + default password from Organisation settings.")
+    st.caption(
+        "On save, store login is auto-created using Store Email + default password from Organisation settings."
+    )
     stores = list_stores(db_path)
     if "map_store_id" not in st.session_state:
         st.session_state["map_store_id"] = ""
@@ -1484,7 +1505,7 @@ def _render_store_mapping(
         "Edit Existing Store (optional)",
         options=edit_ids,
         key="map_edit_store_select",
-        help="Select a store to auto-fill Store Name, Store Email, and current Drive link.",
+        help="Select a store to auto-fill Store Name, Store Email, and current source URL.",
     )
     if selected_edit and selected_edit != st.session_state.get("map_store_id", ""):
         st.session_state["map_store_id"] = selected_edit
@@ -1496,18 +1517,25 @@ def _render_store_mapping(
 
     st.text_input("Store Name", key="map_store_name")
     st.text_input("Store Email", key="map_store_email")
-    st.text_input("Google Drive Folder URL", key="map_drive_url")
+    st.text_input(
+        "Source URL",
+        key="map_drive_url",
+        help=(
+            "Supported: Google Drive folder URL, s3://bucket/prefix, "
+            "S3 HTTPS URL, or local folder path."
+        ),
+    )
 
     existing_drive = st.session_state.get("map_existing_drive_url", "").strip()
     new_drive = st.session_state.get("map_drive_url", "").strip()
     drive_changed = bool(existing_drive and new_drive and existing_drive != new_drive)
     if existing_drive:
-        st.caption(f"Current Drive URL: {existing_drive}")
+        st.caption(f"Current Source URL: {existing_drive}")
     if drive_changed:
         st.checkbox(
-            "Replace existing Drive link for this store",
+            "Replace existing source URL for this store",
             key="map_replace_drive_url",
-            help="Required when updating an existing store to a different Drive link.",
+            help="Required when updating an existing store to a different source URL.",
         )
 
     save_cols = st.columns([1, 1, 2])
@@ -1554,7 +1582,7 @@ def _render_store_mapping(
             if auto_sync_after_save and sdrive:
                 matched = [s for s in list_stores(db_path) if s.store_id == sid]
                 if matched:
-                    ok, message = sync_store_from_drive(matched[0], data_root=data_root)
+                    ok, message = sync_store_from_drive(matched[0], data_root=data_root, db_path=db_path)
                     if ok:
                         st.info(message)
                     else:
@@ -1566,15 +1594,23 @@ def _render_store_mapping(
         if not sid or not matched:
             st.warning("Select a valid store first.")
         else:
-            ok, message = sync_store_from_drive(matched[0], data_root=data_root)
+            ok, message = sync_store_from_drive(matched[0], data_root=data_root, db_path=db_path)
             if ok:
                 st.success(message)
             else:
                 st.warning(message)
 
     if stores:
-        st.markdown("**Registered Stores**")
-        st.dataframe(pd.DataFrame([s.__dict__ for s in stores]), use_container_width=True)
+        synced_gdrive = list_synced_stores(db_path=db_path, provider_filter="gdrive")
+        if synced_gdrive:
+            st.markdown("**Registered Stores (Synced to Google Drive)**")
+            st.dataframe(pd.DataFrame(synced_gdrive), use_container_width=True)
+        else:
+            st.info("No Google Drive store has completed sync yet.")
+        with st.expander("Show all mapped stores"):
+            all_df = pd.DataFrame([s.__dict__ for s in stores])
+            all_df["source_provider"] = all_df["drive_folder_url"].map(detect_source_provider)
+            st.dataframe(all_df, use_container_width=True)
     else:
         st.info("No stores registered yet.")
 
@@ -2205,7 +2241,7 @@ def _render_setup_help() -> None:
     st.markdown(
         """
 ### Recommended Access Setup
-1. `Operations > Store Mapping`: create store, email, drive link.
+1. `Operations > Store Mapping`: create store, email, source URL (Google Drive/S3/local).
 2. Store login is auto-created using Organisation Default User Password.
 3. `Access > Store Access Mapping`: map CM/AM emails to stores.
 4. `Access > Password Manager`: set final passwords.
@@ -2306,11 +2342,11 @@ def _render_pipeline_configuration_controls() -> bool:
             help="Keep normal `.csv` files along with gzip exports.",
         )
         ctrl_cols_3[3].selectbox(
-            "Auto-Sync Drives",
+            "Auto-Sync Sources",
             options=["Yes", "No"],
             index=0 if bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)) else 1,
             key="cfg_auto_sync_drives_select",
-            help="Sync mapped Drive folders before analysis.",
+            help="Sync mapped source URLs (Drive/S3/local) before analysis.",
         )
         ctrl_cols_3[4].selectbox(
             "Auto-Sync On Save",
@@ -2443,10 +2479,10 @@ def main() -> None:
             if auto_sync_linked_drives:
                 sync_messages: list[str] = []
                 for store in list_stores(db_path):
-                    ok, message = sync_store_from_drive(store, data_root=root_dir)
+                    ok, message = sync_store_from_drive(store, data_root=root_dir, db_path=db_path)
                     sync_messages.append(("OK: " if ok else "WARN: ") + message)
                 if sync_messages:
-                    st.caption("Drive sync status:")
+                    st.caption("Source sync status:")
                     for message in sync_messages:
                         st.write(f"- {message}")
             cfg_map_obj = camera_config_map(db_path=db_path)
