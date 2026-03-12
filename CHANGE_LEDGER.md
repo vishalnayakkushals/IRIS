@@ -97,7 +97,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-12 | Commit pending
+### 2026-03-12 | Commit eb95afc
 - Summary:
   - Fixed store drill-down proof validation by adding clickable image hyperlinks and robust path resolution for Docker/local path differences.
 - Changed Paths:
