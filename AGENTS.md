@@ -1,9 +1,14 @@
 # IRIS Agent Workflow
 
 ## Source of Truth
-- Primary repository path: `C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS`
+- Primary repository path: `C:\Users\Kushals.DESKTOP-D51MT8S\Documents\VSCode\IRIS`
 - GitHub repository: `https://github.com/vishalnayakkushals/IRIS`
 - Default branch: `main`
+
+## Mandatory Change Tracking
+- Every code change must update `CHANGE_LEDGER.md` before push.
+- If a new module/file is introduced, add it to the `Module Registry` section in `CHANGE_LEDGER.md`.
+- The ledger entry must list exact touched paths and a short behavior summary.
 
 ## Required Working Style
 - Apply code changes locally in the canonical path.
