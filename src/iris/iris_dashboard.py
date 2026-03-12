@@ -677,6 +677,43 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _resolve_row_image_path(row: pd.Series, store_id: str, root_dir: Path) -> Path | None:
+    # 1) Try stored absolute path first.
+    raw_path = str(row.get("path", "") or "").strip()
+    if raw_path:
+        p = Path(raw_path)
+        if p.exists() and p.is_file():
+            return p
+    # 2) Use exported relative path if present.
+    rel = str(row.get("relative_path", "") or "").strip().replace("\\", "/")
+    if rel:
+        p = (root_dir / store_id / rel).resolve()
+        if p.exists() and p.is_file():
+            return p
+    # 3) Reconstruct from source_folder + filename.
+    source_folder = str(row.get("source_folder", "") or "").strip().replace("\\", "/")
+    filename = str(row.get("filename", "") or "").strip()
+    if filename:
+        if source_folder:
+            p = (root_dir / store_id / source_folder / filename).resolve()
+        else:
+            p = (root_dir / store_id / filename).resolve()
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def _row_image_hyperlink(row: pd.Series, store_id: str, root_dir: Path) -> str:
+    drive_link = str(row.get("drive_link", "") or "").strip()
+    if drive_link:
+        return drive_link
+    # Fallback to file URI only when local file exists.
+    resolved = _resolve_row_image_path(row=row, store_id=store_id, root_dir=root_dir)
+    if resolved is None:
+        return ""
+    return resolved.as_uri()
+
+
 def _predicted_label(row: pd.Series) -> str:
     person_count = int(row.get("person_count", 0) or 0)
     staff_count = int(row.get("staff_count", 0) or 0)
@@ -850,7 +887,7 @@ def _render_overview(output: AnalysisOutput) -> None:
         )
 
 
-def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> None:
+def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_dir: Path) -> None:
     st.subheader("Store Drill-down")
     store_ids = sorted(output.stores.keys())
     if not store_ids:
@@ -955,11 +992,17 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
         proof_frames = image_df[image_df["capture_date"].astype(str) == str(selected_date)].copy()
         if not proof_frames.empty:
             st.markdown("**Frame-Level Proof for Selected Date**")
+            proof_frames = proof_frames.sort_values("timestamp").copy()
+            proof_frames["image_url"] = proof_frames.apply(
+                lambda r: _row_image_hyperlink(r, store_id=selected_store, root_dir=root_dir),
+                axis=1,
+            )
             proof_columns = [
                 "capture_date",
                 "source_folder",
                 "timestamp",
                 "filename",
+                "image_url",
                 "camera_id",
                 "person_count",
                 "relevant",
@@ -968,7 +1011,35 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
                 "customer_ids",
                 "detection_error",
             ]
-            st.dataframe(proof_frames[proof_columns].sort_values("timestamp"), use_container_width=True, hide_index=True)
+            try:
+                st.dataframe(
+                    proof_frames[proof_columns],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "image_url": st.column_config.LinkColumn(
+                            "Filename Link",
+                            help="Open frame image for customer-id validation.",
+                            display_text="Open",
+                        ),
+                    },
+                )
+            except Exception:
+                st.dataframe(proof_frames[proof_columns], use_container_width=True, hide_index=True)
+
+            # Explicit filename hyperlinks similar to spreadsheet hyperlink behavior.
+            link_rows = proof_frames[proof_frames["image_url"].astype(str).str.strip() != ""].copy()
+            if not link_rows.empty:
+                st.markdown("**Filename Hyperlinks**")
+                link_rows = link_rows[["timestamp", "camera_id", "filename", "image_url"]].head(500)
+                link_rows["filename"] = link_rows.apply(
+                    lambda r: (
+                        f'<a href="{html.escape(str(r["image_url"]))}" target="_blank">'
+                        f'{html.escape(str(r["filename"]))}</a>'
+                    ),
+                    axis=1,
+                )
+                st.markdown(link_rows.to_html(index=False, escape=False), unsafe_allow_html=True)
 
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")
@@ -1068,11 +1139,17 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
             f"people={row_image.get('person_count', 0)}"
         )
         with col:
-            image_path = row_image.get("path", "")
-            if image_path:
-                st.image(image_path, caption=caption, use_container_width=True)
+            resolved = _resolve_row_image_path(row=row_image, store_id=selected_store, root_dir=root_dir)
+            if resolved is not None:
+                try:
+                    st.image(str(resolved), caption=caption, use_container_width=True)
+                except Exception:
+                    st.caption(caption)
             else:
                 st.caption(caption)
+            link = str(row_image.get("drive_link", "") or "").strip()
+            if link:
+                st.markdown(f"[{row_image.get('filename', 'Open image')}]({link})")
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str) -> None:
@@ -2676,7 +2753,7 @@ def main() -> None:
     elif current_page == "Setup Help":
         _render_setup_help()
     elif current_page == "Store Detail":
-        _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
+        _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes, root_dir=root_dir)
     elif current_page == "Quality":
         _render_quality_summary(view_output)
     elif current_page == "Customer Journeys":

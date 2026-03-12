@@ -96,3 +96,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-12 | Commit pending
+- Summary:
+  - Fixed store drill-down proof validation by adding clickable image hyperlinks and robust path resolution for Docker/local path differences.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
