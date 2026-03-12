@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
+import re
 from urllib.parse import quote
 
 import pandas as pd
@@ -20,6 +21,7 @@ from iris.store_registry import (
     delete_employee,
     delete_store,
     ensure_default_admins,
+    get_app_settings,
     get_store_master_by_id,
     get_user_by_session_token,
     get_store_by_email,
@@ -47,21 +49,32 @@ from iris.store_registry import (
     upsert_alert_route,
     upsert_camera_config,
     upsert_store,
+    upsert_app_settings,
     upsert_store_master_rows,
     user_permissions,
+    user_role_names,
 )
 
 NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Reports": {
         "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline"],
     },
+    "Access": {
+        "Administration": ["Organisation", "Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
+    },
     "Operations": {
         "Store Setup": ["Store Mapping", "Camera Zones", "Store Master"],
         "Workforce": ["Employee Management"],
     },
-    "Access": {
-        "Security": ["Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
-    },
+}
+
+DEFAULT_ORG_SETTINGS: dict[str, str] = {
+    "app_name": "IRIS",
+    "font_family": "Segoe UI",
+    "background_color": "#f4f6f8",
+    "surface_color": "#ffffff",
+    "nav_color": "#1f3044",
+    "accent_color": "#2a7fd9",
 }
 
 LEGACY_PAGE_ALIAS = {
@@ -90,10 +103,14 @@ def _ensure_session_state() -> None:
         st.session_state["analysis_output"] = None
     if "login_email" not in st.session_state:
         st.session_state["login_email"] = ""
+    if "login_full_name" not in st.session_state:
+        st.session_state["login_full_name"] = ""
     if "is_authenticated" not in st.session_state:
         st.session_state["is_authenticated"] = False
     if "session_token" not in st.session_state:
         st.session_state["session_token"] = ""
+    if "ctrl_scope_email" not in st.session_state:
+        st.session_state["ctrl_scope_email"] = ""
 
 
 def _query_value(name: str, default: str = "") -> str:
@@ -124,52 +141,142 @@ def _resolve_menu_from_query() -> tuple[str, str, str]:
     return module, section, sections[section][0]
 
 
-def _inject_clean_ui_css() -> None:
+def _safe_hex_color(value: str, fallback: str) -> str:
+    color = str(value or "").strip()
+    if re.match(r"^#[0-9a-fA-F]{6}$", color):
+        return color
+    return fallback
+
+
+def _font_stack(font_label: str) -> str:
+    options = {
+        "Segoe UI": '"Segoe UI","Helvetica Neue",Arial,sans-serif',
+        "Calibri": 'Calibri,"Segoe UI",Arial,sans-serif',
+        "Arial": 'Arial,"Helvetica Neue",sans-serif',
+    }
+    return options.get(font_label, options["Segoe UI"])
+
+
+def _effective_org_settings(raw: dict[str, str]) -> dict[str, str]:
+    merged = dict(DEFAULT_ORG_SETTINGS)
+    merged.update({str(k): str(v) for k, v in raw.items()})
+    font_label = merged.get("font_family", "Segoe UI")
+    if font_label not in {"Segoe UI", "Calibri", "Arial"}:
+        font_label = "Segoe UI"
+    merged["font_family"] = font_label
+    merged["background_color"] = _safe_hex_color(merged.get("background_color", ""), DEFAULT_ORG_SETTINGS["background_color"])
+    merged["surface_color"] = _safe_hex_color(merged.get("surface_color", ""), DEFAULT_ORG_SETTINGS["surface_color"])
+    merged["nav_color"] = _safe_hex_color(merged.get("nav_color", ""), DEFAULT_ORG_SETTINGS["nav_color"])
+    merged["accent_color"] = _safe_hex_color(merged.get("accent_color", ""), DEFAULT_ORG_SETTINGS["accent_color"])
+    merged["app_name"] = (merged.get("app_name", "") or "IRIS").strip()[:60]
+    if not merged["app_name"]:
+        merged["app_name"] = "IRIS"
+    return merged
+
+
+def _inject_clean_ui_css(org_settings: dict[str, str]) -> None:
+    font_stack = _font_stack(org_settings.get("font_family", "Segoe UI"))
+    bg = org_settings.get("background_color", DEFAULT_ORG_SETTINGS["background_color"])
+    surface = org_settings.get("surface_color", DEFAULT_ORG_SETTINGS["surface_color"])
+    nav = org_settings.get("nav_color", DEFAULT_ORG_SETTINGS["nav_color"])
+    accent = org_settings.get("accent_color", DEFAULT_ORG_SETTINGS["accent_color"])
     st.markdown(
-        """
+        f"""
 <style>
-.block-container {padding-top: 0.45rem; padding-bottom: 1rem;}
-div[data-testid="stToolbar"] {visibility: hidden; height: 0; position: fixed;}
-header[data-testid="stHeader"] {height: 0.25rem;}
-.iris-brand-line {
-    background: #ffffff;
-    border: 1px solid #e4e7eb;
+body, .stApp {{
+    background: {bg};
+    font-family: {font_stack};
+}}
+.block-container {{padding-top: 0.2rem; padding-bottom: 0.8rem;}}
+div[data-testid="stToolbar"] {{visibility: hidden; height: 0; position: fixed;}}
+header[data-testid="stHeader"] {{height: 0.1rem;}}
+.iris-header {{
+    background: {surface};
+    border: 1px solid #d7dee8;
     border-radius: 8px;
-    padding: 0.45rem 0.8rem;
-    margin: 0 0 0.45rem 0;
+    padding: 0.4rem 0.65rem;
+    margin: 0 0 0.3rem 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-}
-.iris-brand-text {
-    font-size: 1.05rem;
+    gap: 0.6rem;
+}}
+.iris-brand-fallback {{
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: {nav};
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.86rem;
+    font-weight: 700;
+}}
+.iris-app-name {{
+    font-size: 1.12rem;
     font-weight: 800;
-    letter-spacing: 0.08rem;
+    letter-spacing: 0.02rem;
     color: #1d2d3f;
-}
+}}
+.iris-nav .iris-menu {{background: {nav};}}
+.iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {{background: {accent};}}
 </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _render_brand_line() -> None:
-    st.markdown(
-        '<div class="iris-brand-line"><div class="iris-brand-text">IRIS</div></div>',
-        unsafe_allow_html=True,
-    )
+def _render_header_bar(
+    app_name: str,
+    logo_path: str,
+    active_email: str,
+    active_full_name: str,
+    active_roles: list[str],
+    db_path: Path,
+    auth_token: str,
+) -> str:
+    header_cols = st.columns([4, 2], gap="small")
+    with header_cols[0]:
+        inner = st.columns([1, 8], gap="small")
+        logo_file = Path(logo_path).expanduser() if logo_path.strip() else None
+        if logo_file and logo_file.exists():
+            inner[0].image(str(logo_file), width=40)
+        else:
+            inner[0].markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
+        inner[1].markdown(
+            f'<div class="iris-app-name">{html.escape(app_name)}</div>',
+            unsafe_allow_html=True,
+        )
+    with header_cols[1]:
+        with st.expander("👤 Profile", expanded=False):
+            display_name = active_full_name.strip() or active_email.strip() or "User"
+            st.caption(f"Name: {display_name}")
+            st.caption(f"Email: {active_email}")
+            st.caption(f"Roles: {', '.join(active_roles) if active_roles else '-'}")
+            st.text_input(
+                "View As Store Email (optional)",
+                key="ctrl_scope_email",
+                placeholder="store-user@company.com",
+                help="Optional filter: only show mapped store data for this store email.",
+            )
+            if st.button("Logout", key="logout_button_profile"):
+                revoke_user_session(db_path=db_path, token=auth_token)
+                st.session_state["is_authenticated"] = False
+                st.session_state["login_email"] = ""
+                st.session_state["login_full_name"] = ""
+                st.session_state["session_token"] = ""
+                st.query_params["auth"] = ""
+                st.rerun()
+    return str(st.session_state.get("ctrl_scope_email", "")).strip()
 
 
 def _render_hover_nav(
     current_module: str,
     current_section: str,
     current_page: str,
-    access_email: str,
     auth_token: str,
 ) -> None:
     extra_bits: list[str] = []
-    if access_email:
-        extra_bits.append(f"access_email={quote(access_email)}")
     if auth_token:
         extra_bits.append(f"auth={quote(auth_token)}")
     extra_query = ""
@@ -210,10 +317,9 @@ def _render_hover_nav(
 <style>
 .iris-nav {margin: 0 0 0.2rem 0;}
 .iris-nav ul {list-style: none; margin: 0; padding: 0;}
-.iris-nav .iris-menu {display: flex; gap: 0.25rem; background: #1f3044; border-radius: 8px; padding: 0.25rem 0.35rem;}
+.iris-nav .iris-menu {display: flex; gap: 0.25rem; border-radius: 8px; padding: 0.25rem 0.35rem;}
 .iris-nav .iris-module {position: relative;}
 .iris-nav .iris-module .iris-module-label {display: block; padding: 0.44rem 0.72rem; color: #f4f7fb; border-radius: 7px; font-weight: 600; font-size: 0.9rem; cursor: default; user-select: none;}
-.iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {background: #2a7fd9;}
 .iris-nav .iris-dropdown {display: none; position: absolute; top: 2rem; left: 0; min-width: 520px; background: #f7fbff; border: 1px solid #d8e3f0; border-radius: 10px; box-shadow: 0 12px 24px rgba(9, 30, 66, 0.18); padding: 0.6rem; z-index: 999;}
 .iris-nav .iris-module:hover .iris-dropdown {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem;}
 .iris-nav .iris-section {border: 1px solid #e3edf8; border-radius: 8px; background: #ffffff; padding: 0.45rem 0.55rem;}
@@ -283,8 +389,12 @@ def _parse_permission_blob(blob: str) -> dict[str, tuple[bool, bool]]:
 
 
 def _render_login_gate(db_path: Path) -> None:
-    _inject_clean_ui_css()
-    _render_brand_line()
+    org_settings = _effective_org_settings(get_app_settings(db_path))
+    _inject_clean_ui_css(org_settings)
+    st.markdown(
+        f'<div class="iris-header"><div class="iris-brand-fallback">IR</div><div class="iris-app-name">{html.escape(org_settings.get("app_name", "IRIS"))}</div></div>',
+        unsafe_allow_html=True,
+    )
     st.subheader("Login")
     st.caption("Sign in once. Session stays active across menu navigation.")
     _left, center, _right = st.columns([1, 1.2, 1])
@@ -302,6 +412,7 @@ def _render_login_gate(db_path: Path) -> None:
                 st.error("Invalid login or no role assigned.")
             else:
                 st.session_state["login_email"] = normalized_email
+                st.session_state["login_full_name"] = user.full_name
                 st.session_state["is_authenticated"] = True
                 token = create_user_session(db_path=db_path, email=normalized_email, ttl_days=14)
                 st.session_state["session_token"] = token
@@ -961,6 +1072,112 @@ def _render_employee_management(db_path: Path, employee_assets_root: Path) -> No
     )
 
 
+def _render_organisation(db_path: Path, data_dir: Path) -> None:
+    st.subheader("Organisation")
+    st.caption("Manage company logo, app name, and standard UI theme controls.")
+    settings = _effective_org_settings(get_app_settings(db_path))
+
+    branding_dir = data_dir / "branding"
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    current_logo_path = settings.get("logo_path", "").strip()
+    logo_file = Path(current_logo_path).expanduser() if current_logo_path else None
+    if logo_file and logo_file.exists():
+        st.markdown("**Current logo**")
+        st.image(str(logo_file), width=120)
+    else:
+        st.caption("No company logo uploaded yet.")
+
+    logo_upload = st.file_uploader(
+        "Upload company logo",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="org_logo_uploader",
+        help="Recommended: transparent PNG, square ratio.",
+    )
+    remove_logo = st.checkbox("Remove current logo", key="org_remove_logo")
+
+    font_options = ["Segoe UI", "Calibri", "Arial"]
+    editor_rows = pd.DataFrame(
+        [
+            {"Setting": "app_name", "Value": settings.get("app_name", "IRIS")},
+            {"Setting": "font_family", "Value": settings.get("font_family", "Segoe UI")},
+            {"Setting": "background_color", "Value": settings.get("background_color", "#f4f6f8")},
+            {"Setting": "surface_color", "Value": settings.get("surface_color", "#ffffff")},
+            {"Setting": "nav_color", "Value": settings.get("nav_color", "#1f3044")},
+            {"Setting": "accent_color", "Value": settings.get("accent_color", "#2a7fd9")},
+        ]
+    )
+    st.markdown("**Style editor (excel-like)**")
+    edited_rows = st.data_editor(
+        editor_rows,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key="org_settings_editor",
+    )
+    st.caption("Use HEX colors like `#1f3044`. Font values allowed: Segoe UI, Calibri, Arial.")
+
+    quick_cols = st.columns([2, 2, 3])
+    selected_font = quick_cols[0].selectbox(
+        "Font quick select",
+        options=font_options,
+        index=font_options.index(settings.get("font_family", "Segoe UI")),
+        key="org_font_select",
+    )
+    quick_cols[1].color_picker(
+        "Background quick select",
+        value=settings.get("background_color", "#f4f6f8"),
+        key="org_bg_picker",
+    )
+    quick_cols[2].color_picker(
+        "Accent quick select",
+        value=settings.get("accent_color", "#2a7fd9"),
+        key="org_accent_picker",
+    )
+
+    if st.button("Save organisation settings", type="primary", key="save_org_settings_button"):
+        edited_map: dict[str, str] = {}
+        for _, row in edited_rows.iterrows():
+            setting_key = str(row.get("Setting", "")).strip()
+            setting_value = str(row.get("Value", "")).strip()
+            if setting_key:
+                edited_map[setting_key] = setting_value
+
+        # Quick selectors override matching fields for easier usage.
+        edited_map["font_family"] = selected_font
+        edited_map["background_color"] = str(st.session_state.get("org_bg_picker", "#f4f6f8"))
+        edited_map["accent_color"] = str(st.session_state.get("org_accent_picker", "#2a7fd9"))
+
+        app_name = edited_map.get("app_name", "IRIS").strip() or "IRIS"
+        font_name = edited_map.get("font_family", "Segoe UI").strip()
+        if font_name not in set(font_options):
+            st.error("Font must be one of: Segoe UI, Calibri, Arial.")
+            return
+        for color_key in ["background_color", "surface_color", "nav_color", "accent_color"]:
+            color_value = edited_map.get(color_key, "").strip()
+            if not re.match(r"^#[0-9a-fA-F]{6}$", color_value):
+                st.error(f"Invalid color for {color_key}. Use HEX format like #1f3044.")
+                return
+        edited_map["app_name"] = app_name
+
+        if remove_logo:
+            if logo_file and logo_file.exists():
+                try:
+                    logo_file.unlink()
+                except Exception:
+                    pass
+            edited_map["logo_path"] = ""
+        elif logo_upload is not None:
+            ext = Path(logo_upload.name).suffix.lower() or ".png"
+            target = branding_dir / f"company_logo{ext}"
+            target.write_bytes(logo_upload.getvalue())
+            edited_map["logo_path"] = str(target)
+        else:
+            edited_map["logo_path"] = current_logo_path
+
+        upsert_app_settings(db_path=db_path, settings=edited_map)
+        st.success("Organisation settings saved.")
+        st.rerun()
+
 def main() -> None:
     st.set_page_config(
         page_title="IRIS Store Analysis Dashboard",
@@ -968,7 +1185,6 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     _ensure_session_state()
-    _inject_clean_ui_css()
 
     app_dir = Path(__file__).resolve().parents[2]
     data_dir = app_dir / "data"
@@ -981,11 +1197,14 @@ def main() -> None:
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
     ensure_default_admins(db_path, ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"])
+    org_settings = _effective_org_settings(get_app_settings(db_path))
+    _inject_clean_ui_css(org_settings)
     auth_token_from_query = _query_value("auth", "").strip()
     if not st.session_state.get("is_authenticated", False) and auth_token_from_query:
         session_user = get_user_by_session_token(db_path=db_path, token=auth_token_from_query)
         if session_user is not None:
             st.session_state["login_email"] = session_user.email
+            st.session_state["login_full_name"] = session_user.full_name
             st.session_state["is_authenticated"] = True
             st.session_state["session_token"] = auth_token_from_query
     if not st.session_state.get("is_authenticated", False):
@@ -995,8 +1214,6 @@ def main() -> None:
         st.session_state["ctrl_root_str"] = str(data_root)
     if "ctrl_out_str" not in st.session_state:
         st.session_state["ctrl_out_str"] = str(default_exports_dir)
-    if "ctrl_access_email" not in st.session_state:
-        st.session_state["ctrl_access_email"] = _query_value("access_email", "")
     if "ctrl_conf_threshold" not in st.session_state:
         st.session_state["ctrl_conf_threshold"] = 0.25
     if "ctrl_time_bucket_minutes" not in st.session_state:
@@ -1019,38 +1236,32 @@ def main() -> None:
         st.session_state["ctrl_auto_sync_on_save"] = False
 
     active_email = st.session_state.get("login_email", "")
+    active_full_name = st.session_state.get("login_full_name", "")
     auth_token = st.session_state.get("session_token", "")
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
+    active_roles = user_role_names(db_path=db_path, email=active_email) if active_email else []
     current_module, current_section, current_page = _resolve_menu_from_query()
 
-    _render_brand_line()
-    access_bar_cols = st.columns([3, 2, 1])
-    access_email = access_bar_cols[0].text_input(
-        "Access Email (optional)",
-        key="ctrl_access_email",
-        placeholder="store-user@company.com",
+    access_email = _render_header_bar(
+        app_name=org_settings.get("app_name", "IRIS"),
+        logo_path=org_settings.get("logo_path", ""),
+        active_email=active_email,
+        active_full_name=active_full_name,
+        active_roles=active_roles,
+        db_path=db_path,
+        auth_token=auth_token,
     )
-    access_bar_cols[1].caption(f"Logged in: {active_email}")
-    if access_bar_cols[2].button("Logout"):
-        revoke_user_session(db_path=db_path, token=auth_token)
-        st.session_state["is_authenticated"] = False
-        st.session_state["login_email"] = ""
-        st.session_state["session_token"] = ""
-        st.query_params["auth"] = ""
-        st.rerun()
 
     _render_hover_nav(
         current_module=current_module,
         current_section=current_section,
         current_page=current_page,
-        access_email=access_email.strip(),
         auth_token=auth_token,
     )
 
     st.query_params["module"] = current_module
     st.query_params["section"] = current_section
     st.query_params["page"] = current_page
-    st.query_params["access_email"] = access_email.strip()
     if auth_token:
         st.query_params["auth"] = auth_token
 
@@ -1192,6 +1403,8 @@ def main() -> None:
 
     if current_page == "Overview":
         _render_overview(view_output)
+    elif current_page == "Organisation":
+        _render_organisation(db_path=db_path, data_dir=data_dir)
     elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
     elif current_page == "Quality":

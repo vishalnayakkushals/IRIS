@@ -289,6 +289,13 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+        """)
         if "is_active" not in _table_columns(conn, "employees"):
             conn.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
         if "updated_at" not in _table_columns(conn, "employees"):
@@ -497,6 +504,26 @@ def user_permissions(db_path: Path, email: str) -> dict[str, dict[str, bool]]:
         conn.close()
 
 
+def user_role_names(db_path: Path, email: str) -> list[str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT roles.role_name
+            FROM users
+            JOIN user_roles ON user_roles.user_id = users.user_id
+            JOIN roles ON roles.role_id = user_roles.role_id
+            WHERE lower(users.email)=lower(?)
+            ORDER BY roles.role_name
+            """,
+            (email.strip(),),
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+    finally:
+        conn.close()
+
+
 def ensure_default_admins(db_path: Path, admin_emails: list[str]) -> None:
     for email in admin_emails:
         try:
@@ -578,6 +605,42 @@ def revoke_user_session(db_path: Path, token: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("DELETE FROM user_sessions WHERE token=?", (tok,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_app_settings(db_path: Path) -> dict[str, str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT setting_key, setting_value FROM app_settings ORDER BY setting_key"
+        ).fetchall()
+        return {str(k): str(v) for k, v in rows}
+    finally:
+        conn.close()
+
+
+def upsert_app_settings(db_path: Path, settings: dict[str, str]) -> None:
+    init_db(db_path)
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        for key, value in settings.items():
+            normalized_key = str(key).strip()
+            if not normalized_key:
+                continue
+            conn.execute(
+                """
+                INSERT INTO app_settings(setting_key, setting_value, updated_at)
+                VALUES(?,?,?)
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value=excluded.setting_value,
+                    updated_at=excluded.updated_at
+                """,
+                (normalized_key, str(value).strip(), now),
+            )
         conn.commit()
     finally:
         conn.close()

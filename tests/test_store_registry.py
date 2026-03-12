@@ -13,6 +13,7 @@ from iris.store_registry import (
     create_role,
     create_user,
     delete_role,
+    get_app_settings,
     list_camera_configs,
     upsert_camera_config,
     add_employee_image,
@@ -26,6 +27,7 @@ from iris.store_registry import (
     maybe_auto_rollback_model,
     promote_model_version,
     register_model_version,
+    upsert_app_settings,
     upsert_store,
 )
 
@@ -336,3 +338,19 @@ def test_delete_role_removes_unassigned_role(tmp_path: Path) -> None:
     assert "deleted" in message
     role_names = [x["role_name"] for x in list_roles(db)]
     assert "auditor" not in role_names
+
+
+def test_app_settings_roundtrip(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_app_settings(
+        db_path=db,
+        settings={
+            "app_name": "IRIS HQ",
+            "font_family": "Segoe UI",
+            "background_color": "#f4f6f8",
+        },
+    )
+    settings = get_app_settings(db_path=db)
+    assert settings["app_name"] == "IRIS HQ"
+    assert settings["font_family"] == "Segoe UI"
+    assert settings["background_color"] == "#f4f6f8"
