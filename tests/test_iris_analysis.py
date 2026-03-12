@@ -245,3 +245,37 @@ def test_footfall_and_loss_of_sale_alert_from_entrance_line(tmp_path: Path) -> N
     row = result.summary_row.iloc[0]
     assert int(row["footfall"]) >= 1
     assert int(row["loss_of_sale_alerts"]) >= 0
+
+
+def test_date_is_inferred_from_folder_name_for_timestamp_and_proof(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    date_folder = store / "2026-03-12"
+    _write_image(date_folder / "09-00-00_D01-1.jpg")
+    _write_image(date_folder / "09-00-10_D01-2.jpg")
+    detector = FixedDetector(
+        {
+            "09-00-00_D01-1.jpg": 1,
+            "09-00-10_D01-2.jpg": 2,
+        }
+    )
+    result = analyze_store(store_id="store_a", store_dir=store, detector=detector)
+    assert not result.image_insights.empty
+    assert str(result.image_insights.iloc[0]["capture_date"]) == "2026-03-12"
+    assert int(result.image_insights.iloc[0]["timestamp"].year) == 2026
+    assert not result.daily_proof.empty
+    proof_row = result.daily_proof.iloc[0]
+    assert str(proof_row["date"]) == "2026-03-12"
+    assert int(proof_row["total_images"]) == 2
+
+
+def test_daily_proof_csv_is_exported_and_loaded(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = root / "store_1" / "2026-03-12"
+    _write_image(store / "09-57-27_D02-1.jpg")
+    output = analyze_root(root_dir=root.parent / "root", detector_type="mock", conf_threshold=0.25)
+    out = tmp_path / "exports"
+    export_analysis(output, out_dir=out)
+    assert (out / "store_store_1_daily_proof.csv").exists()
+    loaded = load_exports(out)
+    assert "store_1" in loaded.stores
+    assert not loaded.stores["store_1"].daily_proof.empty

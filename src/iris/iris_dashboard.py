@@ -581,6 +581,16 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
         image_df["filename"] = ""
     if "path" not in image_df.columns:
         image_df["path"] = ""
+    if "capture_date" not in image_df.columns:
+        image_df["capture_date"] = image_df["timestamp"].dt.date.astype(str)
+    if "source_folder" not in image_df.columns:
+        image_df["source_folder"] = ""
+    if "track_ids" not in image_df.columns:
+        image_df["track_ids"] = "[]"
+    if "customer_ids" not in image_df.columns:
+        image_df["customer_ids"] = "[]"
+    if "group_ids" not in image_df.columns:
+        image_df["group_ids"] = "[]"
     if "reject_reason" not in image_df.columns:
         image_df["reject_reason"] = ""
     if "detection_error" not in image_df.columns:
@@ -607,6 +617,86 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     if hasattr(store_result, "daily_report") and not store_result.daily_report.empty:
         st.markdown("**Daily Walk-in & Conversion Report**")
         st.dataframe(store_result.daily_report, use_container_width=True)
+
+    daily_proof_df = (
+        store_result.daily_proof.copy()
+        if hasattr(store_result, "daily_proof") and not store_result.daily_proof.empty
+        else pd.DataFrame()
+    )
+    if daily_proof_df.empty:
+        # Fallback proof view from frame-level data if proof export is not present.
+        fallback = (
+            image_df.groupby("capture_date", as_index=False)
+            .agg(
+                total_images=("filename", "count"),
+                valid_images=("is_valid", "sum"),
+                relevant_images=("relevant", "sum"),
+                total_detected_people=("person_count", "sum"),
+            )
+            .rename(columns={"capture_date": "date"})
+            .sort_values("date", ascending=False)
+        )
+        if not fallback.empty:
+            fallback["store_id"] = selected_store
+            fallback["folder_name"] = fallback["date"]
+            fallback["individual_people"] = 0
+            fallback["group_people"] = 0
+            fallback["converted"] = 0
+            fallback["conversion_rate"] = 0.0
+            daily_proof_df = fallback[
+                [
+                    "store_id",
+                    "date",
+                    "folder_name",
+                    "total_images",
+                    "valid_images",
+                    "relevant_images",
+                    "total_detected_people",
+                    "individual_people",
+                    "group_people",
+                    "converted",
+                    "conversion_rate",
+                ]
+            ]
+
+    if not daily_proof_df.empty:
+        st.markdown("**Daily Calculation Proof (Folder Date Based)**")
+        date_options = daily_proof_df["date"].astype(str).tolist()
+        selected_date = st.selectbox(
+            "Proof Date",
+            options=date_options,
+            index=0,
+            key=f"proof_date_{selected_store}",
+        )
+        proof_row = daily_proof_df[daily_proof_df["date"].astype(str) == str(selected_date)].iloc[0]
+        proof_cols = st.columns(4)
+        proof_cols[0].metric("Images", int(proof_row.get("total_images", 0)))
+        proof_cols[1].metric("Individual People", int(proof_row.get("individual_people", 0)))
+        proof_cols[2].metric("Group People", int(proof_row.get("group_people", 0)))
+        proof_cols[3].metric("Converted", int(proof_row.get("converted", 0)))
+        st.caption(
+            f"Folder: {proof_row.get('folder_name', selected_date)} | "
+            f"Detected People: {int(proof_row.get('total_detected_people', 0))} | "
+            f"Conversion Rate: {float(proof_row.get('conversion_rate', 0.0)):.2%}"
+        )
+        st.dataframe(daily_proof_df, use_container_width=True, hide_index=True)
+        proof_frames = image_df[image_df["capture_date"].astype(str) == str(selected_date)].copy()
+        if not proof_frames.empty:
+            st.markdown("**Frame-Level Proof for Selected Date**")
+            proof_columns = [
+                "capture_date",
+                "source_folder",
+                "timestamp",
+                "filename",
+                "camera_id",
+                "person_count",
+                "relevant",
+                "track_ids",
+                "group_ids",
+                "customer_ids",
+                "detection_error",
+            ]
+            st.dataframe(proof_frames[proof_columns].sort_values("timestamp"), use_container_width=True, hide_index=True)
 
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")

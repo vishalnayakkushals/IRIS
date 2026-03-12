@@ -99,7 +99,7 @@ def _optimize_image_bytes(content: bytes, max_dimension: int = 1280, quality: in
 def optimize_store_image_files(store_dir: Path, max_dimension: int = 1280, quality: int = 72) -> tuple[int, int]:
     processed = 0
     failed = 0
-    for path in sorted(store_dir.iterdir()):
+    for path in sorted(store_dir.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in _IMAGE_EXTS:
             continue
         try:
@@ -1383,9 +1383,11 @@ def ensure_store_snapshot_dir(data_root: Path, store_id: str) -> Path:
 
 
 def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[str, str]]:
-    files=[]; stack=[folder_id]
+    files: list[dict[str, str]] = []
+    stack: list[tuple[str, list[str]]] = [(folder_id, [])]
     while stack:
-        cur=stack.pop(); token=None
+        cur, rel_parts = stack.pop()
+        token = None
         while True:
             params={
                 "q":f"'{cur}' in parents and trashed = false",
@@ -1408,18 +1410,35 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
                     f"response_snippet='{snippet}'"
                 ) from exc
             for item in payload.get("files", []):
-                if item.get("mimeType","")=="application/vnd.google-apps.folder": stack.append(item["id"])
+                item_name = str(item.get("name", item.get("id", ""))).strip()
+                if not item_name:
+                    continue
+                if item.get("mimeType","")=="application/vnd.google-apps.folder":
+                    stack.append((item["id"], rel_parts + [item_name]))
                 elif Path(item.get("name", "")).suffix.lower() in _IMAGE_EXTS:
-                    files.append({"id":item["id"],"name":item.get("name", item["id"])})
+                    rel_path = Path(*rel_parts) / item_name if rel_parts else Path(item_name)
+                    files.append(
+                        {
+                            "id": str(item["id"]),
+                            "name": item_name,
+                            "relative_path": str(rel_path).replace("\\", "/"),
+                        }
+                    )
             token=payload.get("nextPageToken")
             if not token: break
     return files
 
 
 def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path, api_key: str) -> int:
-    n=0
+    n = 0
     for item in file_items:
-        dest=target_dir / Path(item["name"]).name
+        relative_path = str(item.get("relative_path", item.get("name", ""))).strip()
+        relative_obj = Path(relative_path)
+        safe_parts = [p for p in relative_obj.parts if p not in {"", ".", ".."}]
+        if not safe_parts:
+            safe_parts = [Path(str(item.get("name", "image.jpg"))).name]
+        dest = target_dir.joinpath(*safe_parts)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         resp=requests.get(f"https://www.googleapis.com/drive/v3/files/{item['id']}", params={"alt":"media","key":api_key}, timeout=60)
         if resp.status_code!=200: continue
         dest.write_bytes(resp.content); n+=1

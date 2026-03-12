@@ -16,6 +16,7 @@ FILE_PATTERN = re.compile(
     r"(?P<time>\d{2}-\d{2}-\d{2})_(?P<camera>D\d{2})-(?P<frame>\d+)\.jpg$"
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+DATE_FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class StoreAnalysisResult:
     summary_row: pd.DataFrame
     alerts: pd.DataFrame
     daily_report: pd.DataFrame
+    daily_proof: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,36 @@ def parse_filename(filename: str, reference_day: date | None = None) -> ParsedFi
         camera_id=match.group("camera"),
         frame_no=int(match.group("frame")),
     )
+
+
+def _extract_date_from_parts(parts: list[str]) -> date | None:
+    for part in reversed(parts):
+        token = part.strip()
+        if DATE_FOLDER_PATTERN.match(token):
+            try:
+                return date.fromisoformat(token)
+            except ValueError:
+                continue
+        match = re.search(r"(\d{4}-\d{2}-\d{2})", token)
+        if match:
+            try:
+                return date.fromisoformat(match.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _infer_image_context(
+    image_path: Path,
+    store_dir: Path,
+    fallback_day: date | None,
+) -> tuple[date, str, str]:
+    rel = image_path.relative_to(store_dir)
+    parent_parts = [str(p) for p in rel.parts[:-1]]
+    context_day = _extract_date_from_parts(parent_parts) or fallback_day or date.today()
+    capture_date = context_day.isoformat()
+    source_folder = "/".join(parent_parts)
+    return context_day, capture_date, source_folder
 
 
 def validate_image(path: Path) -> tuple[bool, str]:
@@ -706,6 +738,83 @@ def build_daily_customer_report(
     daily_report = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
     return df, daily_report
 
+
+def build_daily_calculation_proof(
+    store_id: str,
+    image_insights: pd.DataFrame,
+    daily_report: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = [
+        "store_id",
+        "date",
+        "folder_name",
+        "total_images",
+        "valid_images",
+        "relevant_images",
+        "total_detected_people",
+        "individual_people",
+        "group_people",
+        "converted",
+        "conversion_rate",
+    ]
+    if image_insights.empty:
+        return pd.DataFrame(columns=columns)
+
+    proof_src = image_insights.copy()
+    if "capture_date" not in proof_src.columns:
+        proof_src["capture_date"] = proof_src["timestamp"].dt.date.astype(str)
+    proof_src["capture_date"] = proof_src["capture_date"].fillna("").astype(str)
+    proof_src = proof_src[proof_src["capture_date"].str.strip() != ""].copy()
+    if proof_src.empty:
+        return pd.DataFrame(columns=columns)
+    if "source_folder" not in proof_src.columns:
+        proof_src["source_folder"] = ""
+
+    grouped = (
+        proof_src.groupby("capture_date", as_index=False)
+        .agg(
+            total_images=("filename", "count"),
+            valid_images=("is_valid", "sum"),
+            relevant_images=("relevant", "sum"),
+            total_detected_people=("person_count", "sum"),
+            folder_name=("source_folder", lambda x: "|".join(sorted({str(v).strip() for v in x if str(v).strip()}))),
+        )
+        .rename(columns={"capture_date": "date"})
+    )
+
+    grouped["folder_name"] = grouped["folder_name"].replace("", pd.NA).fillna(grouped["date"])
+    grouped["store_id"] = store_id
+    grouped["individual_people"] = 0
+    grouped["group_people"] = 0
+    grouped["converted"] = 0
+    grouped["conversion_rate"] = 0.0
+
+    if not daily_report.empty:
+        report_map = daily_report.copy()
+        report_map = report_map.rename(
+            columns={
+                "unique_individuals": "individual_people",
+                "unique_groups": "group_people",
+                "actual_conversions": "converted",
+            }
+        )
+        merge_cols = ["date", "individual_people", "group_people", "converted", "conversion_rate"]
+        grouped = grouped.drop(columns=["individual_people", "group_people", "converted", "conversion_rate"]).merge(
+            report_map[merge_cols],
+            on="date",
+            how="left",
+        )
+        grouped["individual_people"] = grouped["individual_people"].fillna(0)
+        grouped["group_people"] = grouped["group_people"].fillna(0)
+        grouped["converted"] = grouped["converted"].fillna(0)
+        grouped["conversion_rate"] = grouped["conversion_rate"].fillna(0.0)
+
+    for col in ["total_images", "valid_images", "relevant_images", "total_detected_people", "individual_people", "group_people", "converted"]:
+        grouped[col] = grouped[col].astype(int)
+    grouped["conversion_rate"] = grouped["conversion_rate"].astype(float).round(4)
+    grouped = grouped.sort_values("date", ascending=False).reset_index(drop=True)
+    return grouped[columns]
+
 def analyze_store(
     store_id: str,
     store_dir: Path,
@@ -724,7 +833,12 @@ def analyze_store(
         image_paths = image_paths[:max_images_per_store]
 
     for image_path in image_paths:
-        parsed = parse_filename(image_path.name, reference_day=reference_day)
+        image_day, capture_date, source_folder = _infer_image_context(
+            image_path=image_path,
+            store_dir=store_dir,
+            fallback_day=reference_day,
+        )
+        parsed = parse_filename(image_path.name, reference_day=image_day)
         if parsed is None:
             rows.append(
                 {
@@ -732,6 +846,8 @@ def analyze_store(
                     "filename": image_path.name,
                     "camera_id": "",
                     "timestamp": pd.NaT,
+                    "capture_date": capture_date,
+                    "source_folder": source_folder,
                     "is_valid": False,
                     "person_count": 0,
                     "max_person_conf": 0.0,
@@ -757,6 +873,8 @@ def analyze_store(
                 "filename": image_path.name,
                 "camera_id": parsed.camera_id,
                 "timestamp": parsed.timestamp,
+                "capture_date": capture_date,
+                "source_folder": source_folder,
                 "is_valid": is_valid,
                 "person_count": int(detection.person_count),
                 "max_person_conf": float(detection.max_person_conf),
@@ -776,6 +894,8 @@ def analyze_store(
             "filename",
             "camera_id",
             "timestamp",
+            "capture_date",
+            "source_folder",
             "is_valid",
             "person_count",
             "max_person_conf",
@@ -794,6 +914,8 @@ def analyze_store(
                 "filename",
                 "camera_id",
                 "timestamp",
+                "capture_date",
+                "source_folder",
                 "is_valid",
                 "person_count",
                 "max_person_conf",
@@ -820,6 +942,11 @@ def analyze_store(
     image_insights, daily_report = build_daily_customer_report(
         image_insights=image_insights,
         camera_configs=camera_configs,
+    )
+    daily_proof = build_daily_calculation_proof(
+        store_id=store_id,
+        image_insights=image_insights,
+        daily_report=daily_report,
     )
 
     footfall, alerts_df = compute_footfall_and_alerts(
@@ -856,6 +983,7 @@ def analyze_store(
         summary_row=summary_row,
         alerts=alerts_df,
         daily_report=daily_report,
+        daily_proof=daily_proof,
     )
 
 
@@ -956,10 +1084,16 @@ def export_analysis(
                     "filename",
                     "camera_id",
                     "timestamp",
+                    "capture_date",
+                    "source_folder",
                     "is_valid",
                     "person_count",
                     "max_person_conf",
                     "relevant",
+                    "track_ids",
+                    "global_visit_id",
+                    "customer_ids",
+                    "group_ids",
                     "reject_reason",
                     "detection_error",
                     "path",
@@ -982,6 +1116,8 @@ def export_analysis(
         )
         if not store_result.daily_report.empty:
             _write(store_result.daily_report, out_dir / f"store_{store_id}_daily_report.csv")
+        if not store_result.daily_proof.empty:
+            _write(store_result.daily_proof, out_dir / f"store_{store_id}_daily_proof.csv")
         if not store_result.alerts.empty:
             _write(store_result.alerts, out_dir / f"store_{store_id}_alerts.csv")
 
@@ -1038,6 +1174,27 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
         daily_df = pd.DataFrame(columns=["date","unique_individuals","unique_groups","actual_customers","converted_individuals","converted_groups","actual_conversions","conversion_rate"])
         if daily_path.exists() or daily_gz_path.exists():
             daily_df = pd.read_csv(daily_path if daily_path.exists() else daily_gz_path)
+        daily_proof_path = out_dir / f"store_{store_id}_daily_proof.csv"
+        daily_proof_gz_path = daily_proof_path.with_suffix(daily_proof_path.suffix + ".gz")
+        daily_proof_df = pd.DataFrame(
+            columns=[
+                "store_id",
+                "date",
+                "folder_name",
+                "total_images",
+                "valid_images",
+                "relevant_images",
+                "total_detected_people",
+                "individual_people",
+                "group_people",
+                "converted",
+                "conversion_rate",
+            ]
+        )
+        if daily_proof_path.exists() or daily_proof_gz_path.exists():
+            daily_proof_df = pd.read_csv(
+                daily_proof_path if daily_proof_path.exists() else daily_proof_gz_path
+            )
 
         stores[store_id] = StoreAnalysisResult(
             image_insights=image_df,
@@ -1045,6 +1202,7 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
             summary_row=summary_row,
             alerts=alerts_df,
             daily_report=daily_df,
+            daily_proof=daily_proof_df,
         )
 
     return AnalysisOutput(
