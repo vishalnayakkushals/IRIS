@@ -12,6 +12,7 @@ import streamlit as st
 from iris.iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
 from iris.store_registry import (
     add_employee_image,
+    bulk_upsert_store_access_rows,
     camera_config_map,
     create_user_session,
     create_license,
@@ -21,6 +22,7 @@ from iris.store_registry import (
     delete_employee,
     delete_store,
     ensure_default_admins,
+    ensure_store_login,
     get_app_settings,
     get_store_master_by_id,
     get_user_by_session_token,
@@ -48,9 +50,14 @@ from iris.store_registry import (
     transition_license,
     upsert_alert_route,
     upsert_camera_config,
+    upsert_manager_access,
     upsert_store,
     upsert_app_settings,
     upsert_store_master_rows,
+    upsert_user_account,
+    replace_user_store_access,
+    list_user_store_access,
+    user_store_scope,
     user_permissions,
     user_role_names,
 )
@@ -60,7 +67,18 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
         "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline"],
     },
     "Access": {
-        "Administration": ["Organisation", "Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
+        "Administration": [
+            "Organisation",
+            "Users",
+            "Password Manager",
+            "Role Permissions",
+            "Store Access Mapping",
+            "Bulk Access Upload",
+            "Setup Help",
+            "Licenses",
+            "Alert Routes",
+            "Activity Logs",
+        ],
     },
     "Operations": {
         "Store Setup": ["Store Mapping", "Camera Zones", "Store Master"],
@@ -75,10 +93,12 @@ DEFAULT_ORG_SETTINGS: dict[str, str] = {
     "surface_color": "#ffffff",
     "nav_color": "#1f3044",
     "accent_color": "#2a7fd9",
+    "default_user_password": "ChangeMe123!",
 }
 
 LEGACY_PAGE_ALIAS = {
     "Store Admin": "Store Mapping",
+    "Auth/RBAC": "Role Permissions",
 }
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
@@ -171,6 +191,9 @@ def _effective_org_settings(raw: dict[str, str]) -> dict[str, str]:
     merged["app_name"] = (merged.get("app_name", "") or "IRIS").strip()[:60]
     if not merged["app_name"]:
         merged["app_name"] = "IRIS"
+    merged["default_user_password"] = (merged.get("default_user_password", "") or "ChangeMe123!").strip()[:128]
+    if not merged["default_user_password"]:
+        merged["default_user_password"] = "ChangeMe123!"
     return merged
 
 
@@ -467,6 +490,27 @@ def _filter_output_to_store(output: AnalysisOutput, store_id: str) -> AnalysisOu
         all_stores_summary=output.all_stores_summary[
             output.all_stores_summary["store_id"] == store_id
         ].copy(),
+        detector_warning=output.detector_warning,
+        used_root_fallback_store=output.used_root_fallback_store,
+    )
+
+
+def _filter_output_to_stores(output: AnalysisOutput, store_ids: list[str]) -> AnalysisOutput:
+    allowed = {sid.strip() for sid in store_ids if sid and sid.strip()}
+    if not allowed:
+        return AnalysisOutput(
+            stores={},
+            all_stores_summary=output.all_stores_summary.iloc[0:0].copy(),
+            detector_warning=output.detector_warning,
+            used_root_fallback_store=output.used_root_fallback_store,
+        )
+    filtered_stores = {sid: result for sid, result in output.stores.items() if sid in allowed}
+    filtered_summary = output.all_stores_summary[
+        output.all_stores_summary["store_id"].isin(sorted(allowed))
+    ].copy()
+    return AnalysisOutput(
+        stores=filtered_stores,
+        all_stores_summary=filtered_summary,
         detector_warning=output.detector_warning,
         used_root_fallback_store=output.used_root_fallback_store,
     )
@@ -856,8 +900,15 @@ def _prefill_store_mapping_fields(db_path: Path, store_id: str) -> None:
     st.session_state["map_last_store_id"] = sid
 
 
-def _render_store_mapping(db_path: Path, data_root: Path, auto_sync_after_save: bool) -> None:
+def _render_store_mapping(
+    db_path: Path,
+    data_root: Path,
+    auto_sync_after_save: bool,
+    default_user_password: str,
+    active_email: str,
+) -> None:
     st.subheader("Store Mapping")
+    st.caption("On save, store login is auto-created using Store Email + default password from Organisation settings.")
     stores = list_stores(db_path)
     if "map_store_id" not in st.session_state:
         st.session_state["map_store_id"] = ""
@@ -925,8 +976,28 @@ def _render_store_mapping(db_path: Path, data_root: Path, auto_sync_after_save: 
                 email=semail,
                 drive_folder_url=sdrive,
             )
+            login_result = ensure_store_login(
+                db_path=db_path,
+                store_id=sid,
+                store_email=semail,
+                store_name=sname,
+                default_password=default_user_password,
+            )
             (data_root / sid).mkdir(parents=True, exist_ok=True)
             st.success(f"Saved store mapping for {sid}.")
+            if bool(login_result.get("created")):
+                st.info(
+                    f"Store login created: {semail.lower()} | temp password: {default_user_password}"
+                )
+            else:
+                st.info("Store login already existed and store mapping was refreshed.")
+            if active_email:
+                log_user_activity(
+                    db_path=db_path,
+                    actor_email=active_email,
+                    action_code="STORE_SAVED_WITH_AUTO_LOGIN",
+                    store_id=sid,
+                )
             _prefill_store_mapping_fields(db_path=db_path, store_id=sid)
             if auto_sync_after_save and sdrive:
                 matched = [s for s in list_stores(db_path) if s.store_id == sid]
@@ -1104,6 +1175,7 @@ def _render_organisation(db_path: Path, data_dir: Path) -> None:
             {"Setting": "surface_color", "Value": settings.get("surface_color", "#ffffff")},
             {"Setting": "nav_color", "Value": settings.get("nav_color", "#1f3044")},
             {"Setting": "accent_color", "Value": settings.get("accent_color", "#2a7fd9")},
+            {"Setting": "default_user_password", "Value": settings.get("default_user_password", "ChangeMe123!")},
         ]
     )
     st.markdown("**Style editor (excel-like)**")
@@ -1114,7 +1186,10 @@ def _render_organisation(db_path: Path, data_dir: Path) -> None:
         num_rows="fixed",
         key="org_settings_editor",
     )
-    st.caption("Use HEX colors like `#1f3044`. Font values allowed: Segoe UI, Calibri, Arial.")
+    st.caption(
+        "Use HEX colors like `#1f3044`. Font values allowed: Segoe UI, Calibri, Arial. "
+        "Default user password is used for auto-created Store/CM/AM logins."
+    )
 
     quick_cols = st.columns([2, 2, 3])
     selected_font = quick_cols[0].selectbox(
@@ -1178,6 +1253,373 @@ def _render_organisation(db_path: Path, data_dir: Path) -> None:
         st.success("Organisation settings saved.")
         st.rerun()
 
+
+def _render_users_page(db_path: Path, active_email: str) -> None:
+    st.subheader("Users")
+    st.caption("Create or update user accounts. This page is best for individual user operations.")
+    roles = [str(r.get("role_name", "")).strip() for r in list_roles(db_path) if str(r.get("role_name", "")).strip()]
+    store_ids = [s.store_id for s in list_stores(db_path)]
+    with st.form("users_create_update_form", clear_on_submit=False):
+        u_email = st.text_input("User email")
+        u_name = st.text_input("Full name")
+        u_pwd = st.text_input("Password", type="password", value="ChangeMe123!")
+        default_roles = ["store_user"] if "store_user" in roles else roles[:1]
+        u_roles = st.multiselect("Roles", options=roles, default=default_roles)
+        u_store_ids = st.multiselect(
+            "Store access",
+            options=store_ids,
+            help="If selected, these stores become visible in dashboard for this user.",
+        )
+        u_force_reset = st.checkbox("Reset password if user already exists", value=False)
+        save_user = st.form_submit_button("Create / Update User", type="primary")
+    if save_user:
+        if not u_email.strip() or not u_name.strip() or not u_roles:
+            st.error("Email, full name, and at least one role are required.")
+        else:
+            try:
+                user_id, created = upsert_user_account(
+                    db_path=db_path,
+                    email=u_email.strip(),
+                    full_name=u_name.strip(),
+                    role_names=u_roles,
+                    password=u_pwd.strip() or "ChangeMe123!",
+                    force_password_reset=bool(u_force_reset),
+                    is_active=True,
+                )
+                replace_user_store_access(db_path=db_path, email=u_email.strip(), store_ids=u_store_ids)
+                if active_email:
+                    log_user_activity(
+                        db_path=db_path,
+                        actor_email=active_email,
+                        action_code="UPSERT_USER",
+                        payload_json=f'{{"target":"{u_email.strip().lower()}","created":{str(created).lower()}}}',
+                    )
+                st.success(f"User {'created' if created else 'updated'} (id={user_id}).")
+            except Exception as exc:
+                st.error(str(exc))
+    users_df = pd.DataFrame(list_users(db_path))
+    access_rows = list_user_store_access(db_path)
+    if not users_df.empty:
+        st.markdown("**User Directory**")
+        if access_rows:
+            access_df = pd.DataFrame(access_rows)
+            grouped = (
+                access_df.groupby("email", as_index=False)["store_id"]
+                .agg(lambda x: "|".join(sorted(set(str(v) for v in x if str(v).strip()))))
+                .rename(columns={"store_id": "accessible_stores"})
+            )
+            users_df = users_df.merge(grouped, on="email", how="left")
+        users_df["accessible_stores"] = users_df.get("accessible_stores", "").fillna("")
+        st.dataframe(users_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No users found.")
+
+
+def _render_password_manager(db_path: Path, active_email: str) -> None:
+    st.subheader("Password Manager")
+    st.caption("Reset passwords quickly. Use this for Store / CM / AM login changes.")
+    users_df = pd.DataFrame(list_users(db_path))
+    if users_df.empty:
+        st.info("No users available for password update.")
+        return
+    target_email = st.selectbox("User email", options=users_df["email"].tolist(), key="pwd_user_email")
+    new_pwd = st.text_input("New password", type="password", key="pwd_new_password")
+    confirm_pwd = st.text_input("Confirm new password", type="password", key="pwd_confirm_password")
+    if st.button("Update password", key="pwd_update_button"):
+        if not new_pwd.strip() or not confirm_pwd.strip():
+            st.error("Both password fields are required.")
+        elif new_pwd != confirm_pwd:
+            st.error("Password and confirm password do not match.")
+        else:
+            set_user_password(db_path=db_path, email=target_email, new_password=new_pwd)
+            if active_email:
+                log_user_activity(
+                    db_path=db_path,
+                    actor_email=active_email,
+                    action_code="SET_PASSWORD",
+                    payload_json=f'{{"target":"{target_email}"}}',
+                )
+            st.success("Password updated.")
+
+
+def _render_role_permissions_page(db_path: Path, active_email: str, active_perms: dict[str, dict[str, bool]]) -> None:
+    st.subheader("Role Permissions")
+    st.caption(f"Active login: {active_email or '-'}")
+    perms_df = _permissions_frame(active_perms)
+    role_rows = list_roles(db_path)
+    role_names = [str(row.get("role_name", "")).strip() for row in role_rows if str(row.get("role_name", "")).strip()]
+    permission_codes = list_permission_codes(db_path)
+    role_lookup = {str(row.get("role_name", "")).strip(): row for row in role_rows}
+    if perms_df.empty:
+        st.warning("No permissions mapped for this user.")
+    else:
+        st.markdown("**Permission Matrix**")
+        st.dataframe(perms_df, use_container_width=True, hide_index=True)
+    with st.expander("Create role", expanded=False):
+        r_name = st.text_input("Role name (new)", key="role_new_name")
+        r_desc = st.text_input("Role description", key="role_new_desc")
+        if st.button("Create role", key="role_create_btn"):
+            if not r_name.strip():
+                st.error("Role name is required.")
+            else:
+                create_role(db_path, r_name, r_desc)
+                st.success("Role created")
+                st.rerun()
+    with st.expander("Set role permissions", expanded=True):
+        if not role_names:
+            st.caption("No roles found.")
+        else:
+            selected_perm_role = st.selectbox(
+                "Role",
+                options=role_names,
+                key="rbac_permission_role_select",
+            )
+            selected_blob = str(role_lookup[selected_perm_role].get("permissions", ""))
+            selected_map = _parse_permission_blob(selected_blob)
+            for code in permission_codes:
+                read_default, write_default = selected_map.get(code, (False, False))
+                role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
+                read_key = f"rbac_{role_key}_{code}_read"
+                write_key = f"rbac_{role_key}_{code}_write"
+                cols_perm = st.columns([1.6, 0.7, 0.7])
+                cols_perm[0].markdown(f"`{code}`")
+                cols_perm[1].checkbox("Read", key=read_key, value=read_default)
+                cols_perm[2].checkbox("Write", key=write_key, value=write_default)
+            if st.button("Save role permissions", key="save_role_permission_btn"):
+                rows: list[tuple[str, int, int]] = []
+                role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
+                for code in permission_codes:
+                    read_key = f"rbac_{role_key}_{code}_read"
+                    write_key = f"rbac_{role_key}_{code}_write"
+                    read_flag = 1 if st.session_state.get(read_key, False) else 0
+                    write_flag = 1 if st.session_state.get(write_key, False) else 0
+                    rows.append((code, read_flag, write_flag))
+                set_role_permissions(db_path, selected_perm_role, rows)
+                if active_email:
+                    log_user_activity(
+                        db_path=db_path,
+                        actor_email=active_email,
+                        action_code="SET_ROLE_PERMISSIONS",
+                    )
+                st.success("Role permissions saved")
+                st.rerun()
+    with st.expander("Delete role", expanded=False):
+        delete_role_name = st.selectbox(
+            "Role to delete",
+            options=role_names,
+            key="rbac_delete_role_select",
+        )
+        confirm_role_delete = st.checkbox(
+            "Confirm role deletion",
+            key="rbac_confirm_role_delete",
+        )
+        if st.button("Delete selected role", key="rbac_delete_role_btn"):
+            if not confirm_role_delete:
+                st.warning("Tick confirm role deletion first.")
+            else:
+                ok, message = delete_role(db_path=db_path, role_name=delete_role_name)
+                if ok:
+                    if active_email:
+                        log_user_activity(
+                            db_path=db_path,
+                            actor_email=active_email,
+                            action_code="DELETE_ROLE",
+                        )
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.warning(message)
+    st.markdown("**Current roles**")
+    st.dataframe(pd.DataFrame(list_roles(db_path)), use_container_width=True, hide_index=True)
+
+
+def _render_store_access_mapping(db_path: Path, default_user_password: str, active_email: str) -> None:
+    st.subheader("Store Access Mapping")
+    st.caption(
+        "Easy way: map one Store/CM/AM at a time. Saving mapping replaces previous store mapping for that user."
+    )
+    stores = list_stores(db_path)
+    store_ids = [s.store_id for s in stores]
+    store_lookup = {s.store_id: s for s in stores}
+
+    st.markdown("**Auto-create Store login**")
+    auto_cols = st.columns([2, 1])
+    selected_store_id = auto_cols[0].selectbox(
+        "Store for auto-login",
+        options=store_ids,
+        key="access_auto_store_selector",
+    ) if store_ids else ""
+    if auto_cols[1].button("Create / Sync Store Login", key="access_auto_store_btn"):
+        if not selected_store_id:
+            st.warning("No stores available.")
+        else:
+            rec = store_lookup[selected_store_id]
+            result = ensure_store_login(
+                db_path=db_path,
+                store_id=rec.store_id,
+                store_email=rec.email,
+                store_name=rec.store_name,
+                default_password=default_user_password,
+            )
+            if active_email:
+                log_user_activity(
+                    db_path=db_path,
+                    actor_email=active_email,
+                    action_code="AUTO_STORE_LOGIN_SYNC",
+                    store_id=rec.store_id,
+                )
+            if bool(result.get("created")):
+                st.success(
+                    f"Store login created: {rec.email} | temp password: {default_user_password}"
+                )
+            else:
+                st.success(f"Store login already existed and access mapping was updated: {rec.email}")
+
+    st.markdown("**Manual CM/AM mapping**")
+    with st.form("manual_manager_mapping_form", clear_on_submit=False):
+        manager_type = st.selectbox(
+            "Manager type",
+            options=["cluster_manager", "area_manager"],
+            format_func=lambda v: "Cluster Manager" if v == "cluster_manager" else "Area Manager",
+        )
+        manager_email = st.text_input("Manager email")
+        manager_name = st.text_input("Manager full name")
+        manager_stores = st.multiselect("Stores", options=store_ids)
+        reset_pwd = st.checkbox("Reset password to default while saving", value=False)
+        save_mapping = st.form_submit_button("Save manager mapping", type="primary")
+    if save_mapping:
+        if not manager_email.strip():
+            st.error("Manager email is required.")
+        elif not manager_stores:
+            st.error("Select at least one store.")
+        else:
+            try:
+                result = upsert_manager_access(
+                    db_path=db_path,
+                    manager_type=manager_type,
+                    email=manager_email.strip(),
+                    full_name=manager_name.strip(),
+                    store_ids=manager_stores,
+                    default_password=default_user_password,
+                    force_password_reset=bool(reset_pwd),
+                )
+                if active_email:
+                    log_user_activity(
+                        db_path=db_path,
+                        actor_email=active_email,
+                        action_code="UPSERT_MANAGER_MAPPING",
+                    )
+                if bool(result.get("created")):
+                    st.success(
+                        f"{manager_type} login created: {result['email']} | temp password: {default_user_password}"
+                    )
+                else:
+                    st.success(f"Mapping updated for {result['email']}.")
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.markdown("**Current Access Mapping**")
+    access_rows = list_user_store_access(db_path=db_path)
+    if not access_rows:
+        st.caption("No access mappings found yet.")
+    else:
+        access_df = pd.DataFrame(access_rows)
+        users_rows = list_users(db_path)
+        users_df = pd.DataFrame(users_rows)[["email", "roles"]] if users_rows else pd.DataFrame(columns=["email", "roles"])
+        if not users_df.empty:
+            access_df = access_df.merge(users_df, on="email", how="left")
+        st.dataframe(access_df, use_container_width=True, hide_index=True)
+
+
+def _render_bulk_access_upload(db_path: Path, default_user_password: str, active_email: str) -> None:
+    st.subheader("Bulk Access Upload")
+    st.caption(
+        "Bulk way: upload CSV or edit rows directly. Supports `store_user`, `cluster_manager`, `area_manager`."
+    )
+    st.markdown("Template columns: `manager_type,email,full_name,store_id,store_ids`")
+    template_df = pd.DataFrame(
+        [
+            {
+                "manager_type": "store_user",
+                "email": "store1@example.com",
+                "full_name": "Store One User",
+                "store_id": "STORE_001",
+                "store_ids": "",
+            },
+            {
+                "manager_type": "cluster_manager",
+                "email": "cm.north@example.com",
+                "full_name": "CM North",
+                "store_id": "",
+                "store_ids": "STORE_001|STORE_002",
+            },
+        ]
+    )
+    edited_df = st.data_editor(
+        template_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="bulk_access_editor",
+    )
+    if st.button("Apply editor rows", key="bulk_access_apply_editor"):
+        rows = edited_df.fillna("").to_dict(orient="records")
+        summary = bulk_upsert_store_access_rows(
+            db_path=db_path,
+            rows=rows,
+            default_password=default_user_password,
+        )
+        if active_email:
+            log_user_activity(db_path=db_path, actor_email=active_email, action_code="BULK_ACCESS_EDITOR_APPLY")
+        st.success(
+            f"Processed={summary['processed']} | Created={summary['created_users']} | "
+            f"Updated={summary['updated_users']} | Failed={summary['failed']}"
+        )
+
+    upload = st.file_uploader("Upload CSV", type=["csv"], key="bulk_access_csv_uploader")
+    if upload is not None:
+        try:
+            upload_df = pd.read_csv(upload).fillna("")
+            st.dataframe(upload_df, use_container_width=True, hide_index=True)
+            if st.button("Apply uploaded CSV", key="bulk_access_apply_csv"):
+                rows = upload_df.to_dict(orient="records")
+                summary = bulk_upsert_store_access_rows(
+                    db_path=db_path,
+                    rows=rows,
+                    default_password=default_user_password,
+                )
+                if active_email:
+                    log_user_activity(
+                        db_path=db_path,
+                        actor_email=active_email,
+                        action_code="BULK_ACCESS_CSV_APPLY",
+                    )
+                st.success(
+                    f"Processed={summary['processed']} | Created={summary['created_users']} | "
+                    f"Updated={summary['updated_users']} | Failed={summary['failed']}"
+                )
+        except Exception as exc:
+            st.error(f"Invalid CSV: {exc}")
+
+
+def _render_setup_help() -> None:
+    st.subheader("Setup Help")
+    st.markdown(
+        """
+### Recommended Access Setup
+1. `Operations > Store Mapping`: create store, email, drive link.
+2. Store login is auto-created using Organisation default password.
+3. `Access > Store Access Mapping`: map CM/AM emails to stores.
+4. `Access > Password Manager`: set final passwords.
+5. `Access > Bulk Access Upload`: use CSV for large updates.
+
+### Quick Hints
+- `manager_type=store_user` uses `store_id` or first value from `store_ids`.
+- `manager_type=cluster_manager/area_manager` should use `store_ids` with `|` separator.
+- Mapping save replaces previous store mapping for that user, so maintenance stays simple.
+- Use `Organisation` page to change default auto-created password anytime.
+        """
+    )
+
 def main() -> None:
     st.set_page_config(
         page_title="IRIS Store Analysis Dashboard",
@@ -1238,6 +1680,7 @@ def main() -> None:
     active_email = st.session_state.get("login_email", "")
     active_full_name = st.session_state.get("login_full_name", "")
     auth_token = st.session_state.get("session_token", "")
+    default_user_password = org_settings.get("default_user_password", "ChangeMe123!")
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
     active_roles = user_role_names(db_path=db_path, email=active_email) if active_email else []
     current_module, current_section, current_page = _resolve_menu_from_query()
@@ -1380,6 +1823,20 @@ def main() -> None:
         st.session_state["analysis_output"] = output
 
     view_output = output
+    user_scope = user_store_scope(db_path=db_path, email=active_email) if active_email else {"restricted": True, "store_ids": []}
+    if bool(user_scope.get("restricted", True)):
+        scoped_store_ids = list(user_scope.get("store_ids", []))
+        if not scoped_store_ids:
+            st.warning("No store access mapped for this login.")
+            view_output = AnalysisOutput(
+                stores={},
+                all_stores_summary=output.all_stores_summary.iloc[0:0].copy(),
+                detector_warning=output.detector_warning,
+                used_root_fallback_store=output.used_root_fallback_store,
+            )
+        else:
+            view_output = _filter_output_to_stores(output, scoped_store_ids)
+
     if access_email.strip():
         mapped = get_store_by_email(db_path=db_path, email=access_email.strip())
         if mapped is None:
@@ -1391,8 +1848,17 @@ def main() -> None:
                 used_root_fallback_store=output.used_root_fallback_store,
             )
         else:
-            st.info(f"Access mapped to store `{mapped.store_id}` ({mapped.store_name}).")
-            view_output = _filter_output_to_store(output, mapped.store_id)
+            if bool(user_scope.get("restricted", True)) and mapped.store_id not in set(user_scope.get("store_ids", [])):
+                st.warning(f"'{access_email.strip()}' maps to store `{mapped.store_id}` which is outside your access scope.")
+                view_output = AnalysisOutput(
+                    stores={},
+                    all_stores_summary=output.all_stores_summary.iloc[0:0].copy(),
+                    detector_warning=output.detector_warning,
+                    used_root_fallback_store=output.used_root_fallback_store,
+                )
+            else:
+                st.info(f"Access mapped to store `{mapped.store_id}` ({mapped.store_name}).")
+                view_output = _filter_output_to_store(view_output, mapped.store_id)
 
     if output.detector_warning:
         st.warning(output.detector_warning)
@@ -1405,6 +1871,26 @@ def main() -> None:
         _render_overview(view_output)
     elif current_page == "Organisation":
         _render_organisation(db_path=db_path, data_dir=data_dir)
+    elif current_page == "Users":
+        _render_users_page(db_path=db_path, active_email=active_email)
+    elif current_page == "Password Manager":
+        _render_password_manager(db_path=db_path, active_email=active_email)
+    elif current_page == "Role Permissions":
+        _render_role_permissions_page(db_path=db_path, active_email=active_email, active_perms=active_perms)
+    elif current_page == "Store Access Mapping":
+        _render_store_access_mapping(
+            db_path=db_path,
+            default_user_password=default_user_password,
+            active_email=active_email,
+        )
+    elif current_page == "Bulk Access Upload":
+        _render_bulk_access_upload(
+            db_path=db_path,
+            default_user_password=default_user_password,
+            active_email=active_email,
+        )
+    elif current_page == "Setup Help":
+        _render_setup_help()
     elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
     elif current_page == "Quality":
@@ -1414,6 +1900,8 @@ def main() -> None:
             db_path=db_path,
             data_root=root_dir,
             auto_sync_after_save=auto_sync_on_save,
+            default_user_password=default_user_password,
+            active_email=active_email,
         )
     elif current_page == "Camera Zones":
         _render_camera_zones(db_path=db_path)
@@ -1422,158 +1910,6 @@ def main() -> None:
             db_path=db_path,
             employee_assets_root=employee_assets_root,
         )
-
-
-    elif current_page == "Auth/RBAC":
-        st.subheader("Auth / RBAC")
-        st.caption(f"Active login: {active_email or '-'}")
-        perms_df = _permissions_frame(active_perms)
-        role_rows = list_roles(db_path)
-        role_names = [str(row.get("role_name", "")).strip() for row in role_rows if str(row.get("role_name", "")).strip()]
-        permission_codes = list_permission_codes(db_path)
-        role_lookup = {str(row.get("role_name", "")).strip(): row for row in role_rows}
-        if perms_df.empty:
-            st.warning("No permissions mapped for this user.")
-        else:
-            st.markdown("**Permission Matrix**")
-            st.dataframe(perms_df, use_container_width=True, hide_index=True)
-            read_count = int((perms_df["Read"] == "Yes").sum())
-            write_count = int((perms_df["Write"] == "Yes").sum())
-            st.caption(
-                f"Access summary: read on {read_count} modules, write on {write_count} modules."
-            )
-        with st.expander("Create user"):
-            u_email = st.text_input("New user email")
-            u_name = st.text_input("Full name")
-            u_pwd = st.text_input("Temp password", type="password", value="ChangeMe123!")
-            u_store = st.text_input("Store scope (optional)")
-            default_roles = ["store_user"] if "store_user" in role_names else role_names[:1]
-            u_roles = st.multiselect(
-                "Assign roles",
-                options=role_names,
-                default=default_roles,
-                help="Roles available in this list are loaded from current RBAC setup.",
-            )
-            if st.button("Create user"):
-                if not u_email.strip() or not u_name.strip() or not u_pwd.strip():
-                    st.error("Email, full name, and password are required.")
-                elif not u_roles:
-                    st.error("Select at least one role.")
-                else:
-                    try:
-                        create_user(
-                            db_path,
-                            u_email,
-                            u_name,
-                            u_pwd,
-                            store_id=u_store,
-                            role_names=u_roles,
-                        )
-                        if active_email:
-                            log_user_activity(
-                                db_path=db_path,
-                                actor_email=active_email,
-                                action_code="CREATE_USER",
-                                store_id=u_store,
-                            )
-                        st.success("User created")
-                    except Exception as exc:
-                        st.error(str(exc))
-        with st.expander("Set user password"):
-            p_email = st.text_input("User email for password reset")
-            p_pwd = st.text_input("New password", type="password")
-            if st.button("Set password"):
-                if not p_email.strip() or not p_pwd.strip():
-                    st.error("Email and password are required.")
-                else:
-                    set_user_password(db_path, p_email, p_pwd)
-                    if active_email:
-                        log_user_activity(
-                            db_path=db_path,
-                            actor_email=active_email,
-                            action_code="SET_PASSWORD",
-                        )
-                    st.success("Password updated")
-        with st.expander("Role management"):
-            st.markdown("**Create role**")
-            r_name = st.text_input("Role name (new)")
-            r_desc = st.text_input("Role description")
-            if st.button("Create role"):
-                if not r_name.strip():
-                    st.error("Role name is required.")
-                else:
-                    create_role(db_path, r_name, r_desc)
-                    st.success("Role created")
-                    st.rerun()
-
-            st.markdown("**Set permissions (tick Read/Write)**")
-            if not role_names:
-                st.caption("No roles found.")
-            else:
-                selected_perm_role = st.selectbox(
-                    "Role for permission setup",
-                    options=role_names,
-                    key="rbac_permission_role_select",
-                )
-                selected_blob = str(role_lookup[selected_perm_role].get("permissions", ""))
-                selected_map = _parse_permission_blob(selected_blob)
-                for code in permission_codes:
-                    read_default, write_default = selected_map.get(code, (False, False))
-                    role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
-                    read_key = f"rbac_{role_key}_{code}_read"
-                    write_key = f"rbac_{role_key}_{code}_write"
-                    cols_perm = st.columns([1.6, 0.7, 0.7])
-                    cols_perm[0].markdown(f"`{code}`")
-                    cols_perm[1].checkbox("Read", key=read_key, value=read_default)
-                    cols_perm[2].checkbox("Write", key=write_key, value=write_default)
-
-                if st.button("Save role permissions"):
-                    rows: list[tuple[str, int, int]] = []
-                    role_key = "".join(ch if ch.isalnum() else "_" for ch in selected_perm_role)
-                    for code in permission_codes:
-                        read_key = f"rbac_{role_key}_{code}_read"
-                        write_key = f"rbac_{role_key}_{code}_write"
-                        read_flag = 1 if st.session_state.get(read_key, False) else 0
-                        write_flag = 1 if st.session_state.get(write_key, False) else 0
-                        rows.append((code, read_flag, write_flag))
-                    set_role_permissions(db_path, selected_perm_role, rows)
-                    if active_email:
-                        log_user_activity(
-                            db_path=db_path,
-                            actor_email=active_email,
-                            action_code="SET_ROLE_PERMISSIONS",
-                        )
-                    st.success("Role permissions saved")
-                    st.rerun()
-
-                st.markdown("**Delete role**")
-                delete_role_name = st.selectbox(
-                    "Role to delete",
-                    options=role_names,
-                    key="rbac_delete_role_select",
-                )
-                confirm_role_delete = st.checkbox(
-                    "Confirm role deletion",
-                    key="rbac_confirm_role_delete",
-                )
-                if st.button("Delete selected role"):
-                    if not confirm_role_delete:
-                        st.warning("Tick confirm role deletion first.")
-                    else:
-                        ok, message = delete_role(db_path=db_path, role_name=delete_role_name)
-                        if ok:
-                            if active_email:
-                                log_user_activity(
-                                    db_path=db_path,
-                                    actor_email=active_email,
-                                    action_code="DELETE_ROLE",
-                                )
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.warning(message)
-        st.dataframe(pd.DataFrame(list_users(db_path)), use_container_width=True)
-        st.dataframe(pd.DataFrame(list_roles(db_path)), use_container_width=True)
 
     elif current_page == "Licenses":
         st.subheader("Trade/Display License Workflow")

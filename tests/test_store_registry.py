@@ -9,7 +9,10 @@ from PIL import Image
 from iris.store_registry import (
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
+    ensure_store_login,
     camera_config_map,
+    list_user_store_access,
+    replace_user_store_access,
     create_role,
     create_user,
     delete_role,
@@ -27,8 +30,11 @@ from iris.store_registry import (
     maybe_auto_rollback_model,
     promote_model_version,
     register_model_version,
+    upsert_manager_access,
     upsert_app_settings,
+    upsert_user_account,
     upsert_store,
+    user_store_scope,
 )
 
 
@@ -354,3 +360,59 @@ def test_app_settings_roundtrip(tmp_path: Path) -> None:
     assert settings["app_name"] == "IRIS HQ"
     assert settings["font_family"] == "Segoe UI"
     assert settings["background_color"] == "#f4f6f8"
+
+
+def test_store_login_auto_create_and_scope(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_store(db_path=db, store_id="S001", store_name="Store 001", email="s001@example.com", drive_folder_url="")
+    result = ensure_store_login(
+        db_path=db,
+        store_id="S001",
+        store_email="s001@example.com",
+        store_name="Store 001",
+        default_password="Temp@123",
+    )
+    assert result["created"] is True
+    access_rows = list_user_store_access(db_path=db, email="s001@example.com")
+    assert len(access_rows) == 1
+    assert access_rows[0]["store_id"] == "S001"
+    scope = user_store_scope(db_path=db, email="s001@example.com")
+    assert scope["restricted"] is True
+    assert scope["store_ids"] == ["S001"]
+
+
+def test_manager_mapping_supports_multiple_stores(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_store(db_path=db, store_id="S001", store_name="Store 001", email="s001@example.com", drive_folder_url="")
+    upsert_store(db_path=db, store_id="S002", store_name="Store 002", email="s002@example.com", drive_folder_url="")
+    result = upsert_manager_access(
+        db_path=db,
+        manager_type="cluster_manager",
+        email="cm@example.com",
+        full_name="CM User",
+        store_ids=["S001", "S002"],
+        default_password="Temp@123",
+        force_password_reset=False,
+    )
+    assert result["stores_mapped"] == 2
+    scope = user_store_scope(db_path=db, email="cm@example.com")
+    assert scope["restricted"] is True
+    assert set(scope["store_ids"]) == {"S001", "S002"}
+
+
+def test_replace_user_store_access_overwrites_previous_mapping(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_store(db_path=db, store_id="S001", store_name="Store 001", email="s001@example.com", drive_folder_url="")
+    upsert_store(db_path=db, store_id="S002", store_name="Store 002", email="s002@example.com", drive_folder_url="")
+    upsert_user_account(
+        db_path=db,
+        email="manager@example.com",
+        full_name="Manager",
+        role_names=["area_manager"],
+        password="Temp@123",
+    )
+    replace_user_store_access(db_path=db, email="manager@example.com", store_ids=["S001"])
+    replace_user_store_access(db_path=db, email="manager@example.com", store_ids=["S002"])
+    rows = list_user_store_access(db_path=db, email="manager@example.com")
+    assert len(rows) == 1
+    assert rows[0]["store_id"] == "S002"

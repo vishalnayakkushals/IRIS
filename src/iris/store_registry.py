@@ -212,6 +212,15 @@ def init_db(db_path: Path) -> None:
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_store_access (
+                user_id INTEGER NOT NULL,
+                store_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, store_id),
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS licenses (
                 license_id TEXT PRIMARY KEY,
                 store_id TEXT NOT NULL,
@@ -313,10 +322,14 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR IGNORE INTO roles(role_name, description) VALUES('admin','Full access')")
     conn.execute("INSERT OR IGNORE INTO roles(role_name, description) VALUES('store_user','Store-level operations')")
     conn.execute("INSERT OR IGNORE INTO roles(role_name, description) VALUES('management_viewer','Read-only analytics')")
+    conn.execute("INSERT OR IGNORE INTO roles(role_name, description) VALUES('cluster_manager','Cluster-level store dashboard access')")
+    conn.execute("INSERT OR IGNORE INTO roles(role_name, description) VALUES('area_manager','Area-level store dashboard access')")
     perms = {
         "admin": [("dashboard",1,1),("config",1,1),("stores",1,1),("users",1,1),("roles",1,1),("licenses",1,1)],
         "store_user": [("dashboard",1,1),("config",1,0),("stores",1,0),("users",1,0),("roles",0,0),("licenses",1,1)],
         "management_viewer": [("dashboard",1,0),("config",1,0),("stores",1,0),("users",0,0),("roles",0,0),("licenses",1,0)],
+        "cluster_manager": [("dashboard",1,0),("stores",1,0),("licenses",1,0)],
+        "area_manager": [("dashboard",1,0),("stores",1,0),("licenses",1,0)],
     }
     for role_name, rows in perms.items():
         role_id = conn.execute("SELECT role_id FROM roles WHERE role_name=?", (role_name,)).fetchone()[0]
@@ -522,6 +535,308 @@ def user_role_names(db_path: Path, email: str) -> list[str]:
         return [str(r[0]) for r in rows]
     finally:
         conn.close()
+
+
+def upsert_user_account(
+    db_path: Path,
+    email: str,
+    full_name: str,
+    role_names: list[str],
+    password: str = "ChangeMe123!",
+    force_password_reset: bool = False,
+    is_active: bool = True,
+) -> tuple[int, bool]:
+    init_db(db_path)
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        raise ValueError("email is required")
+    normalized_roles = [r.strip().lower() for r in role_names if r.strip()]
+    if not normalized_roles:
+        raise ValueError("at least one role is required")
+    conn = sqlite3.connect(db_path)
+    try:
+        role_ids: list[int] = []
+        for role_name in normalized_roles:
+            role_row = conn.execute(
+                "SELECT role_id FROM roles WHERE role_name=?",
+                (role_name,),
+            ).fetchone()
+            if not role_row:
+                raise ValueError(f"role '{role_name}' not found")
+            role_ids.append(int(role_row[0]))
+
+        user_row = conn.execute(
+            "SELECT user_id, full_name FROM users WHERE lower(email)=lower(?)",
+            (normalized_email,),
+        ).fetchone()
+        created = False
+        if user_row is None:
+            now = _now_utc()
+            conn.execute(
+                """
+                INSERT INTO users(email,full_name,password_hash,is_active,store_id,created_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    normalized_email,
+                    full_name.strip() or normalized_email.split("@")[0],
+                    _hash_password(password),
+                    1 if is_active else 0,
+                    "",
+                    now,
+                ),
+            )
+            user_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            created = True
+        else:
+            user_id = int(user_row[0])
+            updated_name = full_name.strip() or str(user_row[1]).strip()
+            conn.execute(
+                "UPDATE users SET full_name=?, is_active=? WHERE user_id=?",
+                (updated_name, 1 if is_active else 0, user_id),
+            )
+            if force_password_reset and password.strip():
+                conn.execute(
+                    "UPDATE users SET password_hash=? WHERE user_id=?",
+                    (_hash_password(password), user_id),
+                )
+
+        for role_id in role_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO user_roles(user_id, role_id) VALUES(?,?)",
+                (user_id, role_id),
+            )
+        conn.commit()
+        return user_id, created
+    finally:
+        conn.close()
+
+
+def replace_user_store_access(db_path: Path, email: str, store_ids: list[str]) -> None:
+    init_db(db_path)
+    normalized_email = email.strip().lower()
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT user_id FROM users WHERE lower(email)=lower(?)",
+            (normalized_email,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"user '{normalized_email}' not found")
+        user_id = int(row[0])
+        normalized_stores = sorted({sid.strip() for sid in store_ids if sid and sid.strip()})
+        # Validate stores to avoid invalid mappings.
+        if normalized_stores:
+            placeholders = ",".join(["?"] * len(normalized_stores))
+            valid_rows = conn.execute(
+                f"SELECT store_id FROM stores WHERE store_id IN ({placeholders})",
+                tuple(normalized_stores),
+            ).fetchall()
+            valid_store_ids = {str(r[0]) for r in valid_rows}
+            missing = [sid for sid in normalized_stores if sid not in valid_store_ids]
+            if missing:
+                raise ValueError(f"unknown store_id(s): {', '.join(missing)}")
+
+        conn.execute("DELETE FROM user_store_access WHERE user_id=?", (user_id,))
+        now = _now_utc()
+        for sid in normalized_stores:
+            conn.execute(
+                "INSERT INTO user_store_access(user_id,store_id,created_at) VALUES(?,?,?)",
+                (user_id, sid, now),
+            )
+        primary_store = normalized_stores[0] if len(normalized_stores) == 1 else ""
+        conn.execute(
+            "UPDATE users SET store_id=? WHERE user_id=?",
+            (primary_store, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_user_store_access(db_path: Path, email: str | None = None) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        base_query = (
+            "SELECT users.email, users.full_name, stores.store_id, stores.store_name, usa.created_at "
+            "FROM user_store_access usa "
+            "JOIN users ON users.user_id = usa.user_id "
+            "JOIN stores ON stores.store_id = usa.store_id "
+        )
+        params: tuple[Any, ...] = ()
+        if email and email.strip():
+            base_query += "WHERE lower(users.email)=lower(?) "
+            params = (email.strip(),)
+        base_query += "ORDER BY users.email, stores.store_id"
+        rows = conn.execute(base_query, params).fetchall()
+        return [
+            {
+                "email": str(r[0]),
+                "full_name": str(r[1]),
+                "store_id": str(r[2]),
+                "store_name": str(r[3]),
+                "mapped_at": str(r[4]),
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def user_store_scope(db_path: Path, email: str) -> dict[str, Any]:
+    init_db(db_path)
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        return {"restricted": True, "store_ids": [], "roles": []}
+    conn = sqlite3.connect(db_path)
+    try:
+        user_row = conn.execute(
+            "SELECT user_id, store_id FROM users WHERE lower(email)=lower(?)",
+            (normalized_email,),
+        ).fetchone()
+        if not user_row:
+            return {"restricted": True, "store_ids": [], "roles": []}
+        user_id = int(user_row[0])
+        direct_store_id = str(user_row[1] or "").strip()
+        role_rows = conn.execute(
+            """
+            SELECT roles.role_name
+            FROM user_roles
+            JOIN roles ON roles.role_id = user_roles.role_id
+            WHERE user_roles.user_id=?
+            ORDER BY roles.role_name
+            """,
+            (user_id,),
+        ).fetchall()
+        roles = [str(r[0]) for r in role_rows]
+        if "admin" in roles:
+            return {"restricted": False, "store_ids": [], "roles": roles}
+        mapped_rows = conn.execute(
+            "SELECT store_id FROM user_store_access WHERE user_id=? ORDER BY store_id",
+            (user_id,),
+        ).fetchall()
+        mapped_stores = {str(r[0]).strip() for r in mapped_rows if str(r[0]).strip()}
+        if direct_store_id:
+            mapped_stores.add(direct_store_id)
+        return {"restricted": True, "store_ids": sorted(mapped_stores), "roles": roles}
+    finally:
+        conn.close()
+
+
+def ensure_store_login(
+    db_path: Path,
+    store_id: str,
+    store_email: str,
+    store_name: str,
+    default_password: str = "ChangeMe123!",
+) -> dict[str, Any]:
+    sid = store_id.strip()
+    semail = store_email.strip().lower()
+    sname = store_name.strip() or sid
+    if not sid or not semail:
+        raise ValueError("store_id and store_email are required")
+    _user_id, created = upsert_user_account(
+        db_path=db_path,
+        email=semail,
+        full_name=f"{sname} User",
+        role_names=["store_user"],
+        password=default_password,
+        force_password_reset=False,
+        is_active=True,
+    )
+    replace_user_store_access(db_path=db_path, email=semail, store_ids=[sid])
+    return {
+        "email": semail,
+        "store_id": sid,
+        "created": created,
+        "default_password": default_password,
+    }
+
+
+def upsert_manager_access(
+    db_path: Path,
+    manager_type: str,
+    email: str,
+    full_name: str,
+    store_ids: list[str],
+    default_password: str = "ChangeMe123!",
+    force_password_reset: bool = False,
+) -> dict[str, Any]:
+    mtype = manager_type.strip().lower()
+    if mtype not in {"cluster_manager", "area_manager"}:
+        raise ValueError("manager_type must be cluster_manager or area_manager")
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        raise ValueError("email is required")
+    _user_id, created = upsert_user_account(
+        db_path=db_path,
+        email=normalized_email,
+        full_name=full_name.strip() or normalized_email.split("@")[0],
+        role_names=[mtype],
+        password=default_password,
+        force_password_reset=force_password_reset,
+        is_active=True,
+    )
+    replace_user_store_access(db_path=db_path, email=normalized_email, store_ids=store_ids)
+    return {
+        "email": normalized_email,
+        "manager_type": mtype,
+        "created": created,
+        "stores_mapped": len({sid.strip() for sid in store_ids if sid.strip()}),
+    }
+
+
+def bulk_upsert_store_access_rows(
+    db_path: Path,
+    rows: list[dict[str, Any]],
+    default_password: str = "ChangeMe123!",
+) -> dict[str, int]:
+    summary = {"processed": 0, "created_users": 0, "updated_users": 0, "failed": 0}
+    for row in rows:
+        manager_type = str(row.get("manager_type", "")).strip().lower()
+        email = str(row.get("email", "")).strip().lower()
+        full_name = str(row.get("full_name", "")).strip()
+        store_ids_raw = str(row.get("store_ids", "")).strip()
+        store_ids = [x.strip() for x in store_ids_raw.replace(",", "|").split("|") if x.strip()]
+        if manager_type == "store_user":
+            store_id = str(row.get("store_id", "")).strip() or (store_ids[0] if store_ids else "")
+            try:
+                store_row = get_store_master_by_id(db_path=db_path, store_id=store_id) if store_id else None
+                store_name = str(store_row.get("gofrugal_name", "")) if store_row else store_id
+                result = ensure_store_login(
+                    db_path=db_path,
+                    store_id=store_id,
+                    store_email=email,
+                    store_name=store_name,
+                    default_password=default_password,
+                )
+                summary["processed"] += 1
+                if bool(result.get("created")):
+                    summary["created_users"] += 1
+                else:
+                    summary["updated_users"] += 1
+            except Exception:
+                summary["failed"] += 1
+            continue
+        try:
+            result = upsert_manager_access(
+                db_path=db_path,
+                manager_type=manager_type,
+                email=email,
+                full_name=full_name,
+                store_ids=store_ids,
+                default_password=default_password,
+                force_password_reset=False,
+            )
+            summary["processed"] += 1
+            if bool(result.get("created")):
+                summary["created_users"] += 1
+            else:
+                summary["updated_users"] += 1
+        except Exception:
+            summary["failed"] += 1
+    return summary
 
 
 def ensure_default_admins(db_path: Path, admin_emails: list[str]) -> None:
@@ -855,9 +1170,11 @@ def delete_store(db_path: Path, store_id: str) -> None:
     init_db(db_path)
     conn=sqlite3.connect(db_path)
     try:
-        conn.execute("DELETE FROM stores WHERE store_id=?", (store_id.strip(),))
-        conn.execute("DELETE FROM camera_configs WHERE store_id=?", (store_id.strip(),))
-        conn.execute("DELETE FROM employees WHERE store_id=?", (store_id.strip(),))
+        sid = store_id.strip()
+        conn.execute("DELETE FROM stores WHERE store_id=?", (sid,))
+        conn.execute("DELETE FROM camera_configs WHERE store_id=?", (sid,))
+        conn.execute("DELETE FROM employees WHERE store_id=?", (sid,))
+        conn.execute("DELETE FROM user_store_access WHERE store_id=?", (sid,))
         conn.commit()
     finally:
         conn.close()
