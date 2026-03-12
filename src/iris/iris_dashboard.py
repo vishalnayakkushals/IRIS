@@ -12,11 +12,15 @@ from iris.iris_analysis import AnalysisOutput, analyze_root, export_analysis, lo
 from iris.store_registry import (
     add_employee_image,
     camera_config_map,
+    create_user_session,
     create_license,
     create_role,
     create_user,
+    delete_employee,
     delete_store,
     ensure_default_admins,
+    get_store_master_by_id,
+    get_user_by_session_token,
     get_store_by_email,
     init_db,
     list_alert_routes,
@@ -30,8 +34,10 @@ from iris.store_registry import (
     list_store_master,
     list_stores,
     list_users,
+    revoke_user_session,
     route_alert,
     authenticate_user,
+    set_employee_active,
     set_role_permissions,
     set_user_password,
     sync_store_from_drive,
@@ -48,11 +54,16 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
         "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline"],
     },
     "Operations": {
-        "Store Operations": ["Store Admin", "Store Master"],
+        "Store Setup": ["Store Mapping", "Camera Zones", "Store Master"],
+        "Workforce": ["Employee Management"],
     },
     "Access": {
         "Security": ["Auth/RBAC", "Licenses", "Alert Routes", "Activity Logs"],
     },
+}
+
+LEGACY_PAGE_ALIAS = {
+    "Store Admin": "Store Mapping",
 }
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
@@ -79,6 +90,8 @@ def _ensure_session_state() -> None:
         st.session_state["login_email"] = ""
     if "is_authenticated" not in st.session_state:
         st.session_state["is_authenticated"] = False
+    if "session_token" not in st.session_state:
+        st.session_state["session_token"] = ""
 
 
 def _query_value(name: str, default: str = "") -> str:
@@ -90,7 +103,8 @@ def _query_value(name: str, default: str = "") -> str:
 
 def _resolve_menu_from_query() -> tuple[str, str, str]:
     module_names = list(NAV_TREE.keys())
-    page_param = _query_value("page", "")
+    raw_page_param = _query_value("page", "")
+    page_param = LEGACY_PAGE_ALIAS.get(raw_page_param, raw_page_param)
     if page_param in PAGE_TO_PATH:
         module, section = PAGE_TO_PATH[page_param]
         return module, section, page_param
@@ -108,8 +122,57 @@ def _resolve_menu_from_query() -> tuple[str, str, str]:
     return module, section, sections[section][0]
 
 
-def _render_hover_nav(current_module: str, current_section: str, current_page: str, access_email: str) -> None:
-    extra_query = f"&access_email={quote(access_email)}" if access_email else ""
+def _inject_clean_ui_css() -> None:
+    st.markdown(
+        """
+<style>
+.block-container {padding-top: 0.45rem; padding-bottom: 1rem;}
+div[data-testid="stToolbar"] {visibility: hidden; height: 0; position: fixed;}
+header[data-testid="stHeader"] {height: 0.25rem;}
+.iris-brand-line {
+    background: #ffffff;
+    border: 1px solid #e4e7eb;
+    border-radius: 8px;
+    padding: 0.45rem 0.8rem;
+    margin: 0 0 0.45rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.iris-brand-text {
+    font-size: 1.05rem;
+    font-weight: 800;
+    letter-spacing: 0.08rem;
+    color: #1d2d3f;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_brand_line() -> None:
+    st.markdown(
+        '<div class="iris-brand-line"><div class="iris-brand-text">IRIS</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_hover_nav(
+    current_module: str,
+    current_section: str,
+    current_page: str,
+    access_email: str,
+    auth_token: str,
+) -> None:
+    extra_bits: list[str] = []
+    if access_email:
+        extra_bits.append(f"access_email={quote(access_email)}")
+    if auth_token:
+        extra_bits.append(f"auth={quote(auth_token)}")
+    extra_query = ""
+    if extra_bits:
+        extra_query = "&" + "&".join(extra_bits)
     module_nodes: list[str] = []
     for module, sections in NAV_TREE.items():
         section_nodes: list[str] = []
@@ -143,13 +206,13 @@ def _render_hover_nav(current_module: str, current_section: str, current_page: s
     st.markdown(
         """
 <style>
-.iris-nav {margin: 0 0 0.5rem 0;}
+.iris-nav {margin: 0 0 0.2rem 0;}
 .iris-nav ul {list-style: none; margin: 0; padding: 0;}
-.iris-nav .iris-menu {display: flex; gap: 0.25rem; background: #1f3044; border-radius: 10px; padding: 0.35rem 0.45rem;}
+.iris-nav .iris-menu {display: flex; gap: 0.25rem; background: #1f3044; border-radius: 8px; padding: 0.25rem 0.35rem;}
 .iris-nav .iris-module {position: relative;}
-.iris-nav .iris-module > a {display: block; padding: 0.55rem 0.9rem; color: #f4f7fb; text-decoration: none; border-radius: 8px; font-weight: 600;}
+.iris-nav .iris-module > a {display: block; padding: 0.44rem 0.72rem; color: #f4f7fb; text-decoration: none; border-radius: 7px; font-weight: 600; font-size: 0.9rem;}
 .iris-nav .iris-module.active > a, .iris-nav .iris-module > a:hover {background: #2a7fd9;}
-.iris-nav .iris-dropdown {display: none; position: absolute; top: 2.35rem; left: 0; min-width: 520px; background: #f7fbff; border: 1px solid #d8e3f0; border-radius: 10px; box-shadow: 0 12px 24px rgba(9, 30, 66, 0.18); padding: 0.6rem; z-index: 999;}
+.iris-nav .iris-dropdown {display: none; position: absolute; top: 2rem; left: 0; min-width: 520px; background: #f7fbff; border: 1px solid #d8e3f0; border-radius: 10px; box-shadow: 0 12px 24px rgba(9, 30, 66, 0.18); padding: 0.6rem; z-index: 999;}
 .iris-nav .iris-module:hover .iris-dropdown {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem;}
 .iris-nav .iris-section {border: 1px solid #e3edf8; border-radius: 8px; background: #ffffff; padding: 0.45rem 0.55rem;}
 .iris-nav .iris-section.active {border-color: #70a9eb; background: #eef6ff;}
@@ -158,7 +221,7 @@ def _render_hover_nav(current_module: str, current_section: str, current_page: s
 .iris-nav .iris-page {display: block; padding: 0.35rem 0.45rem; border-radius: 6px; text-decoration: none; color: #233142; font-size: 0.92rem;}
 .iris-nav .iris-page:hover {background: #e8f2ff;}
 .iris-nav .iris-page.active {background: #d7e9ff; color: #0f4fa8; font-weight: 700;}
-.iris-breadcrumb {margin: 0.45rem 0 0.85rem 0; color: #5a6777; font-size: 0.9rem;}
+.iris-breadcrumb {margin: 0.32rem 0 0.52rem 0; color: #5a6777; font-size: 0.85rem;}
 </style>
         """,
         unsafe_allow_html=True,
@@ -203,8 +266,10 @@ def _permissions_frame(perms: dict[str, dict[str, bool]]) -> pd.DataFrame:
 
 
 def _render_login_gate(db_path: Path) -> None:
+    _inject_clean_ui_css()
+    _render_brand_line()
     st.subheader("Login")
-    st.caption("Sign in to continue.")
+    st.caption("Sign in once. Session stays active across menu navigation.")
     _left, center, _right = st.columns([1, 1.2, 1])
     with center:
         with st.form("login_gate_form", clear_on_submit=False):
@@ -221,6 +286,9 @@ def _render_login_gate(db_path: Path) -> None:
             else:
                 st.session_state["login_email"] = normalized_email
                 st.session_state["is_authenticated"] = True
+                token = create_user_session(db_path=db_path, email=normalized_email, ttl_days=14)
+                st.session_state["session_token"] = token
+                st.query_params["auth"] = token
                 log_user_activity(
                     db_path=db_path,
                     actor_email=normalized_email,
@@ -634,14 +702,256 @@ def _render_store_admin(
         st.dataframe(employees, use_container_width=True)
 
 
+def _prefill_store_mapping_fields(db_path: Path, store_id: str) -> None:
+    sid = store_id.strip()
+    if not sid:
+        return
+    existing = {s.store_id: s for s in list_stores(db_path)}
+    rec = existing.get(sid)
+    master = get_store_master_by_id(db_path=db_path, store_id=sid)
+    if rec is not None:
+        st.session_state["map_store_name"] = rec.store_name
+        st.session_state["map_store_email"] = rec.email
+        st.session_state["map_drive_url"] = rec.drive_folder_url
+        st.session_state["map_existing_drive_url"] = rec.drive_folder_url
+    elif master is not None:
+        st.session_state["map_store_name"] = str(master.get("gofrugal_name", "")).strip()
+        st.session_state["map_store_email"] = str(master.get("store_email", "")).strip().lower()
+        st.session_state["map_drive_url"] = ""
+        st.session_state["map_existing_drive_url"] = ""
+    else:
+        st.session_state["map_store_name"] = ""
+        st.session_state["map_store_email"] = ""
+        st.session_state["map_drive_url"] = ""
+        st.session_state["map_existing_drive_url"] = ""
+    st.session_state["map_replace_drive_url"] = False
+    st.session_state["map_last_store_id"] = sid
+
+
+def _render_store_mapping(db_path: Path, data_root: Path, auto_sync_after_save: bool) -> None:
+    st.subheader("Store Mapping")
+    stores = list_stores(db_path)
+    if "map_store_id" not in st.session_state:
+        st.session_state["map_store_id"] = ""
+    if "map_store_name" not in st.session_state:
+        st.session_state["map_store_name"] = ""
+    if "map_store_email" not in st.session_state:
+        st.session_state["map_store_email"] = ""
+    if "map_drive_url" not in st.session_state:
+        st.session_state["map_drive_url"] = ""
+    if "map_existing_drive_url" not in st.session_state:
+        st.session_state["map_existing_drive_url"] = ""
+    if "map_replace_drive_url" not in st.session_state:
+        st.session_state["map_replace_drive_url"] = False
+    if "map_last_store_id" not in st.session_state:
+        st.session_state["map_last_store_id"] = ""
+    if "map_edit_store_select" not in st.session_state:
+        st.session_state["map_edit_store_select"] = ""
+
+    edit_ids = [""] + [s.store_id for s in stores]
+    selected_edit = st.selectbox(
+        "Edit Existing Store (optional)",
+        options=edit_ids,
+        key="map_edit_store_select",
+        help="Select a store to auto-fill Store Name, Store Email, and current Drive link.",
+    )
+    if selected_edit and selected_edit != st.session_state.get("map_store_id", ""):
+        st.session_state["map_store_id"] = selected_edit
+
+    st.text_input("Store ID (unique)", key="map_store_id")
+    current_sid = st.session_state["map_store_id"].strip()
+    if current_sid and current_sid != st.session_state.get("map_last_store_id", ""):
+        _prefill_store_mapping_fields(db_path=db_path, store_id=current_sid)
+
+    st.text_input("Store Name", key="map_store_name")
+    st.text_input("Store Email", key="map_store_email")
+    st.text_input("Google Drive Folder URL", key="map_drive_url")
+
+    existing_drive = st.session_state.get("map_existing_drive_url", "").strip()
+    new_drive = st.session_state.get("map_drive_url", "").strip()
+    drive_changed = bool(existing_drive and new_drive and existing_drive != new_drive)
+    if existing_drive:
+        st.caption(f"Current Drive URL: {existing_drive}")
+    if drive_changed:
+        st.checkbox(
+            "Replace existing Drive link for this store",
+            key="map_replace_drive_url",
+            help="Required when updating an existing store to a different Drive link.",
+        )
+
+    save_cols = st.columns([1, 1, 2])
+    if save_cols[0].button("Save / Update Store", type="primary"):
+        sid = st.session_state["map_store_id"].strip()
+        sname = st.session_state["map_store_name"].strip()
+        semail = st.session_state["map_store_email"].strip()
+        sdrive = st.session_state["map_drive_url"].strip()
+        if not sid or not sname or not semail:
+            st.error("Store ID, Store Name, and Store Email are required.")
+        elif drive_changed and not bool(st.session_state.get("map_replace_drive_url", False)):
+            st.warning("Confirm drive replacement first, then save.")
+        else:
+            upsert_store(
+                db_path=db_path,
+                store_id=sid,
+                store_name=sname,
+                email=semail,
+                drive_folder_url=sdrive,
+            )
+            (data_root / sid).mkdir(parents=True, exist_ok=True)
+            st.success(f"Saved store mapping for {sid}.")
+            _prefill_store_mapping_fields(db_path=db_path, store_id=sid)
+            if auto_sync_after_save and sdrive:
+                matched = [s for s in list_stores(db_path) if s.store_id == sid]
+                if matched:
+                    ok, message = sync_store_from_drive(matched[0], data_root=data_root)
+                    if ok:
+                        st.info(message)
+                    else:
+                        st.warning(message)
+
+    if save_cols[1].button("Sync Selected Store"):
+        sid = st.session_state["map_store_id"].strip()
+        matched = [s for s in list_stores(db_path) if s.store_id == sid]
+        if not sid or not matched:
+            st.warning("Select a valid store first.")
+        else:
+            ok, message = sync_store_from_drive(matched[0], data_root=data_root)
+            if ok:
+                st.success(message)
+            else:
+                st.warning(message)
+
+    if stores:
+        st.markdown("**Registered Stores**")
+        st.dataframe(pd.DataFrame([s.__dict__ for s in stores]), use_container_width=True)
+    else:
+        st.info("No stores registered yet.")
+
+
+def _render_camera_zones(db_path: Path) -> None:
+    st.subheader("Camera Zones")
+    stores = list_stores(db_path)
+    if not stores:
+        st.info("Create at least one store before camera setup.")
+        return
+    store_ids = [s.store_id for s in stores]
+    with st.form("camera_zone_form", clear_on_submit=False):
+        cfg_store_id = st.selectbox("Store", options=store_ids)
+        cfg_camera_id = st.text_input("Camera ID (e.g., D01)")
+        cfg_location = st.text_input("Location Name (e.g., Zone1, Zone2)")
+        cfg_role = st.selectbox(
+            "Camera Role",
+            options=["ENTRANCE", "INSIDE", "BILLING", "BACKROOM", "EXIT", "ZONE"],
+            index=1,
+        )
+        cfg_line_x = st.slider("Entry Line X (0=left,1=right)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
+        cfg_dir = st.selectbox("Entry Direction", options=["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"], index=0)
+        save_camera = st.form_submit_button("Save Camera")
+    if save_camera:
+        if not cfg_camera_id.strip():
+            st.error("Camera ID is required.")
+        else:
+            upsert_camera_config(
+                db_path=db_path,
+                store_id=cfg_store_id,
+                camera_id=cfg_camera_id.strip().upper(),
+                camera_role=cfg_role,
+                location_name=cfg_location.strip(),
+                entry_line_x=float(cfg_line_x),
+                entry_direction=cfg_dir,
+            )
+            st.success("Camera zone saved.")
+
+    selected_store = st.selectbox("View Store Cameras", options=store_ids, key="camera_view_store")
+    cfg_df = pd.DataFrame([c.__dict__ for c in list_camera_configs(db_path=db_path, store_id=selected_store)])
+    if cfg_df.empty:
+        st.caption("No camera configuration found for this store.")
+    else:
+        st.dataframe(cfg_df, use_container_width=True)
+
+
+def _render_employee_management(db_path: Path, employee_assets_root: Path) -> None:
+    st.subheader("Employee Management")
+    stores = list_stores(db_path)
+    if not stores:
+        st.info("Create at least one store before employee onboarding.")
+        return
+    store_ids = [s.store_id for s in stores]
+
+    st.markdown("**Add Employee Images**")
+    with st.form("employee_upload_form", clear_on_submit=True):
+        upload_store = st.selectbox("Store", options=store_ids)
+        employee_name = st.text_input("Employee Name")
+        upload_files = st.file_uploader(
+            "Employee Image Files",
+            type=["jpg", "jpeg", "png", "webp", "bmp"],
+            accept_multiple_files=True,
+        )
+        upload_clicked = st.form_submit_button("Upload")
+    if upload_clicked:
+        if not employee_name.strip():
+            st.error("Employee name is required.")
+        elif not upload_files:
+            st.error("Select at least one image.")
+        else:
+            uploaded = 0
+            for file in upload_files:
+                add_employee_image(
+                    db_path=db_path,
+                    employee_assets_root=employee_assets_root,
+                    store_id=upload_store,
+                    employee_name=employee_name.strip(),
+                    original_filename=file.name,
+                    content=file.getvalue(),
+                )
+                uploaded += 1
+            st.success(f"Uploaded {uploaded} image(s).")
+
+    st.markdown("**Employee Directory**")
+    view_scope = st.selectbox("View Scope", options=["ALL"] + store_ids, key="employee_view_scope")
+    if view_scope == "ALL":
+        employees = list_employees(db_path=db_path, store_id=None)
+    else:
+        employees = list_employees(db_path=db_path, store_id=view_scope)
+    emp_df = pd.DataFrame(employees)
+    if emp_df.empty:
+        st.caption("No employee records found.")
+        return
+    st.dataframe(emp_df, use_container_width=True, hide_index=True)
+
+    selected_id = st.selectbox("Employee ID", options=emp_df["id"].astype(int).tolist(), key="employee_selected_id")
+    selected_row = emp_df[emp_df["id"] == selected_id].iloc[0]
+    action_cols = st.columns([1, 1, 1])
+    if action_cols[0].button("Enable", key="employee_enable_button"):
+        set_employee_active(db_path=db_path, employee_id=int(selected_id), is_active=True)
+        st.success("Employee enabled.")
+    if action_cols[1].button("Disable", key="employee_disable_button"):
+        set_employee_active(db_path=db_path, employee_id=int(selected_id), is_active=False)
+        st.success("Employee disabled.")
+    confirm_delete = action_cols[2].checkbox("Confirm delete", key="employee_confirm_delete")
+    if action_cols[2].button("Delete", key="employee_delete_button"):
+        if not confirm_delete:
+            st.warning("Tick confirm delete first.")
+        else:
+            deleted = delete_employee(db_path=db_path, employee_id=int(selected_id), delete_file=True)
+            if deleted:
+                st.success("Employee deleted.")
+            else:
+                st.warning("Employee not found.")
+    st.caption(
+        f"Selected employee: {selected_row['employee_name']} | "
+        f"Store: {selected_row['store_id']} | Active: {bool(selected_row['is_active'])}"
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="IRIS Store Analysis Dashboard",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("IRIS Store Analysis Dashboard")
     _ensure_session_state()
+    _inject_clean_ui_css()
 
     app_dir = Path(__file__).resolve().parents[2]
     data_dir = app_dir / "data"
@@ -654,6 +964,13 @@ def main() -> None:
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
     ensure_default_admins(db_path, ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"])
+    auth_token_from_query = _query_value("auth", "").strip()
+    if not st.session_state.get("is_authenticated", False) and auth_token_from_query:
+        session_user = get_user_by_session_token(db_path=db_path, token=auth_token_from_query)
+        if session_user is not None:
+            st.session_state["login_email"] = session_user.email
+            st.session_state["is_authenticated"] = True
+            st.session_state["session_token"] = auth_token_from_query
     if not st.session_state.get("is_authenticated", False):
         _render_login_gate(db_path)
 
@@ -685,9 +1002,11 @@ def main() -> None:
         st.session_state["ctrl_auto_sync_on_save"] = False
 
     active_email = st.session_state.get("login_email", "")
+    auth_token = st.session_state.get("session_token", "")
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
     current_module, current_section, current_page = _resolve_menu_from_query()
 
+    _render_brand_line()
     access_bar_cols = st.columns([3, 2, 1])
     access_email = access_bar_cols[0].text_input(
         "Access Email (optional)",
@@ -696,8 +1015,11 @@ def main() -> None:
     )
     access_bar_cols[1].caption(f"Logged in: {active_email}")
     if access_bar_cols[2].button("Logout"):
+        revoke_user_session(db_path=db_path, token=auth_token)
         st.session_state["is_authenticated"] = False
         st.session_state["login_email"] = ""
+        st.session_state["session_token"] = ""
+        st.query_params["auth"] = ""
         st.rerun()
 
     _render_hover_nav(
@@ -705,12 +1027,15 @@ def main() -> None:
         current_section=current_section,
         current_page=current_page,
         access_email=access_email.strip(),
+        auth_token=auth_token,
     )
 
     st.query_params["module"] = current_module
     st.query_params["section"] = current_section
     st.query_params["page"] = current_page
     st.query_params["access_email"] = access_email.strip()
+    if auth_token:
+        st.query_params["auth"] = auth_token
 
     with st.expander("Analysis Controls", expanded=False):
         with st.form("analysis_controls_form", clear_on_submit=False):
@@ -854,12 +1179,18 @@ def main() -> None:
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
     elif current_page == "Quality":
         _render_quality_summary(view_output)
-    elif current_page == "Store Admin":
-        _render_store_admin(
+    elif current_page == "Store Mapping":
+        _render_store_mapping(
             db_path=db_path,
             data_root=root_dir,
-            employee_assets_root=employee_assets_root,
             auto_sync_after_save=auto_sync_on_save,
+        )
+    elif current_page == "Camera Zones":
+        _render_camera_zones(db_path=db_path)
+    elif current_page == "Employee Management":
+        _render_employee_management(
+            db_path=db_path,
+            employee_assets_root=employee_assets_root,
         )
 
 

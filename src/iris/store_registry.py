@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from json import JSONDecodeError
 from pathlib import Path
 import hashlib
@@ -37,6 +37,7 @@ class CameraConfig:
     store_id: str
     camera_id: str
     camera_role: str
+    location_name: str
     entry_line_x: float
     entry_direction: str
     updated_at: str
@@ -50,6 +51,11 @@ class UserRecord:
     is_active: int
     store_id: str
     created_at: str
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
 
 
 def _now_utc() -> str:
@@ -147,7 +153,9 @@ def init_db(db_path: Path) -> None:
                 store_id TEXT NOT NULL,
                 employee_name TEXT NOT NULL,
                 image_path TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
                 FOREIGN KEY(store_id) REFERENCES stores(store_id)
             )
         """)
@@ -157,6 +165,7 @@ def init_db(db_path: Path) -> None:
                 store_id TEXT NOT NULL,
                 camera_id TEXT NOT NULL,
                 camera_role TEXT NOT NULL DEFAULT 'INSIDE',
+                location_name TEXT NOT NULL DEFAULT '',
                 entry_line_x REAL NOT NULL DEFAULT 0.5,
                 entry_direction TEXT NOT NULL DEFAULT 'OUTSIDE_TO_INSIDE',
                 updated_at TEXT NOT NULL,
@@ -271,6 +280,21 @@ def init_db(db_path: Path) -> None:
                 UNIQUE(model_name, version_tag)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        if "is_active" not in _table_columns(conn, "employees"):
+            conn.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "updated_at" not in _table_columns(conn, "employees"):
+            conn.execute("ALTER TABLE employees ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE employees SET updated_at = created_at WHERE updated_at = ''")
+        if "location_name" not in _table_columns(conn, "camera_configs"):
+            conn.execute("ALTER TABLE camera_configs ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
         _seed_defaults(conn)
         conn.commit()
     finally:
@@ -422,6 +446,84 @@ def ensure_default_admins(db_path: Path, admin_emails: list[str]) -> None:
             pass
 
 
+def create_user_session(db_path: Path, email: str, ttl_days: int = 14) -> str:
+    init_db(db_path)
+    normalized_email = email.strip().lower()
+    now = datetime.now(timezone.utc)
+    token = secrets.token_urlsafe(32)
+    expires_at = (now + timedelta(days=max(1, ttl_days))).isoformat()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO user_sessions(token,email,expires_at,created_at) VALUES(?,?,?,?)",
+            (token, normalized_email, expires_at, now.isoformat()),
+        )
+        conn.execute(
+            "DELETE FROM user_sessions WHERE datetime(expires_at) < datetime('now')"
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def get_user_by_session_token(db_path: Path, token: str) -> UserRecord | None:
+    init_db(db_path)
+    tok = token.strip()
+    if not tok:
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT email, expires_at FROM user_sessions WHERE token=?",
+            (tok,),
+        ).fetchone()
+        if not row:
+            return None
+        email = str(row[0]).strip().lower()
+        expires_at = datetime.fromisoformat(str(row[1]))
+        now = datetime.now(timezone.utc)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
+            conn.execute("DELETE FROM user_sessions WHERE token=?", (tok,))
+            conn.commit()
+            return None
+        user_row = conn.execute(
+            """
+            SELECT user_id,email,full_name,is_active,store_id,created_at
+            FROM users
+            WHERE lower(email)=lower(?)
+            """,
+            (email,),
+        ).fetchone()
+        if not user_row or int(user_row[3]) != 1:
+            return None
+        return UserRecord(
+            user_id=int(user_row[0]),
+            email=str(user_row[1]),
+            full_name=str(user_row[2]),
+            is_active=int(user_row[3]),
+            store_id=str(user_row[4]),
+            created_at=str(user_row[5]),
+        )
+    finally:
+        conn.close()
+
+
+def revoke_user_session(db_path: Path, token: str) -> None:
+    init_db(db_path)
+    tok = token.strip()
+    if not tok:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM user_sessions WHERE token=?", (tok,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def upsert_store_master_rows(db_path: Path, rows: list[dict[str, str]]) -> int:
     init_db(db_path)
     conn=sqlite3.connect(db_path)
@@ -466,6 +568,43 @@ def list_store_master(db_path: Path) -> list[dict[str, Any]]:
         cols=["store_id","short_code","gofrugal_name","outlet_id","city","state","zone","country","mobile_no","store_email","cluster_manager","area_manager","updated_at"]
         rows=conn.execute("SELECT store_id,short_code,gofrugal_name,outlet_id,city,state,zone,country,mobile_no,store_email,cluster_manager,area_manager,updated_at FROM store_master ORDER BY store_id").fetchall()
         return [dict(zip(cols,r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_store_master_by_id(db_path: Path, store_id: str) -> dict[str, Any] | None:
+    init_db(db_path)
+    sid = store_id.strip()
+    if not sid:
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT store_id,short_code,gofrugal_name,outlet_id,city,state,zone,country,mobile_no,store_email,cluster_manager,area_manager,updated_at
+            FROM store_master
+            WHERE store_id=?
+            """,
+            (sid,),
+        ).fetchone()
+        if not row:
+            return None
+        cols = [
+            "store_id",
+            "short_code",
+            "gofrugal_name",
+            "outlet_id",
+            "city",
+            "state",
+            "zone",
+            "country",
+            "mobile_no",
+            "store_email",
+            "cluster_manager",
+            "area_manager",
+            "updated_at",
+        ]
+        return dict(zip(cols, row))
     finally:
         conn.close()
 
@@ -653,28 +792,100 @@ def add_employee_image(db_path: Path, employee_assets_root: Path, store_id: str,
     image_path.write_bytes(content_to_write)
     conn=sqlite3.connect(db_path)
     try:
-        conn.execute("INSERT INTO employees(store_id,employee_name,image_path,created_at) VALUES(?,?,?,?)", (sid,en,str(image_path),_now_utc()))
+        now = _now_utc()
+        conn.execute(
+            "INSERT INTO employees(store_id,employee_name,image_path,is_active,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (sid, en, str(image_path), 1, now, now),
+        )
         conn.commit()
     finally:
         conn.close()
     return image_path
 
 
-def list_employees(db_path: Path, store_id: str) -> list[dict[str, Any]]:
+def list_employees(db_path: Path, store_id: str | None = None, include_inactive: bool = True) -> list[dict[str, Any]]:
     init_db(db_path)
     conn=sqlite3.connect(db_path)
     try:
-        rows=conn.execute("SELECT id,employee_name,image_path,created_at FROM employees WHERE store_id=? ORDER BY id DESC", (store_id,)).fetchall()
-        return [{"id":r[0],"employee_name":r[1],"image_path":r[2],"created_at":r[3]} for r in rows]
+        query = (
+            "SELECT id,store_id,employee_name,image_path,is_active,created_at,updated_at "
+            "FROM employees"
+        )
+        params: list[Any] = []
+        where: list[str] = []
+        if store_id:
+            where.append("store_id=?")
+            params.append(store_id.strip())
+        if not include_inactive:
+            where.append("is_active=1")
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY id DESC"
+        rows=conn.execute(query, tuple(params)).fetchall()
+        return [
+            {
+                "id": r[0],
+                "store_id": r[1],
+                "employee_name": r[2],
+                "image_path": r[3],
+                "is_active": bool(r[4]),
+                "created_at": r[5],
+                "updated_at": r[6],
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 
 
-def upsert_camera_config(db_path: Path, store_id: str, camera_id: str, camera_role: str = "INSIDE", entry_line_x: float = 0.5, entry_direction: str = "OUTSIDE_TO_INSIDE") -> None:
+def set_employee_active(db_path: Path, employee_id: int, is_active: bool) -> None:
     init_db(db_path)
-    role=(camera_role or "INSIDE").strip().upper()
-    if role not in {"INSIDE","ENTRANCE","BILLING","BACKROOM","EXIT"}:
-        role="INSIDE"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE employees SET is_active=?, updated_at=? WHERE id=?",
+            (1 if is_active else 0, _now_utc(), int(employee_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_employee(db_path: Path, employee_id: int, delete_file: bool = True) -> bool:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT image_path FROM employees WHERE id=?",
+            (int(employee_id),),
+        ).fetchone()
+        if not row:
+            return False
+        image_path = Path(str(row[0]))
+        conn.execute("DELETE FROM employees WHERE id=?", (int(employee_id),))
+        conn.commit()
+    finally:
+        conn.close()
+    if delete_file and image_path.exists():
+        try:
+            image_path.unlink()
+        except Exception:
+            pass
+    return True
+
+
+def upsert_camera_config(
+    db_path: Path,
+    store_id: str,
+    camera_id: str,
+    camera_role: str = "INSIDE",
+    location_name: str = "",
+    entry_line_x: float = 0.5,
+    entry_direction: str = "OUTSIDE_TO_INSIDE",
+) -> None:
+    init_db(db_path)
+    role=(camera_role or "INSIDE").strip().upper() or "INSIDE"
+    location=(location_name or "").strip()
     direction=(entry_direction or "OUTSIDE_TO_INSIDE").strip().upper()
     if direction not in {"OUTSIDE_TO_INSIDE","INSIDE_TO_OUTSIDE"}:
         direction="OUTSIDE_TO_INSIDE"
@@ -685,15 +896,16 @@ def upsert_camera_config(db_path: Path, store_id: str, camera_id: str, camera_ro
     try:
         conn.execute(
             """
-            INSERT INTO camera_configs(store_id,camera_id,camera_role,entry_line_x,entry_direction,updated_at)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO camera_configs(store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at)
+            VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(store_id,camera_id) DO UPDATE SET
               camera_role=excluded.camera_role,
+              location_name=excluded.location_name,
               entry_line_x=excluded.entry_line_x,
               entry_direction=excluded.entry_direction,
               updated_at=excluded.updated_at
             """,
-            (store_id.strip(), camera_id.strip().upper(), role, x, direction, _now_utc()),
+            (store_id.strip(), camera_id.strip().upper(), role, location, x, direction, _now_utc()),
         )
         conn.commit()
     finally:
@@ -705,9 +917,9 @@ def list_camera_configs(db_path: Path, store_id: str | None = None) -> list[Came
     conn=sqlite3.connect(db_path)
     try:
         if store_id:
-            rows=conn.execute("SELECT store_id,camera_id,camera_role,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
+            rows=conn.execute("SELECT store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
         else:
-            rows=conn.execute("SELECT store_id,camera_id,camera_role,entry_line_x,entry_direction,updated_at FROM camera_configs ORDER BY store_id,camera_id").fetchall()
+            rows=conn.execute("SELECT store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs ORDER BY store_id,camera_id").fetchall()
         return [CameraConfig(*r) for r in rows]
     finally:
         conn.close()
