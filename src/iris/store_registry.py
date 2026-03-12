@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from json import JSONDecodeError
 from pathlib import Path
+import csv
 import hashlib
 import hmac
 import io
@@ -303,6 +304,26 @@ def init_db(db_path: Path) -> None:
                 setting_key TEXT PRIMARY KEY,
                 setting_value TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS qa_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id TEXT NOT NULL,
+                capture_date TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                camera_id TEXT NOT NULL DEFAULT '',
+                track_id TEXT NOT NULL DEFAULT '',
+                predicted_label TEXT NOT NULL DEFAULT '',
+                corrected_label TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.8,
+                needs_review INTEGER NOT NULL DEFAULT 0,
+                review_status TEXT NOT NULL DEFAULT 'pending',
+                comment TEXT NOT NULL DEFAULT '',
+                actor_email TEXT NOT NULL,
+                reviewer_email TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL DEFAULT ''
             )
         """)
         if "is_active" not in _table_columns(conn, "employees"):
@@ -966,6 +987,135 @@ def upsert_app_settings(db_path: Path, settings: dict[str, str]) -> None:
         conn.close()
 
 
+def add_qa_feedback(
+    db_path: Path,
+    store_id: str,
+    capture_date: str,
+    filename: str,
+    camera_id: str,
+    track_id: str,
+    predicted_label: str,
+    corrected_label: str,
+    confidence: float,
+    needs_review: bool,
+    actor_email: str,
+    comment: str = "",
+) -> int:
+    init_db(db_path)
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO qa_feedback(
+                store_id,capture_date,filename,camera_id,track_id,predicted_label,corrected_label,
+                confidence,needs_review,review_status,comment,actor_email,reviewer_email,created_at,reviewed_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                store_id.strip(),
+                capture_date.strip(),
+                filename.strip(),
+                camera_id.strip(),
+                track_id.strip(),
+                predicted_label.strip().lower(),
+                corrected_label.strip().lower(),
+                float(confidence),
+                1 if needs_review else 0,
+                "pending",
+                comment.strip(),
+                actor_email.strip().lower(),
+                "",
+                now,
+                "",
+            ),
+        )
+        feedback_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+        return feedback_id
+    finally:
+        conn.close()
+
+
+def list_qa_feedback(
+    db_path: Path,
+    store_id: str | None = None,
+    review_status: str | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        query = (
+            "SELECT id,store_id,capture_date,filename,camera_id,track_id,predicted_label,corrected_label,"
+            "confidence,needs_review,review_status,comment,actor_email,reviewer_email,created_at,reviewed_at "
+            "FROM qa_feedback"
+        )
+        where: list[str] = []
+        params: list[Any] = []
+        if store_id and store_id.strip():
+            where.append("store_id=?")
+            params.append(store_id.strip())
+        if review_status and review_status.strip():
+            where.append("lower(review_status)=lower(?)")
+            params.append(review_status.strip())
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        rows = conn.execute(query, tuple(params)).fetchall()
+        cols = [
+            "id",
+            "store_id",
+            "capture_date",
+            "filename",
+            "camera_id",
+            "track_id",
+            "predicted_label",
+            "corrected_label",
+            "confidence",
+            "needs_review",
+            "review_status",
+            "comment",
+            "actor_email",
+            "reviewer_email",
+            "created_at",
+            "reviewed_at",
+        ]
+        out = [dict(zip(cols, r)) for r in rows]
+        for row in out:
+            row["needs_review"] = bool(row.get("needs_review"))
+        return out
+    finally:
+        conn.close()
+
+
+def update_qa_feedback_review(
+    db_path: Path,
+    feedback_id: int,
+    review_status: str,
+    reviewer_email: str,
+) -> None:
+    init_db(db_path)
+    status = review_status.strip().lower()
+    if status not in {"pending", "confirmed", "rejected"}:
+        raise ValueError("review_status must be pending, confirmed, or rejected")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE qa_feedback
+            SET review_status=?, reviewer_email=?, reviewed_at=?
+            WHERE id=?
+            """,
+            (status, reviewer_email.strip().lower(), _now_utc(), int(feedback_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def upsert_store_master_rows(db_path: Path, rows: list[dict[str, str]]) -> int:
     init_db(db_path)
     conn=sqlite3.connect(db_path)
@@ -1427,6 +1577,7 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
                             "id": str(item["id"]),
                             "name": item_name,
                             "relative_path": str(rel_path).replace("\\", "/"),
+                            "drive_web_link": f"https://drive.google.com/file/d/{item['id']}/view",
                         }
                     )
             token=payload.get("nextPageToken")
@@ -1434,8 +1585,9 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
     return files
 
 
-def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path, api_key: str) -> int:
+def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path, api_key: str) -> tuple[int, list[dict[str, str]]]:
     n = 0
+    manifest_rows: list[dict[str, str]] = []
     for item in file_items:
         relative_path = str(item.get("relative_path", item.get("name", ""))).strip()
         relative_obj = Path(relative_path)
@@ -1446,8 +1598,18 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
         dest.parent.mkdir(parents=True, exist_ok=True)
         resp=requests.get(f"https://www.googleapis.com/drive/v3/files/{item['id']}", params={"alt":"media","key":api_key}, timeout=60)
         if resp.status_code!=200: continue
-        dest.write_bytes(resp.content); n+=1
-    return n
+        dest.write_bytes(resp.content)
+        n += 1
+        manifest_rows.append(
+            {
+                "file_id": str(item.get("id", "")),
+                "name": str(item.get("name", "")),
+                "relative_path": str(Path(*safe_parts)).replace("\\", "/"),
+                "drive_web_link": str(item.get("drive_web_link", "")),
+                "local_path": str(dest),
+            }
+        )
+    return n, manifest_rows
 
 
 def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: str) -> tuple[bool, str]:
@@ -1458,7 +1620,16 @@ def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: st
         items=_drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
         if not items:
             return False, f"{store.store_id}: no files found via Drive API"
-        downloaded=_drive_api_download_files(items, target_dir=target_dir, api_key=api_key)
+        downloaded, manifest_rows = _drive_api_download_files(items, target_dir=target_dir, api_key=api_key)
+        if manifest_rows:
+            manifest_path = target_dir / "_drive_manifest.csv"
+            with manifest_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["file_id", "name", "relative_path", "drive_web_link", "local_path"],
+                )
+                writer.writeheader()
+                writer.writerows(manifest_rows)
         processed,failed=optimize_store_image_files(target_dir)
         return True, f"{store.store_id}: api_sync downloaded={downloaded} optimized={processed} failed={failed} dir={target_dir}"
     except Exception as exc:

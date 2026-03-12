@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from pathlib import Path
 import re
 from urllib.parse import quote
@@ -8,9 +9,11 @@ from urllib.parse import quote
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from PIL import Image, ImageDraw
 
 from iris.iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
 from iris.store_registry import (
+    add_qa_feedback,
     add_employee_image,
     bulk_upsert_store_access_rows,
     camera_config_map,
@@ -29,6 +32,7 @@ from iris.store_registry import (
     get_store_by_email,
     init_db,
     list_alert_routes,
+    list_qa_feedback,
     list_user_activity,
     log_user_activity,
     list_camera_configs,
@@ -48,6 +52,7 @@ from iris.store_registry import (
     set_user_password,
     sync_store_from_drive,
     transition_license,
+    update_qa_feedback_review,
     upsert_alert_route,
     upsert_camera_config,
     upsert_manager_access,
@@ -64,7 +69,7 @@ from iris.store_registry import (
 
 NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Reports": {
-        "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline"],
+        "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline", "Customer Journeys"],
     },
     "Access": {
         "Administration": [
@@ -531,6 +536,206 @@ def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
     return load_exports(out_dir=out_dir)
 
 
+def _safe_json_list(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    if isinstance(value, float) and pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        return []
+    return []
+
+
+def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
+    out = image_df.copy()
+    defaults: dict[str, object] = {
+        "camera_id": "UNKNOWN",
+        "relevant": False,
+        "is_valid": False,
+        "person_count": 0,
+        "staff_count": 0,
+        "customer_count": 0,
+        "timestamp": pd.NaT,
+        "filename": "",
+        "path": "",
+        "capture_date": "",
+        "source_folder": "",
+        "track_ids": "[]",
+        "customer_ids": "[]",
+        "group_ids": "[]",
+        "person_boxes": "[]",
+        "staff_flags": "[]",
+        "staff_scores": "[]",
+        "drive_link": "",
+        "relative_path": "",
+        "reject_reason": "",
+        "detection_error": "",
+    }
+    for col, val in defaults.items():
+        if col not in out.columns:
+            out[col] = val
+    out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
+    out["person_count"] = pd.to_numeric(out["person_count"], errors="coerce").fillna(0).astype(int)
+    out["staff_count"] = pd.to_numeric(out["staff_count"], errors="coerce").fillna(0).astype(int)
+    out["customer_count"] = pd.to_numeric(out["customer_count"], errors="coerce").fillna(
+        out["person_count"] - out["staff_count"]
+    ).astype(int)
+    out["customer_count"] = out["customer_count"].clip(lower=0)
+    out["capture_date"] = out["capture_date"].fillna("").astype(str)
+    missing_date = out["capture_date"].str.strip() == ""
+    out.loc[missing_date, "capture_date"] = out.loc[missing_date, "timestamp"].dt.date.astype(str)
+    return out
+
+
+def _predicted_label(row: pd.Series) -> str:
+    person_count = int(row.get("person_count", 0) or 0)
+    staff_count = int(row.get("staff_count", 0) or 0)
+    if person_count <= 0:
+        return "no_person"
+    if staff_count <= 0:
+        return "customer"
+    if staff_count >= person_count:
+        return "staff"
+    return "mixed"
+
+
+def _render_overlay_image(row: pd.Series):
+    image_path = str(row.get("path", "")).strip()
+    if not image_path:
+        return None
+    path_obj = Path(image_path)
+    if not path_obj.exists():
+        return None
+    person_boxes = _safe_json_list(row.get("person_boxes", "[]"))
+    staff_flags = [bool(x) for x in _safe_json_list(row.get("staff_flags", "[]"))]
+    track_ids = [str(x) for x in _safe_json_list(row.get("track_ids", "[]"))]
+    if not person_boxes:
+        return None
+    try:
+        with Image.open(path_obj) as raw:
+            canvas = raw.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+        width, height = canvas.size
+        stroke = max(2, int(round(min(width, height) * 0.004)))
+        for idx, box in enumerate(person_boxes):
+            if not isinstance(box, list | tuple) or len(box) != 4:
+                continue
+            try:
+                x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+                y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+                x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+                y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+            except Exception:
+                continue
+            is_staff = bool(staff_flags[idx]) if idx < len(staff_flags) else False
+            color = "#e63946" if is_staff else "#2a7fd9"
+            label = "STAFF" if is_staff else "CUSTOMER"
+            if idx < len(track_ids) and str(track_ids[idx]).strip():
+                label += f" T{track_ids[idx]}"
+            draw.rectangle((x1, y1, x2, y2), outline=color, width=stroke)
+            tag_h = min(22, max(14, int(height * 0.03)))
+            tag_y1 = max(0, y1 - tag_h)
+            tag_y2 = min(height, y1)
+            tag_x2 = min(width, x1 + max(100, len(label) * 8))
+            draw.rectangle((x1, tag_y1, tag_x2, tag_y2), fill=color)
+            draw.text((x1 + 4, tag_y1 + 2), label, fill="#ffffff")
+        return canvas
+    except Exception:
+        return None
+
+
+def _build_customer_journey_summary(
+    image_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, list[dict[str, object]]]]:
+    if image_df.empty:
+        return pd.DataFrame(), {}
+    events: dict[str, list[dict[str, object]]] = {}
+    for _, row in image_df[image_df["timestamp"].notna()].sort_values("timestamp").iterrows():
+        customer_ids = [str(x) for x in _safe_json_list(row.get("customer_ids", "[]")) if str(x).strip()]
+        for cid in customer_ids:
+            events.setdefault(cid, []).append(
+                {
+                    "timestamp": row.get("timestamp"),
+                    "camera_id": str(row.get("camera_id", "")),
+                    "filename": str(row.get("filename", "")),
+                    "path": str(row.get("path", "")),
+                    "drive_link": str(row.get("drive_link", "")),
+                    "track_ids": row.get("track_ids", "[]"),
+                    "staff_count": int(row.get("staff_count", 0) or 0),
+                    "customer_count": int(row.get("customer_count", 0) or 0),
+                }
+            )
+
+    rows: list[dict[str, object]] = []
+    for cid, cid_events in events.items():
+        if not cid_events:
+            continue
+        first_seen = cid_events[0]["timestamp"]
+        last_seen = cid_events[-1]["timestamp"]
+        duration = 0.0
+        if pd.notna(first_seen) and pd.notna(last_seen):
+            duration = max(
+                0.0,
+                float((pd.Timestamp(last_seen) - pd.Timestamp(first_seen)).total_seconds()),
+            )
+        cameras = sorted({str(evt["camera_id"]) for evt in cid_events if str(evt["camera_id"]).strip()})
+        rows.append(
+            {
+                "customer_id": cid,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "duration_sec": round(duration, 1),
+                "frames": len(cid_events),
+                "cameras": ",".join(cameras),
+                "sample_filename": str(cid_events[0]["filename"]),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(), events
+    summary = pd.DataFrame(rows).sort_values(["first_seen", "customer_id"]).reset_index(drop=True)
+    return summary, events
+
+
+def _sync_confirmed_feedback_export(db_path: Path) -> Path:
+    out_path = db_path.parent / "training" / "qa_feedback_confirmed.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    confirmed = pd.DataFrame(
+        list_qa_feedback(db_path=db_path, store_id=None, review_status="confirmed", limit=100000)
+    )
+    if confirmed.empty:
+        confirmed = pd.DataFrame(
+            columns=[
+                "id",
+                "store_id",
+                "capture_date",
+                "filename",
+                "camera_id",
+                "track_id",
+                "predicted_label",
+                "corrected_label",
+                "confidence",
+                "needs_review",
+                "review_status",
+                "comment",
+                "actor_email",
+                "reviewer_email",
+                "created_at",
+                "reviewed_at",
+            ]
+        )
+    confirmed.to_csv(out_path, index=False)
+    return out_path
+
+
 def _render_overview(output: AnalysisOutput) -> None:
     st.subheader("All Stores Summary")
     if output.all_stores_summary.empty:
@@ -573,39 +778,8 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
 
     selected_store = st.selectbox("Store", options=store_ids)
     store_result = output.stores[selected_store]
-    image_df = store_result.image_insights.copy()
+    image_df = _normalize_image_df(store_result.image_insights)
     hotspot_df = store_result.camera_hotspots.copy()
-
-    # Defensive normalization: some stores can have empty/partial frames after sync,
-    # so keep dashboard rendering stable even if columns are missing.
-    if "camera_id" not in image_df.columns:
-        image_df["camera_id"] = "UNKNOWN"
-    if "relevant" not in image_df.columns:
-        image_df["relevant"] = False
-    if "is_valid" not in image_df.columns:
-        image_df["is_valid"] = False
-    if "person_count" not in image_df.columns:
-        image_df["person_count"] = 0
-    if "timestamp" not in image_df.columns:
-        image_df["timestamp"] = pd.NaT
-    if "filename" not in image_df.columns:
-        image_df["filename"] = ""
-    if "path" not in image_df.columns:
-        image_df["path"] = ""
-    if "capture_date" not in image_df.columns:
-        image_df["capture_date"] = image_df["timestamp"].dt.date.astype(str)
-    if "source_folder" not in image_df.columns:
-        image_df["source_folder"] = ""
-    if "track_ids" not in image_df.columns:
-        image_df["track_ids"] = "[]"
-    if "customer_ids" not in image_df.columns:
-        image_df["customer_ids"] = "[]"
-    if "group_ids" not in image_df.columns:
-        image_df["group_ids"] = "[]"
-    if "reject_reason" not in image_df.columns:
-        image_df["reject_reason"] = ""
-    if "detection_error" not in image_df.columns:
-        image_df["detection_error"] = ""
 
     row = output.all_stores_summary[
         output.all_stores_summary["store_id"] == selected_store
@@ -620,6 +794,12 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
     cols[6].metric("Bounce Rate", f"{float(row.get('bounce_rate', 0.0)):.2%}")
     cols[7].metric("Footfall", int(row.get("footfall", 0)))
     cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
+    auth_token = str(st.session_state.get("session_token", "")).strip()
+    query_extra = f"&auth={quote(auth_token)}" if auth_token else ""
+    st.markdown(
+        f'<a href="?module=Reports&section=Business%20Health&page=Customer%20Journeys&store={quote(selected_store)}{query_extra}" target="_blank">Open Unique Customer IDs for verification</a>',
+        unsafe_allow_html=True,
+    )
     cols2 = st.columns(3)
     cols2[0].metric("Daily Walk-ins (Actual)", int(row.get("daily_walkins", 0)))
     cols2[1].metric("Daily Conversions", int(row.get("daily_conversions", 0)))
@@ -812,6 +992,275 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int) -> No
                 st.image(image_path, caption=caption, use_container_width=True)
             else:
                 st.caption(caption)
+
+
+def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str) -> None:
+    st.subheader("Operator QA Timeline")
+    if not output.stores:
+        st.info("No store analysis loaded.")
+        return
+
+    store_ids = sorted(output.stores.keys())
+    preselected_store = _query_value("store", "").strip()
+    default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
+    sid = st.selectbox("QA store", options=store_ids, index=default_index, key="qa_store")
+    image_df = _normalize_image_df(output.stores[sid].image_insights)
+    if image_df.empty:
+        st.info("No image rows available for this store.")
+        return
+
+    image_df = image_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+    image_df["predicted_label"] = image_df.apply(_predicted_label, axis=1)
+    image_df["track_count"] = image_df["track_ids"].map(lambda x: len(_safe_json_list(x)))
+    unique_ids = sorted(
+        {
+            str(cid)
+            for ids in image_df["customer_ids"].tolist()
+            for cid in _safe_json_list(ids)
+            if str(cid).strip()
+        }
+    )
+
+    top_cols = st.columns(4)
+    top_cols[0].metric("Frames", int(len(image_df)))
+    top_cols[1].metric("Detected People", int(image_df["person_count"].sum()))
+    top_cols[2].metric("Unique Customer IDs", int(len(unique_ids)))
+    top_cols[3].metric("Frames With Drive Link", int((image_df["drive_link"].fillna("") != "").sum()))
+
+    auth_token = str(st.session_state.get("session_token", "")).strip()
+    extra_auth = f"&auth={quote(auth_token)}" if auth_token else ""
+    st.markdown(
+        f'<a href="?module=Reports&section=Business%20Health&page=Customer%20Journeys&store={quote(sid)}{extra_auth}" target="_blank">Open unique customer verification page</a>',
+        unsafe_allow_html=True,
+    )
+
+    table_cols = [
+        "timestamp",
+        "capture_date",
+        "camera_id",
+        "filename",
+        "person_count",
+        "staff_count",
+        "customer_count",
+        "predicted_label",
+        "track_ids",
+        "drive_link",
+        "detection_error",
+    ]
+    preview_df = image_df[table_cols].head(500).copy()
+    preview_df["timestamp"] = preview_df["timestamp"].astype(str)
+    try:
+        st.dataframe(
+            preview_df,
+            use_container_width=True,
+            height=360,
+            hide_index=True,
+            column_config={
+                "drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open")
+            },
+        )
+    except Exception:
+        st.dataframe(preview_df, use_container_width=True, height=360, hide_index=True)
+    quick_links = preview_df[preview_df["drive_link"].fillna("").astype(str).str.strip() != ""].head(20)
+    if not quick_links.empty:
+        st.markdown("**Quick Image Links**")
+        for _, row in quick_links.iterrows():
+            st.markdown(f"- [{row['filename']}]({row['drive_link']})")
+
+    selector = image_df.head(500).copy()
+    selector["row_label"] = selector.apply(
+        lambda r: f"{str(r.get('timestamp', 'NA'))} | {str(r.get('camera_id', ''))} | {str(r.get('filename', ''))}",
+        axis=1,
+    )
+    selected_label = st.selectbox(
+        "Frame for proof and QA correction",
+        options=selector["row_label"].tolist(),
+        key=f"qa_frame_selector_{sid}",
+    )
+    selected_row = selector[selector["row_label"] == selected_label].iloc[0]
+
+    proof_cols = st.columns(2)
+    with proof_cols[0]:
+        drive_link = str(selected_row.get("drive_link", "")).strip()
+        if drive_link:
+            if hasattr(st, "link_button"):
+                st.link_button("Open Source Image in Google Drive", drive_link)
+            else:
+                st.markdown(f"[Open Source Image in Google Drive]({drive_link})")
+        st.caption(f"File: {selected_row.get('filename', '')}")
+        st.caption(f"Camera: {selected_row.get('camera_id', '')}")
+        st.caption(f"Predicted: {_predicted_label(selected_row)}")
+        st.caption(
+            f"People={int(selected_row.get('person_count', 0))}, "
+            f"Staff={int(selected_row.get('staff_count', 0))}, "
+            f"Customers={int(selected_row.get('customer_count', 0))}"
+        )
+    with proof_cols[1]:
+        overlay_image = _render_overlay_image(selected_row)
+        if overlay_image is not None:
+            st.image(overlay_image, caption="Overlay: red=staff, blue=customer", use_container_width=True)
+        else:
+            raw_path = str(selected_row.get("path", "")).strip()
+            if raw_path and Path(raw_path).exists():
+                st.image(raw_path, caption="Source frame", use_container_width=True)
+            else:
+                st.caption("Source image not available locally.")
+
+    st.markdown("**Mark Prediction Wrong**")
+    st.caption(
+        "Corrections are stored first as pending review. Confirmed rows are exported for retraining, so accidental labels can be rejected safely."
+    )
+    with st.form(f"qa_feedback_form_{sid}", clear_on_submit=False):
+        track_ids = [str(x) for x in _safe_json_list(selected_row.get("track_ids", "[]")) if str(x).strip()]
+        track_option = st.selectbox(
+            "Track ID scope",
+            options=["frame"] + track_ids,
+            help="Use a specific track ID if only one person in the frame is wrong.",
+        )
+        predicted_label = st.selectbox(
+            "Predicted label",
+            options=["customer", "staff", "mixed", "no_person"],
+            index=["customer", "staff", "mixed", "no_person"].index(_predicted_label(selected_row)),
+        )
+        corrected_label = st.selectbox(
+            "Corrected label",
+            options=["customer", "staff", "mixed", "no_person"],
+            index=0,
+        )
+        confidence = st.slider("Correction confidence", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+        needs_review = st.checkbox("Require reviewer approval", value=True)
+        comment = st.text_input("Comment", value="")
+        submit_feedback = st.form_submit_button("Save QA correction")
+    if submit_feedback:
+        feedback_id = add_qa_feedback(
+            db_path=db_path,
+            store_id=sid,
+            capture_date=str(selected_row.get("capture_date", "")),
+            filename=str(selected_row.get("filename", "")),
+            camera_id=str(selected_row.get("camera_id", "")),
+            track_id="" if track_option == "frame" else str(track_option),
+            predicted_label=predicted_label,
+            corrected_label=corrected_label,
+            confidence=float(confidence),
+            needs_review=bool(needs_review),
+            actor_email=(active_email or "system@local"),
+            comment=comment,
+        )
+        st.success(f"Saved QA correction #{feedback_id}.")
+
+    st.markdown("**Feedback Review Queue**")
+    status_filter = st.selectbox(
+        "Feedback status",
+        options=["all", "pending", "confirmed", "rejected"],
+        index=0,
+        key=f"qa_feedback_filter_{sid}",
+    )
+    feedback_rows = list_qa_feedback(
+        db_path=db_path,
+        store_id=sid,
+        review_status=None if status_filter == "all" else status_filter,
+        limit=500,
+    )
+    if not feedback_rows:
+        st.caption("No feedback records yet.")
+        return
+    feedback_df = pd.DataFrame(feedback_rows)
+    st.dataframe(feedback_df, use_container_width=True, hide_index=True)
+    pending_df = feedback_df[feedback_df["review_status"].astype(str).str.lower() == "pending"].copy()
+    if pending_df.empty:
+        export_path = _sync_confirmed_feedback_export(db_path=db_path)
+        st.caption(f"Confirmed feedback export: {export_path}")
+        return
+
+    review_cols = st.columns(3)
+    with review_cols[0]:
+        selected_feedback_id = st.selectbox(
+            "Pending feedback ID",
+            options=pending_df["id"].astype(int).tolist(),
+            key=f"qa_feedback_id_{sid}",
+        )
+    with review_cols[1]:
+        if st.button("Confirm selected", key=f"qa_confirm_{sid}"):
+            update_qa_feedback_review(
+                db_path=db_path,
+                feedback_id=int(selected_feedback_id),
+                review_status="confirmed",
+                reviewer_email=(active_email or "system@local"),
+            )
+            _sync_confirmed_feedback_export(db_path=db_path)
+            st.success(f"Feedback #{selected_feedback_id} confirmed.")
+            st.rerun()
+    with review_cols[2]:
+        if st.button("Reject selected", key=f"qa_reject_{sid}"):
+            update_qa_feedback_review(
+                db_path=db_path,
+                feedback_id=int(selected_feedback_id),
+                review_status="rejected",
+                reviewer_email=(active_email or "system@local"),
+            )
+            st.warning(f"Feedback #{selected_feedback_id} rejected.")
+            st.rerun()
+
+
+def _render_customer_journeys(output: AnalysisOutput) -> None:
+    st.subheader("Customer Journey Verification")
+    if not output.stores:
+        st.info("No store analysis loaded.")
+        return
+    store_ids = sorted(output.stores.keys())
+    preselected_store = _query_value("store", "").strip()
+    default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
+    sid = st.selectbox("Store", options=store_ids, index=default_index, key="journey_store")
+    image_df = _normalize_image_df(output.stores[sid].image_insights)
+    summary_df, events = _build_customer_journey_summary(image_df=image_df)
+    if summary_df.empty:
+        st.info("No unique customer IDs available yet. Run analysis and ensure relevant frames exist.")
+        return
+
+    st.caption("Unique IDs are derived from tracked detections across camera frames.")
+    limit = st.selectbox("Customer IDs to display", options=[20, 50, 100, 200], index=0)
+    show_df = summary_df.head(int(limit)).copy()
+    show_df["first_seen"] = show_df["first_seen"].astype(str)
+    show_df["last_seen"] = show_df["last_seen"].astype(str)
+    st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+    selected_customer = st.selectbox(
+        "Customer ID for frame-by-frame proof",
+        options=summary_df["customer_id"].tolist(),
+        index=0,
+        key=f"journey_customer_{sid}",
+    )
+    customer_events = events.get(str(selected_customer), [])
+    if not customer_events:
+        st.caption("No timeline events available for this customer.")
+        return
+    events_df = pd.DataFrame(customer_events)
+    events_df["timestamp"] = pd.to_datetime(events_df["timestamp"], errors="coerce")
+    events_df["timestamp"] = events_df["timestamp"].astype(str)
+    try:
+        st.dataframe(
+            events_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open")},
+        )
+    except Exception:
+        st.dataframe(events_df, use_container_width=True, hide_index=True)
+
+    st.markdown("**Visual Verification**")
+    gallery_cols = st.columns(4)
+    for idx, evt in enumerate(customer_events[:20]):
+        caption = f"{evt.get('timestamp')} | {evt.get('camera_id')} | {evt.get('filename')}"
+        with gallery_cols[idx % 4]:
+            path = str(evt.get("path", "")).strip()
+            if path and Path(path).exists():
+                st.image(path, caption=caption, use_container_width=True)
+            else:
+                link = str(evt.get("drive_link", "")).strip()
+                if link:
+                    st.markdown(f"[{evt.get('filename', 'Open frame')}]({link})")
+                else:
+                    st.caption(caption)
 
 
 def _render_quality_summary(output: AnalysisOutput) -> None:
@@ -2108,6 +2557,8 @@ def main() -> None:
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes)
     elif current_page == "Quality":
         _render_quality_summary(view_output)
+    elif current_page == "Customer Journeys":
+        _render_customer_journeys(view_output)
     elif current_page == "Store Mapping":
         _render_store_mapping(
             db_path=db_path,
@@ -2155,13 +2606,7 @@ def main() -> None:
         st.dataframe(pd.DataFrame(list_alert_routes(db_path, ar_store)) if ar_store else pd.DataFrame(), use_container_width=True)
 
     elif current_page == "QA Timeline":
-        st.subheader("Operator QA Timeline")
-        if view_output.stores:
-            sid = st.selectbox("QA store", options=sorted(view_output.stores.keys()), key="qa_store")
-            idf = view_output.stores[sid].image_insights.copy()
-            if "timestamp" in idf.columns:
-                cols = [c for c in ["timestamp","camera_id","person_count","relevant","filename","track_ids","detection_error"] if c in idf.columns]
-                st.dataframe(idf.sort_values("timestamp")[cols].tail(500), use_container_width=True)
+        _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email)
 
     elif current_page == "Store Master":
         st.subheader("Store Master")

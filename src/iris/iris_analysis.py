@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 import math
+import csv
 import json
 import re
 from typing import Protocol
@@ -32,6 +33,7 @@ class DetectionResult:
     max_person_conf: float
     detection_error: str
     person_centroids: list[tuple[float, float]] = field(default_factory=list)
+    person_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
     bag_count: int = 0
 
 
@@ -68,14 +70,25 @@ class MockPersonDetector:
         seed = sum(ord(ch) for ch in image_path.name)
         person_count = seed % 4
         if person_count == 0:
-            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], bag_count=0)
+            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=0)
         max_conf = max(self.conf_threshold, min(0.95, 0.55 + (seed % 30) / 100))
         centroids = [(round(0.2 + i * 0.2, 3), round(0.45 + (seed % 10) * 0.01, 3)) for i in range(person_count)]
+        boxes: list[tuple[float, float, float, float]] = []
+        for cx, cy in centroids:
+            boxes.append(
+                (
+                    max(0.0, round(cx - 0.08, 4)),
+                    max(0.0, round(cy - 0.18, 4)),
+                    min(1.0, round(cx + 0.08, 4)),
+                    min(1.0, round(cy + 0.18, 4)),
+                )
+            )
         return DetectionResult(
             person_count=person_count,
             max_person_conf=round(max_conf, 3),
             detection_error="",
             person_centroids=centroids,
+            person_boxes=boxes,
             bag_count=0,
         )
 
@@ -85,7 +98,7 @@ class UnavailableDetector:
         self.reason = reason
 
     def detect(self, image_path: Path) -> DetectionResult:
-        return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=self.reason, person_centroids=[], bag_count=0)
+        return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=self.reason, person_centroids=[], person_boxes=[], bag_count=0)
 
 
 class YoloPersonDetector:
@@ -114,13 +127,15 @@ class YoloPersonDetector:
             )
             boxes = results[0].boxes if results else None
             if boxes is None or len(boxes) == 0:
-                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], bag_count=0)
+                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=0)
 
             cls_values = boxes.cls.tolist() if hasattr(boxes, "cls") else []
             conf_values = boxes.conf.tolist() if hasattr(boxes, "conf") else []
             xywhn = boxes.xywhn.tolist() if hasattr(boxes, "xywhn") else []
+            xyxyn = boxes.xyxyn.tolist() if hasattr(boxes, "xyxyn") else []
 
             person_centroids: list[tuple[float, float]] = []
+            person_boxes: list[tuple[float, float, float, float]] = []
             person_conf: list[float] = []
             bag_count = 0
             for i, cls_id in enumerate(cls_values):
@@ -128,21 +143,31 @@ class YoloPersonDetector:
                     person_conf.append(float(conf_values[i]))
                     if i < len(xywhn):
                         person_centroids.append((float(xywhn[i][0]), float(xywhn[i][1])))
+                    if i < len(xyxyn):
+                        person_boxes.append(
+                            (
+                                float(xyxyn[i][0]),
+                                float(xyxyn[i][1]),
+                                float(xyxyn[i][2]),
+                                float(xyxyn[i][3]),
+                            )
+                        )
                 elif int(cls_id) == 26:
                     bag_count += 1
 
             if not person_conf:
-                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], bag_count=bag_count)
+                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=bag_count)
 
             return DetectionResult(
                 person_count=len(person_conf),
                 max_person_conf=float(max(person_conf)),
                 detection_error="",
                 person_centroids=person_centroids,
+                person_boxes=person_boxes,
                 bag_count=bag_count,
             )
         except Exception as exc:
-            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=str(exc), person_centroids=[], bag_count=0)
+            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=str(exc), person_centroids=[], person_boxes=[], bag_count=0)
 
 
 def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.25) -> tuple[PersonDetector, str]:
@@ -206,6 +231,70 @@ def _infer_image_context(
     capture_date = context_day.isoformat()
     source_folder = "/".join(parent_parts)
     return context_day, capture_date, source_folder
+
+
+def _relative_image_path(image_path: Path, store_dir: Path) -> str:
+    return str(image_path.relative_to(store_dir)).replace("\\", "/")
+
+
+def _load_drive_link_map(store_dir: Path) -> dict[str, str]:
+    manifest_path = store_dir / "_drive_manifest.csv"
+    if not manifest_path.exists():
+        return {}
+    mapping: dict[str, str] = {}
+    try:
+        with manifest_path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rel = str(row.get("relative_path", "")).strip().replace("\\", "/")
+                link = str(row.get("drive_web_link", "")).strip()
+                if rel and link:
+                    mapping[rel] = link
+    except Exception:
+        return {}
+    return mapping
+
+
+def _classify_staff_by_shirt_color(
+    image_path: Path,
+    person_boxes: list[tuple[float, float, float, float]],
+) -> tuple[list[bool], list[float]]:
+    if not person_boxes:
+        return [], []
+    try:
+        with Image.open(image_path) as img:
+            rgb = img.convert("RGB")
+            width, height = rgb.size
+            flags: list[bool] = []
+            scores: list[float] = []
+            for box in person_boxes:
+                x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+                y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+                x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+                y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+                h = max(1, y2 - y1)
+                # Approximate shirt region (upper-middle body crop)
+                sy1 = y1 + int(h * 0.30)
+                sy2 = y1 + int(h * 0.70)
+                if sy2 <= sy1:
+                    sy1 = y1
+                    sy2 = y2
+                crop = rgb.crop((x1, sy1, x2, sy2)).resize((40, 40))
+                data = list(crop.getdata())
+                if not data:
+                    flags.append(False)
+                    scores.append(0.0)
+                    continue
+                red_pixels = 0
+                for r, g, b in data:
+                    if r >= 100 and r > g * 1.22 and r > b * 1.22:
+                        red_pixels += 1
+                red_ratio = red_pixels / len(data)
+                flags.append(red_ratio >= 0.22)
+                scores.append(round(red_ratio, 4))
+            return flags, scores
+    except Exception:
+        return [False for _ in person_boxes], [0.0 for _ in person_boxes]
 
 
 def validate_image(path: Path) -> tuple[bool, str]:
@@ -829,10 +918,13 @@ def analyze_store(
 ) -> StoreAnalysisResult:
     rows: list[dict[str, object]] = []
     image_paths = _iter_store_images(store_dir)
+    drive_link_map = _load_drive_link_map(store_dir)
     if max_images_per_store is not None and max_images_per_store > 0:
         image_paths = image_paths[:max_images_per_store]
 
     for image_path in image_paths:
+        rel_path = _relative_image_path(image_path=image_path, store_dir=store_dir)
+        drive_link = drive_link_map.get(rel_path, "")
         image_day, capture_date, source_folder = _infer_image_context(
             image_path=image_path,
             store_dir=store_dir,
@@ -852,17 +944,45 @@ def analyze_store(
                     "person_count": 0,
                     "max_person_conf": 0.0,
                     "relevant": False,
+                    "person_centroids": "[]",
+                    "person_boxes": "[]",
+                    "staff_flags": "[]",
+                    "staff_scores": "[]",
+                    "staff_count": 0,
+                    "customer_count": 0,
+                    "bag_count": 0,
                     "reject_reason": "bad_filename",
                     "detection_error": "",
+                    "relative_path": rel_path,
+                    "drive_link": drive_link,
                     "path": str(image_path),
                 }
             )
             continue
 
         is_valid, reject_reason = validate_image(image_path)
-        detection = DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], bag_count=0)
+        detection = DetectionResult(
+            person_count=0,
+            max_person_conf=0.0,
+            detection_error="",
+            person_centroids=[],
+            person_boxes=[],
+            bag_count=0,
+        )
         if is_valid:
             detection = detector.detect(image_path)
+        staff_flags: list[bool] = []
+        staff_scores: list[float] = []
+        if is_valid and detection.person_count > 0 and detection.person_boxes:
+            staff_flags, staff_scores = _classify_staff_by_shirt_color(
+                image_path=image_path,
+                person_boxes=detection.person_boxes,
+            )
+        staff_count = min(
+            int(detection.person_count),
+            int(sum(1 for flag in staff_flags if bool(flag))),
+        )
+        customer_count = max(0, int(detection.person_count) - int(staff_count))
         relevant = bool(
             is_valid and detection.detection_error == "" and detection.person_count >= 1
         )
@@ -880,9 +1000,16 @@ def analyze_store(
                 "max_person_conf": float(detection.max_person_conf),
                 "relevant": relevant,
                 "person_centroids": json.dumps(detection.person_centroids),
+                "person_boxes": json.dumps(detection.person_boxes),
+                "staff_flags": json.dumps(staff_flags),
+                "staff_scores": json.dumps(staff_scores),
+                "staff_count": int(staff_count),
+                "customer_count": int(customer_count),
                 "bag_count": int(detection.bag_count),
                 "reject_reason": reject_reason,
                 "detection_error": detection.detection_error,
+                "relative_path": rel_path,
+                "drive_link": drive_link,
                 "path": str(image_path),
             }
         )
@@ -901,9 +1028,16 @@ def analyze_store(
             "max_person_conf",
             "relevant",
             "person_centroids",
+            "person_boxes",
+            "staff_flags",
+            "staff_scores",
+            "staff_count",
+            "customer_count",
             "bag_count",
             "reject_reason",
             "detection_error",
+            "relative_path",
+            "drive_link",
             "path",
         ],
     )
@@ -921,9 +1055,16 @@ def analyze_store(
                 "max_person_conf",
                 "relevant",
                 "person_centroids",
+                "person_boxes",
+                "staff_flags",
+                "staff_scores",
+                "staff_count",
+                "customer_count",
                 "bag_count",
                 "reject_reason",
                 "detection_error",
+                "relative_path",
+                "drive_link",
                 "path",
             ]
         )
@@ -1090,12 +1231,20 @@ def export_analysis(
                     "person_count",
                     "max_person_conf",
                     "relevant",
+                    "staff_count",
+                    "customer_count",
                     "track_ids",
                     "global_visit_id",
                     "customer_ids",
                     "group_ids",
+                    "person_centroids",
+                    "person_boxes",
+                    "staff_flags",
+                    "staff_scores",
                     "reject_reason",
                     "detection_error",
+                    "relative_path",
+                    "drive_link",
                     "path",
                 ]
             ],
