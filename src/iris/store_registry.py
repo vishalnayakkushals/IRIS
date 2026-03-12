@@ -839,10 +839,15 @@ def bulk_upsert_store_access_rows(
     return summary
 
 
-def ensure_default_admins(db_path: Path, admin_emails: list[str]) -> None:
+def ensure_default_admins(
+    db_path: Path,
+    admin_emails: list[str],
+    default_password: str = "ChangeMe123!",
+) -> None:
+    pwd = (default_password or "ChangeMe123!").strip() or "ChangeMe123!"
     for email in admin_emails:
         try:
-            create_user(db_path, email=email, full_name=email.split("@")[0], password="ChangeMe123!", role_names=["admin"])
+            create_user(db_path, email=email, full_name=email.split("@")[0], password=pwd, role_names=["admin"])
         except Exception:
             pass
 

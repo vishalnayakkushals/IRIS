@@ -69,6 +69,7 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Access": {
         "Administration": [
             "Organisation",
+            "Pipeline Configuration",
             "Users",
             "Password Manager",
             "Role Permissions",
@@ -94,6 +95,18 @@ DEFAULT_ORG_SETTINGS: dict[str, str] = {
     "nav_color": "#1f3044",
     "accent_color": "#2a7fd9",
     "default_user_password": "ChangeMe123!",
+    "default_admin_password": "AdminChangeMe123!",
+}
+
+COLOR_PRESETS: dict[str, str] = {
+    "Slate Blue": "#1f3044",
+    "Ocean Blue": "#2a7fd9",
+    "Charcoal": "#2d3748",
+    "Forest Green": "#2f855a",
+    "Warm Gray": "#f4f6f8",
+    "Pure White": "#ffffff",
+    "Soft Navy": "#243b53",
+    "Steel Blue": "#486581",
 }
 
 LEGACY_PAGE_ALIAS = {
@@ -194,6 +207,9 @@ def _effective_org_settings(raw: dict[str, str]) -> dict[str, str]:
     merged["default_user_password"] = (merged.get("default_user_password", "") or "ChangeMe123!").strip()[:128]
     if not merged["default_user_password"]:
         merged["default_user_password"] = "ChangeMe123!"
+    merged["default_admin_password"] = (merged.get("default_admin_password", "") or "AdminChangeMe123!").strip()[:128]
+    if not merged["default_admin_password"]:
+        merged["default_admin_password"] = "AdminChangeMe123!"
     return merged
 
 
@@ -243,6 +259,9 @@ header[data-testid="stHeader"] {{height: 0.1rem;}}
 }}
 .iris-nav .iris-menu {{background: {nav};}}
 .iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {{background: {accent};}}
+div[data-testid="stWidgetLabel"] p {{
+    font-weight: 700;
+}}
 </style>
         """,
         unsafe_allow_html=True,
@@ -352,20 +371,12 @@ def _render_hover_nav(
 .iris-nav .iris-page {display: block; padding: 0.35rem 0.45rem; border-radius: 6px; text-decoration: none; color: #233142; font-size: 0.92rem;}
 .iris-nav .iris-page:hover {background: #e8f2ff;}
 .iris-nav .iris-page.active {background: #d7e9ff; color: #0f4fa8; font-weight: 700;}
-.iris-breadcrumb {margin: 0.32rem 0 0.52rem 0; color: #5a6777; font-size: 0.85rem;}
 </style>
         """,
         unsafe_allow_html=True,
     )
     st.markdown(
         f'<nav class="iris-nav"><ul class="iris-menu">{"".join(module_nodes)}</ul></nav>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        (
-            f'<div class="iris-breadcrumb"><strong>Path:</strong> '
-            f'{html.escape(current_module)} &gt; {html.escape(current_section)} &gt; {html.escape(current_page)}</div>'
-        ),
         unsafe_allow_html=True,
     )
 
@@ -1235,7 +1246,7 @@ def _render_employee_management(db_path: Path, employee_assets_root: Path) -> No
 
 def _render_organisation(db_path: Path, data_dir: Path) -> None:
     st.subheader("Organisation")
-    st.caption("Manage company logo, app name, and standard UI theme controls.")
+    st.caption("Manage company logo, app name, theme, and default account passwords.")
     settings = _effective_org_settings(get_app_settings(db_path))
 
     branding_dir = data_dir / "branding"
@@ -1255,75 +1266,122 @@ def _render_organisation(db_path: Path, data_dir: Path) -> None:
         help="Recommended: transparent PNG, square ratio.",
     )
     remove_logo = st.checkbox("Remove current logo", key="org_remove_logo")
-
     font_options = ["Segoe UI", "Calibri", "Arial"]
-    editor_rows = pd.DataFrame(
-        [
-            {"Setting": "app_name", "Value": settings.get("app_name", "IRIS")},
-            {"Setting": "font_family", "Value": settings.get("font_family", "Segoe UI")},
-            {"Setting": "background_color", "Value": settings.get("background_color", "#f4f6f8")},
-            {"Setting": "surface_color", "Value": settings.get("surface_color", "#ffffff")},
-            {"Setting": "nav_color", "Value": settings.get("nav_color", "#1f3044")},
-            {"Setting": "accent_color", "Value": settings.get("accent_color", "#2a7fd9")},
-            {"Setting": "default_user_password", "Value": settings.get("default_user_password", "ChangeMe123!")},
-        ]
-    )
-    st.markdown("**Style editor (excel-like)**")
-    edited_rows = st.data_editor(
-        editor_rows,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="fixed",
-        key="org_settings_editor",
-    )
-    st.caption(
-        "Use HEX colors like `#1f3044`. Font values allowed: Segoe UI, Calibri, Arial. "
-        "Default user password is used for auto-created Store/CM/AM logins."
-    )
 
-    quick_cols = st.columns([2, 2, 3])
-    selected_font = quick_cols[0].selectbox(
-        "Font quick select",
-        options=font_options,
-        index=font_options.index(settings.get("font_family", "Segoe UI")),
-        key="org_font_select",
-    )
-    quick_cols[1].color_picker(
-        "Background quick select",
-        value=settings.get("background_color", "#f4f6f8"),
-        key="org_bg_picker",
-    )
-    quick_cols[2].color_picker(
-        "Accent quick select",
-        value=settings.get("accent_color", "#2a7fd9"),
-        key="org_accent_picker",
-    )
+    def _preset_label_from_color(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        for label, hex_value in COLOR_PRESETS.items():
+            if hex_value.lower() == normalized:
+                return label
+        return "Custom"
 
-    if st.button("Save organisation settings", type="primary", key="save_org_settings_button"):
-        edited_map: dict[str, str] = {}
-        for _, row in edited_rows.iterrows():
-            setting_key = str(row.get("Setting", "")).strip()
-            setting_value = str(row.get("Value", "")).strip()
-            if setting_key:
-                edited_map[setting_key] = setting_value
+    color_choices = list(COLOR_PRESETS.keys()) + ["Custom"]
+    app_name_default = settings.get("app_name", "IRIS")
+    app_name_options = ["IRIS", "IRIS HQ", "Custom"]
+    app_mode_default = app_name_default if app_name_default in {"IRIS", "IRIS HQ"} else "Custom"
 
-        # Quick selectors override matching fields for easier usage.
-        edited_map["font_family"] = selected_font
-        edited_map["background_color"] = str(st.session_state.get("org_bg_picker", "#f4f6f8"))
-        edited_map["accent_color"] = str(st.session_state.get("org_accent_picker", "#2a7fd9"))
+    with st.form("org_settings_form", clear_on_submit=False):
+        app_mode = st.selectbox(
+            "App Name",
+            options=app_name_options,
+            index=app_name_options.index(app_mode_default),
+            help="Displayed in top header beside company logo.",
+        )
+        app_custom = st.text_input(
+            "Custom App Name",
+            value=app_name_default if app_mode_default == "Custom" else "",
+            disabled=app_mode != "Custom",
+            help="Enter a custom app name only when App Name is set to Custom.",
+        )
+        selected_font = st.selectbox(
+            "Font Family",
+            options=font_options,
+            index=font_options.index(settings.get("font_family", "Segoe UI")),
+            help="Controls overall application font family.",
+        )
+        bg_label = st.selectbox(
+            "Background Color",
+            options=color_choices,
+            index=color_choices.index(_preset_label_from_color(settings.get("background_color", "#f4f6f8"))),
+            help="Main app background color.",
+        )
+        bg_custom = st.color_picker(
+            "Background Color (Custom)",
+            value=settings.get("background_color", "#f4f6f8"),
+            disabled=bg_label != "Custom",
+            help="Used only when Background Color is set to Custom.",
+        )
+        surface_label = st.selectbox(
+            "Surface Color",
+            options=color_choices,
+            index=color_choices.index(_preset_label_from_color(settings.get("surface_color", "#ffffff"))),
+            help="Card and panel background color.",
+        )
+        surface_custom = st.color_picker(
+            "Surface Color (Custom)",
+            value=settings.get("surface_color", "#ffffff"),
+            disabled=surface_label != "Custom",
+            help="Used only when Surface Color is set to Custom.",
+        )
+        nav_label = st.selectbox(
+            "Navigation Color",
+            options=color_choices,
+            index=color_choices.index(_preset_label_from_color(settings.get("nav_color", "#1f3044"))),
+            help="Top navigation bar background color.",
+        )
+        nav_custom = st.color_picker(
+            "Navigation Color (Custom)",
+            value=settings.get("nav_color", "#1f3044"),
+            disabled=nav_label != "Custom",
+            help="Used only when Navigation Color is set to Custom.",
+        )
+        accent_label = st.selectbox(
+            "Accent Color",
+            options=color_choices,
+            index=color_choices.index(_preset_label_from_color(settings.get("accent_color", "#2a7fd9"))),
+            help="Active tab, hover and highlight color.",
+        )
+        accent_custom = st.color_picker(
+            "Accent Color (Custom)",
+            value=settings.get("accent_color", "#2a7fd9"),
+            disabled=accent_label != "Custom",
+            help="Used only when Accent Color is set to Custom.",
+        )
+        default_user_password = st.text_input(
+            "Default User Password",
+            type="password",
+            value=settings.get("default_user_password", "ChangeMe123!"),
+            help="Default password for auto-created Store/CM/AM users.",
+        )
+        default_admin_password = st.text_input(
+            "Default Admin Password",
+            type="password",
+            value=settings.get("default_admin_password", "AdminChangeMe123!"),
+            help="Default password for auto-created Admin accounts.",
+        )
+        save_org = st.form_submit_button("Save Organisation Settings", type="primary")
 
-        app_name = edited_map.get("app_name", "IRIS").strip() or "IRIS"
-        font_name = edited_map.get("font_family", "Segoe UI").strip()
-        if font_name not in set(font_options):
-            st.error("Font must be one of: Segoe UI, Calibri, Arial.")
+    if save_org:
+        app_name = app_custom.strip() if app_mode == "Custom" else app_mode
+        if not app_name:
+            st.error("App Name cannot be empty.")
             return
-        for color_key in ["background_color", "surface_color", "nav_color", "accent_color"]:
-            color_value = edited_map.get(color_key, "").strip()
-            if not re.match(r"^#[0-9a-fA-F]{6}$", color_value):
-                st.error(f"Invalid color for {color_key}. Use HEX format like #1f3044.")
-                return
-        edited_map["app_name"] = app_name
-
+        if not default_user_password.strip() or not default_admin_password.strip():
+            st.error("Default passwords cannot be empty.")
+            return
+        if default_user_password.strip() == default_admin_password.strip():
+            st.error("Default Admin Password and Default User Password must be different.")
+            return
+        edited_map: dict[str, str] = {
+            "app_name": app_name,
+            "font_family": selected_font,
+            "background_color": bg_custom if bg_label == "Custom" else COLOR_PRESETS[bg_label],
+            "surface_color": surface_custom if surface_label == "Custom" else COLOR_PRESETS[surface_label],
+            "nav_color": nav_custom if nav_label == "Custom" else COLOR_PRESETS[nav_label],
+            "accent_color": accent_custom if accent_label == "Custom" else COLOR_PRESETS[accent_label],
+            "default_user_password": default_user_password.strip(),
+            "default_admin_password": default_admin_password.strip(),
+        }
         if remove_logo:
             if logo_file and logo_file.exists():
                 try:
@@ -1697,18 +1755,128 @@ def _render_setup_help() -> None:
         """
 ### Recommended Access Setup
 1. `Operations > Store Mapping`: create store, email, drive link.
-2. Store login is auto-created using Organisation default password.
+2. Store login is auto-created using Organisation Default User Password.
 3. `Access > Store Access Mapping`: map CM/AM emails to stores.
 4. `Access > Password Manager`: set final passwords.
 5. `Access > Bulk Access Upload`: use CSV for large updates.
+6. `Access > Pipeline Configuration`: run analysis and export updates.
 
 ### Quick Hints
 - `manager_type=store_user` uses `store_id` or first value from `store_ids`.
 - `manager_type=cluster_manager/area_manager` should use `store_ids` with `|` separator.
 - Mapping save replaces previous store mapping for that user, so maintenance stays simple.
-- Use `Organisation` page to change default auto-created password anytime.
+- Keep Admin and User default passwords different for security.
         """
     )
+
+
+def _render_pipeline_configuration_controls() -> bool:
+    st.subheader("Pipeline Configuration")
+    st.caption("Run analysis from this page only. These settings persist across pages.")
+    bounce_options = [30, 60, 90, 120, 180, 240, 300]
+    session_options = [10, 20, 30, 45, 60, 90, 120]
+    image_options = [10, 20, 50, 100, 0]
+    if st.session_state.get("ctrl_bounce_threshold_sec") not in bounce_options:
+        st.session_state["ctrl_bounce_threshold_sec"] = 120
+    if st.session_state.get("ctrl_session_gap_sec") not in session_options:
+        st.session_state["ctrl_session_gap_sec"] = 30
+    if st.session_state.get("ctrl_max_images_per_store") not in image_options:
+        st.session_state["ctrl_max_images_per_store"] = 20
+    with st.form("analysis_controls_form", clear_on_submit=False):
+        ctrl_cols_1 = st.columns(2)
+        ctrl_cols_1[0].text_input(
+            "Root Directory",
+            key="ctrl_root_str",
+            help="Folder containing store folders and date subfolders.",
+        )
+        ctrl_cols_1[1].text_input(
+            "Export Directory",
+            key="ctrl_out_str",
+            help="Location where analysis CSV exports are written.",
+        )
+
+        ctrl_cols_2 = st.columns(5)
+        ctrl_cols_2[0].slider(
+            "Detection Confidence",
+            min_value=0.05,
+            max_value=0.9,
+            step=0.05,
+            key="ctrl_conf_threshold",
+            help="Minimum confidence for counting detections.",
+        )
+        ctrl_cols_2[1].selectbox(
+            "Time Bucket (Minutes)",
+            options=[1, 5, 15],
+            key="ctrl_time_bucket_minutes",
+            help="Bucket size used in time-trend charts.",
+        )
+        ctrl_cols_2[2].selectbox(
+            "Bounce Threshold (Seconds)",
+            options=bounce_options,
+            key="ctrl_bounce_threshold_sec",
+            help="Visits below this dwell threshold are treated as bounce.",
+        )
+        ctrl_cols_2[3].selectbox(
+            "Session Gap (Seconds)",
+            options=session_options,
+            key="ctrl_session_gap_sec",
+            help="Gap threshold to split sessions.",
+        )
+        ctrl_cols_2[4].selectbox(
+            "Images Per Store",
+            options=image_options,
+            key="ctrl_max_images_per_store",
+            help="Use 0 to process all images.",
+        )
+
+        ctrl_cols_3 = st.columns(5)
+        yolo_available = _is_yolo_available()
+        detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
+        if st.session_state["ctrl_detector_type"] not in detector_options:
+            st.session_state["ctrl_detector_type"] = detector_options[0]
+        ctrl_cols_3[0].selectbox(
+            "Detector",
+            options=detector_options,
+            key="ctrl_detector_type",
+            help="YOLO for real detection, MOCK for testing fallback.",
+        )
+        ctrl_cols_3[1].selectbox(
+            "Write Gzip CSV",
+            options=["Yes", "No"],
+            index=0 if bool(st.session_state.get("ctrl_write_gzip_exports", True)) else 1,
+            key="cfg_write_gzip_select",
+            help="Write compressed `.csv.gz` exports.",
+        )
+        ctrl_cols_3[2].selectbox(
+            "Keep Plain CSV",
+            options=["Yes", "No"],
+            index=0 if bool(st.session_state.get("ctrl_keep_plain_csv", True)) else 1,
+            key="cfg_keep_plain_select",
+            help="Keep normal `.csv` files along with gzip exports.",
+        )
+        ctrl_cols_3[3].selectbox(
+            "Auto-Sync Drives",
+            options=["Yes", "No"],
+            index=0 if bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)) else 1,
+            key="cfg_auto_sync_drives_select",
+            help="Sync mapped Drive folders before analysis.",
+        )
+        ctrl_cols_3[4].selectbox(
+            "Auto-Sync On Save",
+            options=["Yes", "No"],
+            index=0 if bool(st.session_state.get("ctrl_auto_sync_on_save", False)) else 1,
+            key="cfg_auto_sync_on_save_select",
+            help="Sync a store right after saving store mapping.",
+        )
+        rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
+        if not yolo_available:
+            st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
+
+    st.session_state["ctrl_write_gzip_exports"] = st.session_state.get("cfg_write_gzip_select", "Yes") == "Yes"
+    st.session_state["ctrl_keep_plain_csv"] = st.session_state.get("cfg_keep_plain_select", "Yes") == "Yes"
+    st.session_state["ctrl_auto_sync_linked_drives"] = st.session_state.get("cfg_auto_sync_drives_select", "Yes") == "Yes"
+    st.session_state["ctrl_auto_sync_on_save"] = st.session_state.get("cfg_auto_sync_on_save_select", "No") == "Yes"
+    return bool(rerun_clicked)
 
 def main() -> None:
     st.set_page_config(
@@ -1728,8 +1896,12 @@ def main() -> None:
     data_root.mkdir(parents=True, exist_ok=True)
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
-    ensure_default_admins(db_path, ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"])
     org_settings = _effective_org_settings(get_app_settings(db_path))
+    ensure_default_admins(
+        db_path,
+        ["vishal.nayak@kushals.com", "mayur.pathak@kushals.com"],
+        default_password=org_settings.get("default_admin_password", "AdminChangeMe123!"),
+    )
     _inject_clean_ui_css(org_settings)
     auth_token_from_query = _query_value("auth", "").strip()
     if not st.session_state.get("is_authenticated", False) and auth_token_from_query:
@@ -1798,60 +1970,9 @@ def main() -> None:
     if auth_token:
         st.query_params["auth"] = auth_token
 
-    with st.expander("Analysis Controls", expanded=False):
-        with st.form("analysis_controls_form", clear_on_submit=False):
-            ctrl_cols_1 = st.columns(2)
-            ctrl_cols_1[0].text_input("Root Directory", key="ctrl_root_str")
-            ctrl_cols_1[1].text_input("Export Directory", key="ctrl_out_str")
-
-            ctrl_cols_2 = st.columns(5)
-            ctrl_cols_2[0].slider(
-                "Detection Confidence",
-                min_value=0.05,
-                max_value=0.9,
-                step=0.05,
-                key="ctrl_conf_threshold",
-            )
-            ctrl_cols_2[1].selectbox(
-                "Time Bucket (minutes)",
-                options=[1, 5, 15],
-                key="ctrl_time_bucket_minutes",
-            )
-            ctrl_cols_2[2].number_input(
-                "Bounce Threshold (sec)",
-                min_value=10,
-                max_value=3600,
-                step=10,
-                key="ctrl_bounce_threshold_sec",
-            )
-            ctrl_cols_2[3].number_input(
-                "Session Gap (sec)",
-                min_value=5,
-                max_value=600,
-                step=5,
-                key="ctrl_session_gap_sec",
-            )
-            ctrl_cols_2[4].selectbox(
-                "Images / Store",
-                options=[10, 20, 50, 100, 0],
-                help="Use 0 to process all images.",
-                key="ctrl_max_images_per_store",
-            )
-
-            ctrl_cols_3 = st.columns(5)
-            yolo_available = _is_yolo_available()
-            detector_options = ["yolo", "mock"] if yolo_available else ["mock", "yolo"]
-            if st.session_state["ctrl_detector_type"] not in detector_options:
-                st.session_state["ctrl_detector_type"] = detector_options[0]
-            ctrl_cols_3[0].selectbox("Detector", options=detector_options, key="ctrl_detector_type")
-            ctrl_cols_3[1].checkbox("Write .csv.gz", key="ctrl_write_gzip_exports")
-            ctrl_cols_3[2].checkbox("Keep plain CSV", key="ctrl_keep_plain_csv")
-            ctrl_cols_3[3].checkbox("Auto-sync drives", key="ctrl_auto_sync_linked_drives")
-            ctrl_cols_3[4].checkbox("Auto-sync on save", key="ctrl_auto_sync_on_save")
-            rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
-
-            if not yolo_available:
-                st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
+    rerun_clicked = False
+    if current_page == "Pipeline Configuration":
+        rerun_clicked = _render_pipeline_configuration_controls()
 
     root_dir = Path(st.session_state["ctrl_root_str"]).expanduser().resolve()
     out_dir = Path(st.session_state["ctrl_out_str"]).expanduser().resolve()
@@ -1957,7 +2078,9 @@ def main() -> None:
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
-    if current_page == "Overview":
+    if current_page == "Pipeline Configuration":
+        st.caption("Use the configuration form above to run analysis.")
+    elif current_page == "Overview":
         _render_overview(view_output)
     elif current_page == "Organisation":
         _render_organisation(db_path=db_path, data_dir=data_dir)
@@ -2068,9 +2191,6 @@ def main() -> None:
         filter_email = st.text_input("Filter by email (optional)", value=active_email or "")
         logs_df = pd.DataFrame(list_user_activity(db_path=db_path, actor_email=filter_email.strip() or None, limit=1000))
         st.dataframe(logs_df, use_container_width=True)
-
-    st.caption(f"Exports folder: `{out_dir}`")
-
 
 if __name__ == "__main__":
     main()
