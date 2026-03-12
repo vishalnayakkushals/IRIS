@@ -18,6 +18,7 @@ FILE_PATTERN = re.compile(
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DATE_FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+EMPLOYEE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,7 @@ def _load_drive_link_map(store_dir: Path) -> dict[str, str]:
 def _classify_staff_by_shirt_color(
     image_path: Path,
     person_boxes: list[tuple[float, float, float, float]],
+    red_threshold: float = 0.22,
 ) -> tuple[list[bool], list[float]]:
     if not person_boxes:
         return [], []
@@ -290,11 +292,54 @@ def _classify_staff_by_shirt_color(
                     if r >= 100 and r > g * 1.22 and r > b * 1.22:
                         red_pixels += 1
                 red_ratio = red_pixels / len(data)
-                flags.append(red_ratio >= 0.22)
+                flags.append(red_ratio >= float(red_threshold))
                 scores.append(round(red_ratio, 4))
             return flags, scores
     except Exception:
         return [False for _ in person_boxes], [0.0 for _ in person_boxes]
+
+
+def _estimate_red_ratio(path: Path) -> float:
+    try:
+        with Image.open(path) as img:
+            rgb = img.convert("RGB").resize((64, 64))
+            data = list(rgb.getdata())
+            if not data:
+                return 0.0
+            red_pixels = 0
+            for r, g, b in data:
+                if r >= 100 and r > g * 1.22 and r > b * 1.22:
+                    red_pixels += 1
+            return float(red_pixels / len(data))
+    except Exception:
+        return 0.0
+
+
+def _estimate_store_staff_red_threshold(
+    store_id: str,
+    employee_assets_root: Path | None,
+) -> float:
+    baseline = 0.22
+    if employee_assets_root is None:
+        return baseline
+    store_dir = employee_assets_root / store_id
+    if not store_dir.exists() or not store_dir.is_dir():
+        return baseline
+    ratios: list[float] = []
+    for path in sorted(store_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in EMPLOYEE_IMAGE_EXTENSIONS:
+            continue
+        ratio = _estimate_red_ratio(path)
+        if ratio > 0:
+            ratios.append(ratio)
+        if len(ratios) >= 200:
+            break
+    if not ratios:
+        return baseline
+    avg_ratio = float(sum(ratios) / len(ratios))
+    # Slightly below employee average to tolerate lighting variance.
+    adaptive = avg_ratio * 0.7
+    return max(0.14, min(0.35, adaptive))
 
 
 def validate_image(path: Path) -> tuple[bool, str]:
@@ -915,10 +960,15 @@ def analyze_store(
     camera_configs: dict[str, dict[str, object]] | None = None,
     engaged_dwell_threshold_sec: int = 180,
     max_images_per_store: int | None = None,
+    employee_assets_root: Path | None = None,
 ) -> StoreAnalysisResult:
     rows: list[dict[str, object]] = []
     image_paths = _iter_store_images(store_dir)
     drive_link_map = _load_drive_link_map(store_dir)
+    staff_red_threshold = _estimate_store_staff_red_threshold(
+        store_id=store_id,
+        employee_assets_root=employee_assets_root,
+    )
     if max_images_per_store is not None and max_images_per_store > 0:
         image_paths = image_paths[:max_images_per_store]
 
@@ -977,6 +1027,7 @@ def analyze_store(
             staff_flags, staff_scores = _classify_staff_by_shirt_color(
                 image_path=image_path,
                 person_boxes=detection.person_boxes,
+                red_threshold=staff_red_threshold,
             )
         staff_count = min(
             int(detection.person_count),
@@ -1139,6 +1190,7 @@ def analyze_root(
     camera_configs_by_store: dict[str, dict[str, dict[str, object]]] | None = None,
     engaged_dwell_threshold_sec: int = 180,
     max_images_per_store: int | None = None,
+    employee_assets_root: Path | None = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -1163,6 +1215,7 @@ def analyze_root(
             camera_configs=camera_configs_by_store.get(store_id, {}),
             engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
             max_images_per_store=max_images_per_store,
+            employee_assets_root=employee_assets_root,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)

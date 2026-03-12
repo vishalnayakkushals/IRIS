@@ -469,6 +469,7 @@ def _render_login_gate(db_path: Path) -> None:
 def _run_analysis(
     root_dir: Path,
     out_dir: Path,
+    employee_assets_root: Path,
     conf_threshold: float,
     detector_type: str,
     time_bucket_minutes: int,
@@ -488,6 +489,7 @@ def _run_analysis(
         session_gap_sec=session_gap_sec,
         camera_configs_by_store=camera_configs_by_store,
         max_images_per_store=max_images_per_store,
+        employee_assets_root=employee_assets_root,
     )
     export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
     return output
@@ -2462,6 +2464,7 @@ def main() -> None:
             output = _run_analysis(
                 root_dir=root_dir,
                 out_dir=out_dir,
+                employee_assets_root=employee_assets_root,
                 conf_threshold=conf_threshold,
                 detector_type=detector_type,
                 time_bucket_minutes=time_bucket_minutes,
