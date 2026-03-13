@@ -124,3 +124,14 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `GOOGLE_API_KEY` required for reliable large Google Drive sync.
   - DeepFace is optional; age/gender fields remain empty when unavailable.
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Fixed date-filter export edge case by enforcing missing frame columns (`customer_ids/group_ids`) before store-day artifact export.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None

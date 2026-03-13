@@ -1774,6 +1774,15 @@ def analyze_store(
         image_insights=image_insights,
         camera_configs=camera_configs,
     )
+    for col, default_val in {
+        "customer_ids": "[]",
+        "group_ids": "[]",
+        "track_ids": "[]",
+        "person_centroids": "[]",
+        "person_boxes": "[]",
+    }.items():
+        if col not in image_insights.columns:
+            image_insights[col] = default_val
     image_insights, customer_sessions = build_store_day_customer_sessions(
         image_insights=image_insights,
         store_id=store_id,
