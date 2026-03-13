@@ -136,13 +136,24 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit 8185165
 - Summary:
   - Simplified store mapping UX and added Store Camera Mapping with location master + auto camera ID discovery from image filenames.
 - Changed Paths:
   - `src/iris/store_registry.py`
   - `src/iris/iris_dashboard.py`
   - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Fixed top-row branding render to reliably show uploaded logo and app name using native Streamlit components in both login and app header.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
 - New Modules Introduced:
   - None

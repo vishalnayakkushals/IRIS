@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from datetime import date
 import html
 import json
@@ -342,23 +341,20 @@ def _resolve_logo_file(logo_path: str) -> Path | None:
     return None
 
 
-def _logo_data_uri(logo_file: Path | None) -> str:
-    if logo_file is None:
-        return ""
-    try:
-        suffix = logo_file.suffix.lower()
-        mime = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-            ".gif": "image/gif",
-        }.get(suffix, "image/png")
-        data = base64.b64encode(logo_file.read_bytes()).decode("ascii")
-        return f"data:{mime};base64,{data}"
-    except Exception:
-        return ""
+def _render_brand_identity(app_name: str, logo_path: str) -> None:
+    app_label = (str(app_name or "").strip() or "IRIS")[:60]
+    logo_file = _resolve_logo_file(logo_path=logo_path)
+    brand_cols = st.columns([1, 7], gap="small")
+    with brand_cols[0]:
+        if logo_file:
+            try:
+                st.image(str(logo_file), width=54)
+            except Exception:
+                st.markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
+    with brand_cols[1]:
+        st.markdown(f"### {app_label}")
 
 
 def _render_header_bar(
@@ -370,33 +366,11 @@ def _render_header_bar(
     db_path: Path,
     auth_token: str,
 ) -> str:
-    app_label = (str(app_name or "").strip() or "IRIS")[:60]
     header_cols = st.columns([5, 2], gap="small")
     with header_cols[0]:
-        logo_file = _resolve_logo_file(logo_path=logo_path)
-        logo_uri = _logo_data_uri(logo_file)
-        if logo_uri:
-            st.markdown(
-                (
-                    '<div class="iris-header">'
-                    f'<img class="iris-header-logo" src="{logo_uri}" alt="logo" />'
-                    f'<div class="iris-app-name">{html.escape(app_label)}</div>'
-                    "</div>"
-                ),
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                (
-                    '<div class="iris-header">'
-                    '<div class="iris-brand-fallback">IR</div>'
-                    f'<div class="iris-app-name">{html.escape(app_label)}</div>'
-                    "</div>"
-                ),
-                unsafe_allow_html=True,
-            )
+        _render_brand_identity(app_name=app_name, logo_path=logo_path)
     with header_cols[1]:
-        with st.expander("👤 Profile", expanded=False):
+        with st.expander("Profile", expanded=False):
             display_name = active_full_name.strip() or active_email.strip() or "User"
             st.caption(f"Name: {display_name}")
             st.caption(f"Email: {active_email}")
@@ -531,9 +505,9 @@ def _parse_permission_blob(blob: str) -> dict[str, tuple[bool, bool]]:
 def _render_login_gate(db_path: Path) -> None:
     org_settings = _effective_org_settings(get_app_settings(db_path))
     _inject_clean_ui_css(org_settings)
-    st.markdown(
-        f'<div class="iris-header"><div class="iris-brand-fallback">IR</div><div class="iris-app-name">{html.escape(org_settings.get("app_name", "IRIS"))}</div></div>',
-        unsafe_allow_html=True,
+    _render_brand_identity(
+        app_name=org_settings.get("app_name", "IRIS"),
+        logo_path=org_settings.get("logo_path", ""),
     )
     st.subheader("Login")
     st.caption("Sign in once. Session stays active across menu navigation.")
