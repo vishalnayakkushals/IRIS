@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 import html
 import json
 import os
@@ -13,7 +14,13 @@ import plotly.express as px
 import streamlit as st
 from PIL import Image, ImageDraw
 
-from iris.iris_analysis import AnalysisOutput, analyze_root, export_analysis, load_exports
+from iris.iris_analysis import (
+    AnalysisOutput,
+    analyze_root,
+    export_analysis,
+    export_store_day_artifacts,
+    load_exports,
+)
 from iris.store_registry import (
     add_qa_feedback,
     add_employee_image,
@@ -146,6 +153,15 @@ def _is_tf_frcnn_available() -> bool:
         return False
     try:
         import tensorflow.compat.v1 as tf  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _is_deepface_available() -> bool:
+    try:
+        from deepface import DeepFace as _DeepFace  # type: ignore  # noqa: F401
 
         return True
     except Exception:
@@ -558,6 +574,12 @@ def _run_analysis(
     keep_plain_csv: bool,
     camera_configs_by_store: dict[str, dict[str, dict[str, object]]],
     max_images_per_store: int,
+    store_filter: str,
+    capture_date_filter: date | None,
+    session_timeout_sec: int,
+    enable_age_gender: bool,
+    export_pilot_store_id: str,
+    export_pilot_date: str,
 ) -> AnalysisOutput:
     output = analyze_root(
         root_dir=root_dir,
@@ -569,8 +591,23 @@ def _run_analysis(
         camera_configs_by_store=camera_configs_by_store,
         max_images_per_store=max_images_per_store,
         employee_assets_root=employee_assets_root,
+        store_filter=(store_filter.strip() or None),
+        capture_date_filter=capture_date_filter,
+        session_timeout_sec=int(session_timeout_sec),
+        enable_age_gender=bool(enable_age_gender),
     )
     export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
+    sid = export_pilot_store_id.strip()
+    cdate = export_pilot_date.strip()
+    if sid and cdate:
+        export_store_day_artifacts(
+            output=output,
+            out_dir=out_dir,
+            store_id=sid,
+            capture_date=cdate,
+            write_gzip_exports=write_gzip_exports,
+            keep_plain_csv=keep_plain_csv,
+        )
     return output
 
 
@@ -652,10 +689,19 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
         "source_folder": "",
         "track_ids": "[]",
         "customer_ids": "[]",
+        "legacy_customer_ids": "[]",
+        "store_day_customer_ids": "[]",
+        "customer_session_ids": "[]",
         "group_ids": "[]",
+        "floor_name": "Ground",
+        "location_name": "",
         "person_boxes": "[]",
         "staff_flags": "[]",
         "staff_scores": "[]",
+        "gender_likelihood": "{}",
+        "age_bucket_counts": "{}",
+        "age_confidence": 0.0,
+        "age_gender_error": "",
         "drive_link": "",
         "relative_path": "",
         "reject_reason": "",
@@ -674,6 +720,9 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     out["capture_date"] = out["capture_date"].fillna("").astype(str)
     missing_date = out["capture_date"].str.strip() == ""
     out.loc[missing_date, "capture_date"] = out.loc[missing_date, "timestamp"].dt.date.astype(str)
+    out["floor_name"] = out["floor_name"].fillna("Ground").astype(str)
+    out["location_name"] = out["location_name"].fillna("").astype(str)
+    out.loc[out["location_name"].str.strip() == "", "location_name"] = out["camera_id"].astype(str)
     return out
 
 
@@ -778,7 +827,9 @@ def _build_customer_journey_summary(
         return pd.DataFrame(), {}
     events: dict[str, list[dict[str, object]]] = {}
     for _, row in image_df[image_df["timestamp"].notna()].sort_values("timestamp").iterrows():
-        customer_ids = [str(x) for x in _safe_json_list(row.get("customer_ids", "[]")) if str(x).strip()]
+        customer_ids = [str(x) for x in _safe_json_list(row.get("store_day_customer_ids", "[]")) if str(x).strip()]
+        if not customer_ids:
+            customer_ids = [str(x) for x in _safe_json_list(row.get("customer_ids", "[]")) if str(x).strip()]
         for cid in customer_ids:
             events.setdefault(cid, []).append(
                 {
@@ -1004,10 +1055,13 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                 "filename",
                 "image_url",
                 "camera_id",
+                "floor_name",
+                "location_name",
                 "person_count",
                 "relevant",
                 "track_ids",
                 "group_ids",
+                "store_day_customer_ids",
                 "customer_ids",
                 "detection_error",
             ]
@@ -1056,6 +1110,47 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         )
         st.plotly_chart(hotspot_chart, use_container_width=True)
         st.dataframe(hotspot_df, use_container_width=True)
+
+    location_hotspot_df = (
+        store_result.location_hotspots.copy()
+        if hasattr(store_result, "location_hotspots") and not store_result.location_hotspots.empty
+        else pd.DataFrame()
+    )
+    if not location_hotspot_df.empty:
+        st.markdown("**Location Hotspots**")
+        loc_chart = px.bar(
+            location_hotspot_df.sort_values(by="hotspot_rank"),
+            x="location_name",
+            y="avg_people_per_relevant_image",
+            color="floor_name",
+            hover_data=["total_people", "avg_dwell_sec"],
+            labels={
+                "location_name": "Location",
+                "avg_people_per_relevant_image": "Avg People / Relevant Image",
+                "floor_name": "Floor",
+            },
+        )
+        st.plotly_chart(loc_chart, use_container_width=True)
+        st.dataframe(location_hotspot_df, use_container_width=True, hide_index=True)
+
+    customer_sessions_df = (
+        store_result.customer_sessions.copy()
+        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
+        else pd.DataFrame()
+    )
+    if not customer_sessions_df.empty:
+        st.markdown("**Customer Sessions (Store-Day IDs)**")
+        cs = customer_sessions_df.copy()
+        if "entry_ts" in cs.columns:
+            cs["entry_ts"] = pd.to_datetime(cs["entry_ts"], errors="coerce")
+        if "exit_ts" in cs.columns:
+            cs["exit_ts"] = pd.to_datetime(cs["exit_ts"], errors="coerce")
+        st.dataframe(cs, use_container_width=True, hide_index=True)
+        if "dwell_sec" in cs.columns:
+            st.caption(
+                "Average dwell (session-based): "
+                f"{float(pd.to_numeric(cs['dwell_sec'], errors='coerce').fillna(0).mean()):.2f} sec"
+            )
 
     relevant_df = image_df[image_df["relevant"]].copy()
     if "camera_id" not in relevant_df.columns:
@@ -1136,6 +1231,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         caption = (
             f"{ts_text} "
             f"{row_image.get('camera_id', 'UNKNOWN')} "
+            f"{row_image.get('location_name', '')} "
             f"people={row_image.get('person_count', 0)}"
         )
         with col:
@@ -1173,7 +1269,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     unique_ids = sorted(
         {
             str(cid)
-            for ids in image_df["customer_ids"].tolist()
+            for ids in (
+                image_df["store_day_customer_ids"].tolist()
+                if "store_day_customer_ids" in image_df.columns
+                else image_df["customer_ids"].tolist()
+            )
             for cid in _safe_json_list(ids)
             if str(cid).strip()
         }
@@ -1196,10 +1296,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "timestamp",
         "capture_date",
         "camera_id",
+        "floor_name",
+        "location_name",
         "filename",
         "person_count",
         "staff_count",
         "customer_count",
+        "store_day_customer_ids",
         "predicted_label",
         "track_ids",
         "drive_link",
@@ -1779,6 +1882,7 @@ def _render_camera_zones(db_path: Path) -> None:
     with st.form("camera_zone_form", clear_on_submit=False):
         cfg_store_id = st.selectbox("Store", options=store_ids)
         cfg_camera_id = st.text_input("Camera ID (e.g., D01)")
+        cfg_floor = st.text_input("Floor Name (e.g., Ground, L1)")
         cfg_location = st.text_input("Location Name (e.g., Zone1, Zone2)")
         cfg_role = st.selectbox(
             "Camera Role",
@@ -1797,6 +1901,7 @@ def _render_camera_zones(db_path: Path) -> None:
                 store_id=cfg_store_id,
                 camera_id=cfg_camera_id.strip().upper(),
                 camera_role=cfg_role,
+                floor_name=cfg_floor.strip(),
                 location_name=cfg_location.strip(),
                 entry_line_x=float(cfg_line_x),
                 entry_direction=cfg_dir,
@@ -2416,11 +2521,14 @@ def _render_pipeline_configuration_controls() -> bool:
     st.caption("Run analysis from this page only. These settings persist across pages.")
     bounce_options = [30, 60, 90, 120, 180, 240, 300]
     session_options = [10, 20, 30, 45, 60, 90, 120]
+    timeout_options = [60, 120, 180, 240, 300, 600]
     image_options = [10, 20, 50, 100, 0]
     if st.session_state.get("ctrl_bounce_threshold_sec") not in bounce_options:
         st.session_state["ctrl_bounce_threshold_sec"] = 120
     if st.session_state.get("ctrl_session_gap_sec") not in session_options:
         st.session_state["ctrl_session_gap_sec"] = 30
+    if st.session_state.get("ctrl_session_timeout_sec") not in timeout_options:
+        st.session_state["ctrl_session_timeout_sec"] = 180
     if st.session_state.get("ctrl_max_images_per_store") not in image_options:
         st.session_state["ctrl_max_images_per_store"] = 20
     with st.form("analysis_controls_form", clear_on_submit=False):
@@ -2473,6 +2581,7 @@ def _render_pipeline_configuration_controls() -> bool:
         ctrl_cols_3 = st.columns(5)
         yolo_available = _is_yolo_available()
         tf_frcnn_available = _is_tf_frcnn_available()
+        deepface_available = _is_deepface_available()
         detector_options = ["yolo", "tf_frcnn", "mock"] if yolo_available else ["mock", "tf_frcnn", "yolo"]
         if st.session_state["ctrl_detector_type"] not in detector_options:
             st.session_state["ctrl_detector_type"] = detector_options[0]
@@ -2510,6 +2619,31 @@ def _render_pipeline_configuration_controls() -> bool:
             key="cfg_auto_sync_on_save_select",
             help="Sync a store right after saving store mapping.",
         )
+
+        ctrl_cols_4 = st.columns(4)
+        ctrl_cols_4[0].text_input(
+            "Store Filter (Optional)",
+            key="ctrl_store_filter",
+            help="Set store ID (e.g., BLRJAY) for pilot full-date runs.",
+        )
+        ctrl_cols_4[1].text_input(
+            "Capture Date (YYYY-MM-DD)",
+            key="ctrl_capture_date",
+            help="Optional day filter. Example: 2025-03-12.",
+        )
+        ctrl_cols_4[2].selectbox(
+            "Session Timeout (Seconds)",
+            options=timeout_options,
+            key="ctrl_session_timeout_sec",
+            help="Fallback closure timeout for store-day customer IDs.",
+        )
+        ctrl_cols_4[3].selectbox(
+            "Enable Age/Gender",
+            options=["No", "Yes"],
+            index=1 if bool(st.session_state.get("ctrl_enable_age_gender", False)) else 0,
+            key="cfg_enable_age_gender_select",
+            help="Use DeepFace for age/gender likelihood on customer crops.",
+        )
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
         if not yolo_available:
             st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
@@ -2518,11 +2652,14 @@ def _render_pipeline_configuration_controls() -> bool:
                 "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
                 "`data/models/frozen_inference_graph.pb` (or `TF_FRCNN_MODEL_PATH`)."
             )
+        if st.session_state.get("cfg_enable_age_gender_select", "No") == "Yes" and not deepface_available:
+            st.caption("DeepFace is not installed in this runtime; age/gender columns will remain empty.")
 
     st.session_state["ctrl_write_gzip_exports"] = st.session_state.get("cfg_write_gzip_select", "Yes") == "Yes"
     st.session_state["ctrl_keep_plain_csv"] = st.session_state.get("cfg_keep_plain_select", "Yes") == "Yes"
     st.session_state["ctrl_auto_sync_linked_drives"] = st.session_state.get("cfg_auto_sync_drives_select", "Yes") == "Yes"
     st.session_state["ctrl_auto_sync_on_save"] = st.session_state.get("cfg_auto_sync_on_save_select", "No") == "Yes"
+    st.session_state["ctrl_enable_age_gender"] = st.session_state.get("cfg_enable_age_gender_select", "No") == "Yes"
     return bool(rerun_clicked)
 
 def main() -> None:
@@ -2573,10 +2710,18 @@ def main() -> None:
         st.session_state["ctrl_bounce_threshold_sec"] = 120
     if "ctrl_session_gap_sec" not in st.session_state:
         st.session_state["ctrl_session_gap_sec"] = 30
+    if "ctrl_session_timeout_sec" not in st.session_state:
+        st.session_state["ctrl_session_timeout_sec"] = 180
     if "ctrl_max_images_per_store" not in st.session_state:
         st.session_state["ctrl_max_images_per_store"] = 20
     if "ctrl_detector_type" not in st.session_state:
         st.session_state["ctrl_detector_type"] = "mock"
+    if "ctrl_store_filter" not in st.session_state:
+        st.session_state["ctrl_store_filter"] = ""
+    if "ctrl_capture_date" not in st.session_state:
+        st.session_state["ctrl_capture_date"] = ""
+    if "ctrl_enable_age_gender" not in st.session_state:
+        st.session_state["ctrl_enable_age_gender"] = False
     if "ctrl_write_gzip_exports" not in st.session_state:
         st.session_state["ctrl_write_gzip_exports"] = True
     if "ctrl_keep_plain_csv" not in st.session_state:
@@ -2627,8 +2772,19 @@ def main() -> None:
     time_bucket_minutes = int(st.session_state["ctrl_time_bucket_minutes"])
     bounce_threshold_sec = int(st.session_state["ctrl_bounce_threshold_sec"])
     session_gap_sec = int(st.session_state["ctrl_session_gap_sec"])
+    session_timeout_sec = int(st.session_state["ctrl_session_timeout_sec"])
     max_images_per_store = int(st.session_state["ctrl_max_images_per_store"])
     detector_type = str(st.session_state["ctrl_detector_type"])
+    store_filter = str(st.session_state.get("ctrl_store_filter", "")).strip()
+    capture_date_str = str(st.session_state.get("ctrl_capture_date", "")).strip()
+    capture_date_filter: date | None = None
+    if capture_date_str:
+        try:
+            capture_date_filter = date.fromisoformat(capture_date_str)
+        except ValueError:
+            st.error(f"Invalid capture date '{capture_date_str}'. Use YYYY-MM-DD.")
+            capture_date_filter = None
+    enable_age_gender = bool(st.session_state.get("ctrl_enable_age_gender", False))
     write_gzip_exports = bool(st.session_state["ctrl_write_gzip_exports"])
     keep_plain_csv = bool(st.session_state["ctrl_keep_plain_csv"])
     auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
@@ -2650,6 +2806,8 @@ def main() -> None:
                 sid: {
                     cid: {
                         "camera_role": cfg.camera_role,
+                        "location_name": cfg.location_name,
+                        "floor_name": getattr(cfg, "floor_name", ""),
                         "entry_line_x": cfg.entry_line_x,
                         "entry_direction": cfg.entry_direction,
                     }
@@ -2670,6 +2828,12 @@ def main() -> None:
                 keep_plain_csv=keep_plain_csv,
                 camera_configs_by_store=cfg_map,
                 max_images_per_store=int(max_images_per_store),
+                store_filter=store_filter,
+                capture_date_filter=capture_date_filter,
+                session_timeout_sec=int(session_timeout_sec),
+                enable_age_gender=enable_age_gender,
+                export_pilot_store_id=store_filter,
+                export_pilot_date=capture_date_filter.isoformat() if capture_date_filter else "",
             )
             st.session_state["analysis_output"] = output
             if st.session_state.get("login_email"):

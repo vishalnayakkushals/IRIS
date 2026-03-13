@@ -45,6 +45,7 @@ class CameraConfig:
     store_id: str
     camera_id: str
     camera_role: str
+    floor_name: str
     location_name: str
     entry_line_x: float
     entry_direction: str
@@ -185,6 +186,7 @@ def init_db(db_path: Path) -> None:
                 store_id TEXT NOT NULL,
                 camera_id TEXT NOT NULL,
                 camera_role TEXT NOT NULL DEFAULT 'INSIDE',
+                floor_name TEXT NOT NULL DEFAULT '',
                 location_name TEXT NOT NULL DEFAULT '',
                 entry_line_x REAL NOT NULL DEFAULT 0.5,
                 entry_direction TEXT NOT NULL DEFAULT 'OUTSIDE_TO_INSIDE',
@@ -349,6 +351,8 @@ def init_db(db_path: Path) -> None:
         if "updated_at" not in _table_columns(conn, "employees"):
             conn.execute("ALTER TABLE employees ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE employees SET updated_at = created_at WHERE updated_at = ''")
+        if "floor_name" not in _table_columns(conn, "camera_configs"):
+            conn.execute("ALTER TABLE camera_configs ADD COLUMN floor_name TEXT NOT NULL DEFAULT ''")
         if "location_name" not in _table_columns(conn, "camera_configs"):
             conn.execute("ALTER TABLE camera_configs ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
         _seed_defaults(conn)
@@ -1567,12 +1571,14 @@ def upsert_camera_config(
     store_id: str,
     camera_id: str,
     camera_role: str = "INSIDE",
+    floor_name: str = "",
     location_name: str = "",
     entry_line_x: float = 0.5,
     entry_direction: str = "OUTSIDE_TO_INSIDE",
 ) -> None:
     init_db(db_path)
     role=(camera_role or "INSIDE").strip().upper() or "INSIDE"
+    floor=(floor_name or "").strip()
     location=(location_name or "").strip()
     direction=(entry_direction or "OUTSIDE_TO_INSIDE").strip().upper()
     if direction not in {"OUTSIDE_TO_INSIDE","INSIDE_TO_OUTSIDE"}:
@@ -1584,16 +1590,17 @@ def upsert_camera_config(
     try:
         conn.execute(
             """
-            INSERT INTO camera_configs(store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at)
-            VALUES(?,?,?,?,?,?,?)
+            INSERT INTO camera_configs(store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(store_id,camera_id) DO UPDATE SET
               camera_role=excluded.camera_role,
+              floor_name=excluded.floor_name,
               location_name=excluded.location_name,
               entry_line_x=excluded.entry_line_x,
               entry_direction=excluded.entry_direction,
               updated_at=excluded.updated_at
             """,
-            (store_id.strip(), camera_id.strip().upper(), role, location, x, direction, _now_utc()),
+            (store_id.strip(), camera_id.strip().upper(), role, floor, location, x, direction, _now_utc()),
         )
         conn.commit()
     finally:
@@ -1605,9 +1612,9 @@ def list_camera_configs(db_path: Path, store_id: str | None = None) -> list[Came
     conn=sqlite3.connect(db_path)
     try:
         if store_id:
-            rows=conn.execute("SELECT store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
+            rows=conn.execute("SELECT store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
         else:
-            rows=conn.execute("SELECT store_id,camera_id,camera_role,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs ORDER BY store_id,camera_id").fetchall()
+            rows=conn.execute("SELECT store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs ORDER BY store_id,camera_id").fetchall()
         return [CameraConfig(*r) for r in rows]
     finally:
         conn.close()

@@ -107,3 +107,20 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Added BLRJAY pilot-day execution support: store-day customer session IDs, floor/location hotspots, date-scoped exports, and dashboard/CLI controls for March 12, 2025 validation.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/store_registry.py`
+  - `scripts/analyze_stores.py`
+  - `tests/test_iris_analysis.py`
+  - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `GOOGLE_API_KEY` required for reliable large Google Drive sync.
+  - DeepFace is optional; age/gender fields remain empty when unavailable.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -15,6 +16,7 @@ from iris.iris_analysis import (
     build_detector,
     build_camera_hotspots,
     export_analysis,
+    export_store_day_artifacts,
     load_exports,
     parse_filename,
     validate_image,
@@ -286,3 +288,62 @@ def test_daily_proof_csv_is_exported_and_loaded(tmp_path: Path) -> None:
     loaded = load_exports(out)
     assert "store_1" in loaded.stores
     assert not loaded.stores["store_1"].daily_proof.empty
+
+
+def test_store_day_customer_ids_are_date_scoped(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    d1 = store / "2025-03-12"
+    d2 = store / "2025-03-13"
+    _write_image(d1 / "09-00-00_D02-1.jpg")
+    _write_image(d1 / "09-00-10_D02-2.jpg")
+    _write_image(d2 / "09-01-00_D02-1.jpg")
+    detector = FixedDetector(
+        {
+            "09-00-00_D02-1.jpg": 1,
+            "09-00-10_D02-2.jpg": 1,
+            "09-01-00_D02-1.jpg": 1,
+        }
+    )
+    result = analyze_store(
+        store_id="BLRJAY",
+        store_dir=store,
+        detector=detector,
+        camera_configs={"D02": {"camera_role": "ENTRANCE", "entry_line_x": 0.5, "entry_direction": "OUTSIDE_TO_INSIDE"}},
+        capture_date_filter=date(2025, 3, 12),
+    )
+    assert not result.image_insights.empty
+    assert set(result.image_insights["capture_date"].astype(str).tolist()) == {"2025-03-12"}
+    ids = []
+    for value in result.image_insights["store_day_customer_ids"].tolist():
+        if isinstance(value, str) and value.strip():
+            ids.extend([str(x) for x in json.loads(value)])
+    assert all(cid.startswith("C_BLRJAY_20250312_") for cid in ids if cid)
+    assert not result.customer_sessions.empty
+    assert set(result.customer_sessions["capture_date"].astype(str).tolist()) == {"2025-03-12"}
+
+
+def test_export_store_day_artifacts_creates_required_files(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    store = root / "BLRJAY" / "2025-03-12"
+    _write_image(store / "09-57-27_D02-1.jpg")
+    output = analyze_root(
+        root_dir=root,
+        detector_type="mock",
+        store_filter="BLRJAY",
+        capture_date_filter=date(2025, 3, 12),
+        max_images_per_store=None,
+    )
+    out = tmp_path / "exports"
+    created = export_store_day_artifacts(
+        output=output,
+        out_dir=out,
+        store_id="BLRJAY",
+        capture_date="2025-03-12",
+        write_gzip_exports=False,
+        keep_plain_csv=True,
+    )
+    names = sorted([p.name for p in created])
+    assert "store_BLRJAY_2025-03-12_image_insights.csv" in names
+    assert "store_BLRJAY_2025-03-12_customer_sessions.csv" in names
+    assert "store_BLRJAY_2025-03-12_location_hotspots.csv" in names
+    assert "store_BLRJAY_2025-03-12_daily_proof.csv" in names

@@ -239,6 +239,8 @@ def test_camera_config_persistence(tmp_path: Path) -> None:
         store_id="store_1",
         camera_id="D01",
         camera_role="ENTRANCE",
+        floor_name="Ground",
+        location_name="Zone1",
         entry_line_x=0.42,
         entry_direction="OUTSIDE_TO_INSIDE",
     )
@@ -246,6 +248,8 @@ def test_camera_config_persistence(tmp_path: Path) -> None:
     assert len(cfgs) == 1
     assert cfgs[0].camera_id == "D01"
     assert cfgs[0].camera_role == "ENTRANCE"
+    assert cfgs[0].floor_name == "Ground"
+    assert cfgs[0].location_name == "Zone1"
     mapped = camera_config_map(db_path=db)
     assert mapped["store_1"]["D01"].entry_line_x == 0.42
 

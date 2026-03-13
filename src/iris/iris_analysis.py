@@ -8,7 +8,7 @@ import csv
 import json
 import os
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
@@ -17,6 +17,12 @@ from PIL import Image
 
 FILE_PATTERN = re.compile(
     r"(?P<time>\d{2}-\d{2}-\d{2})_(?P<camera>D\d{2})-(?P<frame>\d+)\.jpg$"
+)
+FILE_PATTERN_WITH_DATE = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})[_\s-](?P<time>\d{2}-\d{2}-\d{2})_(?P<camera>D\d{2})-(?P<frame>\d+)\.jpg$"
+)
+FILE_PATTERN_WITH_COMPACT_DATE = re.compile(
+    r"(?P<date>\d{8})[_\s-](?P<time>\d{2}-\d{2}-\d{2})_(?P<camera>D\d{2})-(?P<frame>\d+)\.jpg$"
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DATE_FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -44,6 +50,8 @@ class DetectionResult:
 class StoreAnalysisResult:
     image_insights: pd.DataFrame
     camera_hotspots: pd.DataFrame
+    location_hotspots: pd.DataFrame
+    customer_sessions: pd.DataFrame
     summary_row: pd.DataFrame
     alerts: pd.DataFrame
     daily_report: pd.DataFrame
@@ -290,14 +298,34 @@ def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.25) ->
         return UnavailableDetector(reason), reason
 
 
+def _parse_date_token(token: str) -> date | None:
+    text = str(token).strip()
+    if not text:
+        return None
+    try:
+        if re.fullmatch(r"\d{8}", text):
+            return date.fromisoformat(f"{text[0:4]}-{text[4:6]}-{text[6:8]}")
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def parse_filename(filename: str, reference_day: date | None = None) -> ParsedFilename | None:
     match = FILE_PATTERN.match(filename)
+    resolved_day = reference_day
     if not match:
-        return None
+        dated = FILE_PATTERN_WITH_DATE.match(filename)
+        compact_dated = FILE_PATTERN_WITH_COMPACT_DATE.match(filename)
+        match = dated or compact_dated
+        if not match:
+            return None
+        parsed_day = _parse_date_token(match.group("date"))
+        if parsed_day is not None:
+            resolved_day = parsed_day
     hh, mm, ss = [int(part) for part in match.group("time").split("-")]
-    if reference_day is None:
-        reference_day = date.today()
-    ts = datetime.combine(reference_day, datetime.min.time()).replace(
+    if resolved_day is None:
+        resolved_day = date.today()
+    ts = datetime.combine(resolved_day, datetime.min.time()).replace(
         hour=hh, minute=mm, second=ss
     )
     return ParsedFilename(
@@ -574,6 +602,457 @@ def _peak_time_bucket(image_insights: pd.DataFrame, time_bucket_minutes: int = 1
         .sort_values(by=["total_people", "bucket"], ascending=[False, True])
     )
     return grouped.iloc[0]["bucket"].strftime("%H:%M")
+
+
+def _safe_json_list(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, list):
+                return decoded
+        except Exception:
+            return []
+    return []
+
+
+def _cross_in_out(side_a: int, side_b: int, direction: str) -> tuple[bool, bool]:
+    crossed_in = False
+    crossed_out = False
+    if side_a == side_b:
+        return crossed_in, crossed_out
+    if direction == "OUTSIDE_TO_INSIDE" and side_a < 0 <= side_b:
+        crossed_in = True
+    if direction == "OUTSIDE_TO_INSIDE" and side_a > 0 >= side_b:
+        crossed_out = True
+    if direction == "INSIDE_TO_OUTSIDE" and side_a > 0 >= side_b:
+        crossed_in = True
+    if direction == "INSIDE_TO_OUTSIDE" and side_a < 0 <= side_b:
+        crossed_out = True
+    return crossed_in, crossed_out
+
+
+def _compute_entry_exit_event_counts(
+    image_insights: pd.DataFrame,
+    camera_configs: dict[str, dict[str, object]],
+) -> tuple[dict[str, dict[pd.Timestamp, int]], dict[str, dict[pd.Timestamp, int]]]:
+    entry_counts: dict[str, dict[pd.Timestamp, int]] = {}
+    exit_counts: dict[str, dict[pd.Timestamp, int]] = {}
+    if image_insights.empty:
+        return entry_counts, exit_counts
+
+    track_events: dict[tuple[str, str, int], list[dict[str, object]]] = {}
+    rows = image_insights[image_insights["timestamp"].notna()].copy()
+    for _, row in rows.iterrows():
+        camera_id = str(row.get("camera_id", "")).strip()
+        cfg = camera_configs.get(camera_id, {})
+        role = str(cfg.get("camera_role", "INSIDE")).upper()
+        if role not in {"ENTRANCE", "EXIT"}:
+            continue
+        capture_date = str(row.get("capture_date", "")).strip()
+        if not capture_date:
+            capture_date = pd.Timestamp(row["timestamp"]).date().isoformat()
+        tids = [int(v) for v in _safe_json_list(row.get("track_ids", "[]")) if str(v).strip()]
+        cents_raw = _safe_json_list(row.get("person_centroids", "[]"))
+        for i, tid in enumerate(tids):
+            cx = 0.5
+            if i < len(cents_raw):
+                try:
+                    cx = float(cents_raw[i][0])  # type: ignore[index]
+                except Exception:
+                    cx = 0.5
+            key = (capture_date, camera_id, int(tid))
+            track_events.setdefault(key, []).append(
+                {
+                    "ts": pd.Timestamp(row["timestamp"]),
+                    "cx": cx,
+                    "role": role,
+                    "line_x": float(cfg.get("entry_line_x", 0.5)),
+                    "direction": str(cfg.get("entry_direction", "OUTSIDE_TO_INSIDE")).upper(),
+                }
+            )
+
+    for (capture_date, _camera_id, _track_id), events in track_events.items():
+        ordered = sorted(events, key=lambda x: pd.Timestamp(x["ts"]))
+        for a, b in zip(ordered, ordered[1:]):
+            side_a = _line_side(float(a["cx"]), float(a["line_x"]))
+            side_b = _line_side(float(b["cx"]), float(a["line_x"]))
+            crossed_in, crossed_out = _cross_in_out(
+                side_a=side_a,
+                side_b=side_b,
+                direction=str(a["direction"]),
+            )
+            ts = pd.Timestamp(b["ts"])
+            if crossed_in:
+                entry_counts.setdefault(capture_date, {})
+                entry_counts[capture_date][ts] = int(entry_counts[capture_date].get(ts, 0)) + 1
+            if crossed_out:
+                exit_counts.setdefault(capture_date, {})
+                exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + 1
+    return entry_counts, exit_counts
+
+
+def _new_store_day_customer_id(store_id: str, capture_date: str, seq: int) -> str:
+    if seq > 9_999_999:
+        raise ValueError("store-day customer id sequence overflowed 7-digit capacity")
+    return f"C_{store_id}_{capture_date.replace('-', '')}_{seq:07d}"
+
+
+def _age_bucket(age_value: float) -> str:
+    if age_value < 18:
+        return "0-17"
+    if age_value < 26:
+        return "18-25"
+    if age_value < 36:
+        return "26-35"
+    if age_value < 51:
+        return "36-50"
+    return "51+"
+
+
+def _analyze_age_gender_deepface(
+    image_path: Path,
+    person_boxes: list[tuple[float, float, float, float]],
+) -> tuple[str, str, float, str]:
+    if not person_boxes:
+        return "{}", "{}", 0.0, ""
+    try:
+        from deepface import DeepFace  # type: ignore
+    except Exception as exc:
+        return "{}", "{}", 0.0, f"DeepFace unavailable: {exc}"
+
+    gender_scores = {"male": 0.0, "female": 0.0}
+    age_buckets: dict[str, int] = {}
+    analyzed = 0
+    try:
+        with Image.open(image_path) as img:
+            rgb = img.convert("RGB")
+            width, height = rgb.size
+            for box in person_boxes:
+                x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+                y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+                x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+                y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+                crop = np.array(rgb.crop((x1, y1, x2, y2)))
+                try:
+                    result = DeepFace.analyze(
+                        img_path=crop,
+                        actions=["age", "gender"],
+                        enforce_detection=False,
+                        detector_backend="skip",
+                        silent=True,
+                    )
+                    if isinstance(result, list):
+                        result = result[0] if result else {}
+                    if not isinstance(result, dict):
+                        continue
+                    age_value = float(result.get("age", 0.0) or 0.0)
+                    if age_value > 0:
+                        bucket = _age_bucket(age_value)
+                        age_buckets[bucket] = int(age_buckets.get(bucket, 0)) + 1
+                    gender_payload = result.get("gender", {})
+                    if isinstance(gender_payload, dict):
+                        male = float(gender_payload.get("Man", gender_payload.get("Male", 0.0)) or 0.0)
+                        female = float(gender_payload.get("Woman", gender_payload.get("Female", 0.0)) or 0.0)
+                        gender_scores["male"] += male
+                        gender_scores["female"] += female
+                    elif isinstance(gender_payload, str):
+                        key = "female" if gender_payload.lower().startswith("w") else "male"
+                        gender_scores[key] += 100.0
+                    analyzed += 1
+                except Exception:
+                    continue
+    except Exception as exc:
+        return "{}", "{}", 0.0, f"DeepFace analyze failed: {exc}"
+
+    if analyzed <= 0:
+        return "{}", "{}", 0.0, "DeepFace could not infer age/gender for this frame"
+
+    total_gender = max(1.0, gender_scores["male"] + gender_scores["female"])
+    likelihood = {
+        "male": round(gender_scores["male"] / total_gender, 4),
+        "female": round(gender_scores["female"] / total_gender, 4),
+    }
+    confidence = round(float(analyzed) / float(max(1, len(person_boxes))), 4)
+    return json.dumps(likelihood), json.dumps(age_buckets), confidence, ""
+
+
+def build_store_day_customer_sessions(
+    image_insights: pd.DataFrame,
+    store_id: str,
+    camera_configs: dict[str, dict[str, object]] | None = None,
+    session_timeout_sec: int = 180,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if camera_configs is None:
+        camera_configs = {}
+    df = image_insights.copy()
+    df["store_day_customer_ids"] = "[]"
+    df["customer_session_ids"] = "[]"
+    if df.empty or "timestamp" not in df.columns:
+        return df, pd.DataFrame(
+            columns=[
+                "store_id",
+                "capture_date",
+                "store_day_customer_id",
+                "entry_ts",
+                "exit_ts",
+                "dwell_sec",
+                "close_reason",
+                "converted_proxy",
+                "cameras_seen",
+                "locations_seen",
+                "floors_seen",
+            ]
+        )
+
+    # Build crossing events from ENTRANCE/EXIT cameras.
+    entry_counts, exit_counts = _compute_entry_exit_event_counts(
+        image_insights=df,
+        camera_configs=camera_configs,
+    )
+
+    billing_cameras = {
+        str(cid)
+        for cid, cfg in camera_configs.items()
+        if str((cfg or {}).get("camera_role", "")).upper() == "BILLING"
+    }
+    session_state: dict[str, dict[str, Any]] = {}
+    sessions_out: list[dict[str, object]] = []
+
+    def _close_session(sid: str, close_ts: pd.Timestamp, reason: str) -> None:
+        state = session_state.get(sid)
+        if not state or bool(state.get("closed")):
+            return
+        state["closed"] = True
+        state["exit_ts"] = close_ts
+        state["close_reason"] = reason
+        entry_ts = pd.Timestamp(state["entry_ts"])
+        dwell = max(1.0, float((close_ts - entry_ts).total_seconds()) + 1.0)
+        sessions_out.append(
+            {
+                "store_id": store_id,
+                "capture_date": str(state["capture_date"]),
+                "store_day_customer_id": sid,
+                "entry_ts": entry_ts,
+                "exit_ts": close_ts,
+                "dwell_sec": round(dwell, 2),
+                "close_reason": reason,
+                "converted_proxy": int(bool(state.get("converted_proxy", False))),
+                "cameras_seen": ",".join(sorted(state.get("cameras_seen", set()))),
+                "locations_seen": ",".join(sorted(state.get("locations_seen", set()))),
+                "floors_seen": ",".join(sorted(state.get("floors_seen", set()))),
+            }
+        )
+
+    rows = df[df["timestamp"].notna()].copy().sort_values("timestamp")
+    for capture_date, day_df in rows.groupby("capture_date"):
+        day = str(capture_date).strip()
+        if not day:
+            continue
+        seq = 1
+        active_ids: list[str] = []
+        day_timestamps = sorted(day_df["timestamp"].dropna().unique().tolist())
+        for ts_raw in day_timestamps:
+            ts = pd.Timestamp(ts_raw)
+            open_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
+            for sid in list(open_ids):
+                last_seen = pd.Timestamp(session_state[sid]["last_seen"])
+                if (ts - last_seen).total_seconds() > float(session_timeout_sec):
+                    _close_session(sid=sid, close_ts=last_seen, reason="timeout")
+            active_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
+
+            n_entry = int(entry_counts.get(day, {}).get(ts, 0))
+            for _ in range(n_entry):
+                sid = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
+                seq += 1
+                session_state[sid] = {
+                    "capture_date": day,
+                    "entry_ts": ts,
+                    "last_seen": ts,
+                    "exit_ts": ts,
+                    "closed": False,
+                    "close_reason": "",
+                    "converted_proxy": False,
+                    "cameras_seen": set(),
+                    "locations_seen": set(),
+                    "floors_seen": set(),
+                }
+                active_ids.append(sid)
+
+            ts_idx = day_df[day_df["timestamp"] == ts].index.tolist()
+            observed_count = 0
+            if ts_idx:
+                observed_count = int(
+                    max(pd.to_numeric(df.loc[ts_idx, "customer_count"], errors="coerce").fillna(0).astype(int).tolist())
+                )
+            open_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
+            while len(open_ids) < observed_count:
+                sid = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
+                seq += 1
+                session_state[sid] = {
+                    "capture_date": day,
+                    "entry_ts": ts,
+                    "last_seen": ts,
+                    "exit_ts": ts,
+                    "closed": False,
+                    "close_reason": "",
+                    "converted_proxy": False,
+                    "cameras_seen": set(),
+                    "locations_seen": set(),
+                    "floors_seen": set(),
+                }
+                active_ids.append(sid)
+                open_ids.append(sid)
+
+            open_ids = sorted(
+                [sid for sid in open_ids if not bool(session_state[sid].get("closed"))],
+                key=lambda sid: (pd.Timestamp(session_state[sid]["last_seen"]), sid),
+                reverse=True,
+            )
+            chosen_ids = open_ids[:observed_count] if observed_count > 0 else []
+            for sid in chosen_ids:
+                session_state[sid]["last_seen"] = ts
+
+            for idx in ts_idx:
+                row_customer_raw = pd.to_numeric([df.at[idx, "customer_count"]], errors="coerce")[0]
+                row_customer_count = max(0, int(0 if pd.isna(row_customer_raw) else row_customer_raw))
+                row_ids = chosen_ids[:row_customer_count]
+                df.at[idx, "store_day_customer_ids"] = json.dumps(row_ids)
+                df.at[idx, "customer_session_ids"] = json.dumps(row_ids)
+                camera_id = str(df.at[idx, "camera_id"])
+                location_name = str(df.at[idx, "location_name"]) if "location_name" in df.columns else camera_id
+                floor_name = str(df.at[idx, "floor_name"]) if "floor_name" in df.columns else "Ground"
+                for sid in row_ids:
+                    state = session_state[sid]
+                    state["last_seen"] = ts
+                    state["cameras_seen"].add(camera_id)
+                    state["locations_seen"].add(location_name if location_name.strip() else camera_id)
+                    state["floors_seen"].add(floor_name if floor_name.strip() else "Ground")
+                    if camera_id in billing_cameras:
+                        state["converted_proxy"] = True
+
+            n_exit = int(exit_counts.get(day, {}).get(ts, 0))
+            if n_exit > 0:
+                closable = sorted(
+                    [sid for sid in active_ids if not bool(session_state[sid].get("closed"))],
+                    key=lambda sid: pd.Timestamp(session_state[sid]["entry_ts"]),
+                )
+                for sid in closable[:n_exit]:
+                    _close_session(sid=sid, close_ts=ts, reason="exit_crossing")
+            active_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
+
+        for sid in [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]:
+            _close_session(
+                sid=sid,
+                close_ts=pd.Timestamp(session_state[sid]["last_seen"]),
+                reason="end_of_day_timeout",
+            )
+
+    sessions_df = pd.DataFrame(sessions_out)
+    if sessions_df.empty:
+        sessions_df = pd.DataFrame(
+            columns=[
+                "store_id",
+                "capture_date",
+                "store_day_customer_id",
+                "entry_ts",
+                "exit_ts",
+                "dwell_sec",
+                "close_reason",
+                "converted_proxy",
+                "cameras_seen",
+                "locations_seen",
+                "floors_seen",
+            ]
+        )
+    else:
+        sessions_df = sessions_df.sort_values(["capture_date", "entry_ts"]).reset_index(drop=True)
+    return df, sessions_df
+
+
+def build_location_hotspots(image_insights: pd.DataFrame, store_id: str) -> pd.DataFrame:
+    columns = [
+        "store_id",
+        "floor_name",
+        "location_name",
+        "relevant_images",
+        "total_people",
+        "avg_people_per_relevant_image",
+        "avg_dwell_sec",
+        "hotspot_rank",
+    ]
+    if image_insights.empty:
+        return pd.DataFrame(columns=columns)
+
+    df = image_insights.copy()
+    if "location_name" not in df.columns:
+        df["location_name"] = df.get("camera_id", "").astype(str)
+    if "floor_name" not in df.columns:
+        df["floor_name"] = "Ground"
+    df["location_name"] = df["location_name"].fillna("").astype(str).str.strip()
+    df["floor_name"] = df["floor_name"].fillna("").astype(str).str.strip()
+    df.loc[df["location_name"] == "", "location_name"] = df["camera_id"].fillna("UNKNOWN").astype(str)
+    df.loc[df["floor_name"] == "", "floor_name"] = "Ground"
+
+    relevant = df[df["relevant"]].copy()
+    if relevant.empty:
+        return pd.DataFrame(columns=columns)
+
+    grouped = (
+        relevant.groupby(["floor_name", "location_name"], as_index=False)
+        .agg(relevant_images=("filename", "count"), total_people=("person_count", "sum"))
+    )
+    grouped["avg_people_per_relevant_image"] = (
+        grouped["total_people"] / grouped["relevant_images"].clip(lower=1)
+    ).round(3)
+    grouped["avg_dwell_sec"] = 0.0
+
+    if "store_day_customer_ids" in relevant.columns:
+        dwell_rows: list[dict[str, object]] = []
+        for _, row in relevant[relevant["timestamp"].notna()].iterrows():
+            customer_ids = [str(cid) for cid in _safe_json_list(row.get("store_day_customer_ids", "[]")) if str(cid).strip()]
+            for cid in customer_ids:
+                dwell_rows.append(
+                    {
+                        "customer_id": cid,
+                        "floor_name": str(row.get("floor_name", "Ground")),
+                        "location_name": str(row.get("location_name", row.get("camera_id", "UNKNOWN"))),
+                        "timestamp": pd.Timestamp(row["timestamp"]),
+                    }
+                )
+        if dwell_rows:
+            dwell_df = pd.DataFrame(dwell_rows)
+            spans = (
+                dwell_df.groupby(["customer_id", "floor_name", "location_name"], as_index=False)
+                .agg(first_seen=("timestamp", "min"), last_seen=("timestamp", "max"))
+            )
+            spans["dwell_sec"] = (
+                (spans["last_seen"] - spans["first_seen"]).dt.total_seconds().fillna(0.0) + 1.0
+            ).clip(lower=1.0)
+            loc_dwell = (
+                spans.groupby(["floor_name", "location_name"], as_index=False)
+                .agg(avg_dwell_sec=("dwell_sec", "mean"))
+            )
+            grouped = grouped.drop(columns=["avg_dwell_sec"]).merge(
+                loc_dwell,
+                on=["floor_name", "location_name"],
+                how="left",
+            )
+            grouped["avg_dwell_sec"] = grouped["avg_dwell_sec"].fillna(0.0).round(2)
+
+    grouped["store_id"] = store_id
+    grouped = grouped.sort_values(
+        by=["avg_people_per_relevant_image", "total_people", "avg_dwell_sec", "location_name"],
+        ascending=[False, False, False, True],
+    ).reset_index(drop=True)
+    grouped["hotspot_rank"] = grouped.index + 1
+    return grouped[columns]
 
 
 
@@ -1064,16 +1543,20 @@ def analyze_store(
     engaged_dwell_threshold_sec: int = 180,
     max_images_per_store: int | None = None,
     employee_assets_root: Path | None = None,
+    capture_date_filter: date | None = None,
+    session_timeout_sec: int = 180,
+    enable_age_gender: bool = False,
 ) -> StoreAnalysisResult:
     rows: list[dict[str, object]] = []
     image_paths = _iter_store_images(store_dir)
     drive_link_map = _load_drive_link_map(store_dir)
+    if camera_configs is None:
+        camera_configs = {}
     staff_red_threshold = _estimate_store_staff_red_threshold(
         store_id=store_id,
         employee_assets_root=employee_assets_root,
     )
-    if max_images_per_store is not None and max_images_per_store > 0:
-        image_paths = image_paths[:max_images_per_store]
+    processed_images = 0
 
     for image_path in image_paths:
         rel_path = _relative_image_path(image_path=image_path, store_dir=store_dir)
@@ -1083,8 +1566,13 @@ def analyze_store(
             store_dir=store_dir,
             fallback_day=reference_day,
         )
+        if capture_date_filter is not None and image_day != capture_date_filter:
+            continue
+        if max_images_per_store is not None and max_images_per_store > 0 and processed_images >= max_images_per_store:
+            break
         parsed = parse_filename(image_path.name, reference_day=image_day)
         if parsed is None:
+            processed_images += 1
             rows.append(
                 {
                     "store_id": store_id,
@@ -1104,6 +1592,12 @@ def analyze_store(
                     "staff_count": 0,
                     "customer_count": 0,
                     "bag_count": 0,
+                    "gender_likelihood": "{}",
+                    "age_bucket_counts": "{}",
+                    "age_confidence": 0.0,
+                    "age_gender_error": "",
+                    "floor_name": "",
+                    "location_name": "",
                     "reject_reason": "bad_filename",
                     "detection_error": "",
                     "relative_path": rel_path,
@@ -1114,6 +1608,9 @@ def analyze_store(
             continue
 
         is_valid, reject_reason = validate_image(image_path)
+        cfg = camera_configs.get(parsed.camera_id, {})
+        location_name = str(cfg.get("location_name", parsed.camera_id)).strip() or parsed.camera_id
+        floor_name = str(cfg.get("floor_name", "Ground")).strip() or "Ground"
         detection = DetectionResult(
             person_count=0,
             max_person_conf=0.0,
@@ -1137,10 +1634,26 @@ def analyze_store(
             int(sum(1 for flag in staff_flags if bool(flag))),
         )
         customer_count = max(0, int(detection.person_count) - int(staff_count))
+        gender_likelihood = "{}"
+        age_bucket_counts = "{}"
+        age_confidence = 0.0
+        age_gender_error = ""
+        if enable_age_gender and is_valid and detection.person_boxes:
+            customer_boxes: list[tuple[float, float, float, float]] = []
+            for idx, box in enumerate(detection.person_boxes):
+                is_staff = bool(staff_flags[idx]) if idx < len(staff_flags) else False
+                if not is_staff:
+                    customer_boxes.append(box)
+            if customer_boxes:
+                gender_likelihood, age_bucket_counts, age_confidence, age_gender_error = _analyze_age_gender_deepface(
+                    image_path=image_path,
+                    person_boxes=customer_boxes,
+                )
         relevant = bool(
             is_valid and detection.detection_error == "" and detection.person_count >= 1
         )
 
+        processed_images += 1
         rows.append(
             {
                 "store_id": store_id,
@@ -1160,6 +1673,12 @@ def analyze_store(
                 "staff_count": int(staff_count),
                 "customer_count": int(customer_count),
                 "bag_count": int(detection.bag_count),
+                "gender_likelihood": gender_likelihood,
+                "age_bucket_counts": age_bucket_counts,
+                "age_confidence": float(age_confidence),
+                "age_gender_error": age_gender_error,
+                "floor_name": floor_name,
+                "location_name": location_name,
                 "reject_reason": reject_reason,
                 "detection_error": detection.detection_error,
                 "relative_path": rel_path,
@@ -1188,6 +1707,12 @@ def analyze_store(
             "staff_count",
             "customer_count",
             "bag_count",
+            "gender_likelihood",
+            "age_bucket_counts",
+            "age_confidence",
+            "age_gender_error",
+            "floor_name",
+            "location_name",
             "reject_reason",
             "detection_error",
             "relative_path",
@@ -1215,6 +1740,12 @@ def analyze_store(
                 "staff_count",
                 "customer_count",
                 "bag_count",
+                "gender_likelihood",
+                "age_bucket_counts",
+                "age_confidence",
+                "age_gender_error",
+                "floor_name",
+                "location_name",
                 "reject_reason",
                 "detection_error",
                 "relative_path",
@@ -1228,15 +1759,35 @@ def analyze_store(
         ).reset_index(drop=True)
 
     # Exclude billing/backroom cameras from customer analytics while retaining raw rows
-    role_map = {cid: (cfg.get("camera_role", "INSIDE") if isinstance(cfg, dict) else "INSIDE") for cid, cfg in (camera_configs or {}).items()}
+    role_map = {
+        str(cid).strip().upper(): (cfg.get("camera_role", "INSIDE") if isinstance(cfg, dict) else "INSIDE")
+        for cid, cfg in camera_configs.items()
+    }
     if "camera_id" in image_insights.columns:
-        mask = image_insights["camera_id"].map(lambda c: str(role_map.get(str(c), "INSIDE")).upper() in {"BILLING", "BACKROOM"})
+        mask = image_insights["camera_id"].map(
+            lambda c: str(role_map.get(str(c).strip().upper(), "INSIDE")).upper() in {"BILLING", "BACKROOM"}
+        )
         image_insights.loc[mask, "relevant"] = False
     image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
     image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
     image_insights, daily_report = build_daily_customer_report(
         image_insights=image_insights,
         camera_configs=camera_configs,
+    )
+    image_insights, customer_sessions = build_store_day_customer_sessions(
+        image_insights=image_insights,
+        store_id=store_id,
+        camera_configs=camera_configs,
+        session_timeout_sec=session_timeout_sec,
+    )
+    if "customer_ids" not in image_insights.columns:
+        image_insights["customer_ids"] = "[]"
+    image_insights["legacy_customer_ids"] = image_insights["customer_ids"].astype(str)
+    image_insights["customer_ids"] = image_insights.apply(
+        lambda row: str(row.get("store_day_customer_ids", "[]"))
+        if str(row.get("store_day_customer_ids", "[]")).strip() not in {"", "[]"}
+        else str(row.get("customer_ids", "[]")),
+        axis=1,
     )
     daily_proof = build_daily_calculation_proof(
         store_id=store_id,
@@ -1251,6 +1802,7 @@ def analyze_store(
     )
 
     camera_hotspots = build_camera_hotspots(image_insights, store_id=store_id)
+    location_hotspots = build_location_hotspots(image_insights=image_insights, store_id=store_id)
     summary_row = build_store_summary(
         store_id=store_id,
         image_insights=image_insights,
@@ -1261,7 +1813,13 @@ def analyze_store(
     )
     summary_row["footfall"] = int(footfall)
     summary_row["loss_of_sale_alerts"] = int(len(alerts_df))
-    if not daily_report.empty:
+    if not customer_sessions.empty:
+        summary_row["daily_walkins"] = int(len(customer_sessions))
+        summary_row["daily_conversions"] = int(pd.to_numeric(customer_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
+        summary_row["daily_conversion_rate"] = float(
+            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
+        )
+    elif not daily_report.empty:
         summary_row["daily_walkins"] = int(daily_report["actual_customers"].sum())
         summary_row["daily_conversions"] = int(daily_report["actual_conversions"].sum())
         summary_row["daily_conversion_rate"] = float(
@@ -1275,6 +1833,8 @@ def analyze_store(
     return StoreAnalysisResult(
         image_insights=image_insights,
         camera_hotspots=camera_hotspots,
+        location_hotspots=location_hotspots,
+        customer_sessions=customer_sessions,
         summary_row=summary_row,
         alerts=alerts_df,
         daily_report=daily_report,
@@ -1294,6 +1854,10 @@ def analyze_root(
     engaged_dwell_threshold_sec: int = 180,
     max_images_per_store: int | None = None,
     employee_assets_root: Path | None = None,
+    store_filter: str | None = None,
+    capture_date_filter: date | None = None,
+    session_timeout_sec: int = 180,
+    enable_age_gender: bool = False,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -1304,6 +1868,9 @@ def analyze_root(
     store_results: dict[str, StoreAnalysisResult] = {}
     if camera_configs_by_store is None:
         camera_configs_by_store = {}
+    normalized_filter = str(store_filter or "").strip()
+    if normalized_filter:
+        store_dirs = [path for path in store_dirs if path.name == normalized_filter]
     summary_frames: list[pd.DataFrame] = []
     for store_dir in store_dirs:
         store_id = store_dir.name
@@ -1319,6 +1886,9 @@ def analyze_root(
             engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
             max_images_per_store=max_images_per_store,
             employee_assets_root=employee_assets_root,
+            capture_date_filter=capture_date_filter,
+            session_timeout_sec=session_timeout_sec,
+            enable_age_gender=enable_age_gender,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)
@@ -1374,6 +1944,8 @@ def export_analysis(
     for store_id, store_result in output.stores.items():
         image_path = out_dir / f"store_{store_id}_image_insights.csv"
         hotspot_path = out_dir / f"store_{store_id}_camera_hotspots.csv"
+        location_hotspot_path = out_dir / f"store_{store_id}_location_hotspots.csv"
+        sessions_path = out_dir / f"store_{store_id}_customer_sessions.csv"
         _write(
             store_result.image_insights[
                 [
@@ -1389,10 +1961,19 @@ def export_analysis(
                     "relevant",
                     "staff_count",
                     "customer_count",
+                    "gender_likelihood",
+                    "age_bucket_counts",
+                    "age_confidence",
+                    "age_gender_error",
                     "track_ids",
                     "global_visit_id",
                     "customer_ids",
+                    "legacy_customer_ids",
+                    "store_day_customer_ids",
+                    "customer_session_ids",
                     "group_ids",
+                    "floor_name",
+                    "location_name",
                     "person_centroids",
                     "person_boxes",
                     "staff_flags",
@@ -1419,12 +2000,87 @@ def export_analysis(
             ],
             hotspot_path,
         )
+        _write(
+            store_result.location_hotspots[
+                [
+                    "store_id",
+                    "floor_name",
+                    "location_name",
+                    "relevant_images",
+                    "total_people",
+                    "avg_people_per_relevant_image",
+                    "avg_dwell_sec",
+                    "hotspot_rank",
+                ]
+            ],
+            location_hotspot_path,
+        )
+        _write(
+            store_result.customer_sessions[
+                [
+                    "store_id",
+                    "capture_date",
+                    "store_day_customer_id",
+                    "entry_ts",
+                    "exit_ts",
+                    "dwell_sec",
+                    "close_reason",
+                    "converted_proxy",
+                    "cameras_seen",
+                    "locations_seen",
+                    "floors_seen",
+                ]
+            ],
+            sessions_path,
+        )
         if not store_result.daily_report.empty:
             _write(store_result.daily_report, out_dir / f"store_{store_id}_daily_report.csv")
         if not store_result.daily_proof.empty:
             _write(store_result.daily_proof, out_dir / f"store_{store_id}_daily_proof.csv")
         if not store_result.alerts.empty:
             _write(store_result.alerts, out_dir / f"store_{store_id}_alerts.csv")
+
+
+def export_store_day_artifacts(
+    output: AnalysisOutput,
+    out_dir: Path,
+    store_id: str,
+    capture_date: str,
+    write_gzip_exports: bool = True,
+    keep_plain_csv: bool = True,
+) -> list[Path]:
+    sid = store_id.strip()
+    cdate = capture_date.strip()
+    if not sid or not cdate or sid not in output.stores:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = output.stores[sid]
+    suffix = cdate
+    created_paths: list[Path] = []
+
+    def _write(df: pd.DataFrame, path: Path) -> None:
+        if keep_plain_csv:
+            df.to_csv(path, index=False)
+            created_paths.append(path)
+        if write_gzip_exports:
+            gz_path = path.with_suffix(path.suffix + ".gz")
+            df.to_csv(gz_path, index=False, compression="gzip")
+            created_paths.append(gz_path)
+
+    day_images = result.image_insights[
+        result.image_insights["capture_date"].astype(str) == cdate
+    ].copy()
+    day_sessions = result.customer_sessions[
+        result.customer_sessions["capture_date"].astype(str) == cdate
+    ].copy()
+    day_proof = result.daily_proof[result.daily_proof["date"].astype(str) == cdate].copy()
+    day_location_hotspots = build_location_hotspots(day_images, store_id=sid)
+
+    _write(day_images, out_dir / f"store_{sid}_{suffix}_image_insights.csv")
+    _write(day_sessions, out_dir / f"store_{sid}_{suffix}_customer_sessions.csv")
+    _write(day_location_hotspots, out_dir / f"store_{sid}_{suffix}_location_hotspots.csv")
+    _write(day_proof, out_dir / f"store_{sid}_{suffix}_daily_proof.csv")
+    return created_paths
 
 
 def load_exports(out_dir: Path) -> AnalysisOutput:
@@ -1461,13 +2117,53 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
     for store_id in all_stores_summary["store_id"].astype(str).tolist():
         image_path = out_dir / f"store_{store_id}_image_insights.csv"
         hotspot_path = out_dir / f"store_{store_id}_camera_hotspots.csv"
+        location_hotspot_path = out_dir / f"store_{store_id}_location_hotspots.csv"
+        sessions_path = out_dir / f"store_{store_id}_customer_sessions.csv"
         image_gz_path = image_path.with_suffix(image_path.suffix + ".gz")
         hotspot_gz_path = hotspot_path.with_suffix(hotspot_path.suffix + ".gz")
+        location_hotspot_gz_path = location_hotspot_path.with_suffix(location_hotspot_path.suffix + ".gz")
+        sessions_gz_path = sessions_path.with_suffix(sessions_path.suffix + ".gz")
         if not (image_path.exists() or image_gz_path.exists()) or not (hotspot_path.exists() or hotspot_gz_path.exists()):
             continue
 
         image_df = pd.read_csv(image_path if image_path.exists() else image_gz_path, parse_dates=["timestamp"])
         hotspot_df = pd.read_csv(hotspot_path if hotspot_path.exists() else hotspot_gz_path)
+        location_hotspots_df = pd.DataFrame(
+            columns=[
+                "store_id",
+                "floor_name",
+                "location_name",
+                "relevant_images",
+                "total_people",
+                "avg_people_per_relevant_image",
+                "avg_dwell_sec",
+                "hotspot_rank",
+            ]
+        )
+        if location_hotspot_path.exists() or location_hotspot_gz_path.exists():
+            location_hotspots_df = pd.read_csv(
+                location_hotspot_path if location_hotspot_path.exists() else location_hotspot_gz_path
+            )
+        customer_sessions_df = pd.DataFrame(
+            columns=[
+                "store_id",
+                "capture_date",
+                "store_day_customer_id",
+                "entry_ts",
+                "exit_ts",
+                "dwell_sec",
+                "close_reason",
+                "converted_proxy",
+                "cameras_seen",
+                "locations_seen",
+                "floors_seen",
+            ]
+        )
+        if sessions_path.exists() or sessions_gz_path.exists():
+            customer_sessions_df = pd.read_csv(
+                sessions_path if sessions_path.exists() else sessions_gz_path,
+                parse_dates=["entry_ts", "exit_ts"],
+            )
         summary_row = all_stores_summary[all_stores_summary["store_id"] == store_id].copy()
         alerts_path = out_dir / f"store_{store_id}_alerts.csv"
         alerts_gz_path = alerts_path.with_suffix(alerts_path.suffix + ".gz")
@@ -1504,6 +2200,8 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
         stores[store_id] = StoreAnalysisResult(
             image_insights=image_df,
             camera_hotspots=hotspot_df,
+            location_hotspots=location_hotspots_df,
+            customer_sessions=customer_sessions_df,
             summary_row=summary_row,
             alerts=alerts_df,
             daily_report=daily_df,
