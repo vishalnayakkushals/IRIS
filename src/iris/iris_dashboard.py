@@ -2332,7 +2332,10 @@ def _render_users_page(db_path: Path, active_email: str) -> None:
                 .rename(columns={"store_id": "accessible_stores"})
             )
             users_df = users_df.merge(grouped, on="email", how="left")
-        users_df["accessible_stores"] = users_df.get("accessible_stores", "").fillna("")
+        if "accessible_stores" not in users_df.columns:
+            users_df["accessible_stores"] = ""
+        else:
+            users_df["accessible_stores"] = users_df["accessible_stores"].fillna("").astype(str)
         st.dataframe(users_df, use_container_width=True, hide_index=True)
     else:
         st.info("No users found.")

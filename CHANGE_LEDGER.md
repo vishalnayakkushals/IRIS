@@ -149,9 +149,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit 68ecab8
 - Summary:
   - Fixed top-row branding render to reliably show uploaded logo and app name using native Streamlit components in both login and app header.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Fixed Users directory crash when `accessible_stores` is absent by guarding DataFrame column handling before `fillna`.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
