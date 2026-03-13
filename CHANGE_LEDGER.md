@@ -182,9 +182,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit fe59bc9
 - Summary:
   - Added Google-Photos-style employee onboarding: per-image preview + name labeling during upload, plus optional labeling from selected store snapshots.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Renamed unclear report pages: `Quality` -> `Data Health` and `QA Timeline` -> `Frame Review`, including headers and legacy URL alias support.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`

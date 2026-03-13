@@ -77,7 +77,7 @@ from iris.store_registry import (
 
 NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Reports": {
-        "Business Health": ["Overview", "Store Detail", "Quality", "QA Timeline", "Customer Journeys"],
+        "Business Health": ["Overview", "Store Detail", "Data Health", "Frame Review", "Customer Journeys"],
     },
     "Access": {
         "Administration": [
@@ -126,6 +126,8 @@ LEGACY_PAGE_ALIAS = {
     "Camera Zones": "Store Camera Mapping",
     "Licenses": "Organisation",
     "Alert Routes": "Organisation",
+    "Quality": "Data Health",
+    "QA Timeline": "Frame Review",
 }
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
@@ -1222,7 +1224,8 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str) -> None:
-    st.subheader("Operator QA Timeline")
+    st.subheader("Frame Review")
+    st.caption("Frame-by-frame validation report to verify people counts, customer IDs, and image-level links.")
     if not output.stores:
         st.info("No store analysis loaded.")
         return
@@ -1230,7 +1233,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     store_ids = sorted(output.stores.keys())
     preselected_store = _query_value("store", "").strip()
     default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
-    sid = st.selectbox("QA store", options=store_ids, index=default_index, key="qa_store")
+    sid = st.selectbox("Store", options=store_ids, index=default_index, key="qa_store")
     image_df = _normalize_image_df(output.stores[sid].image_insights)
     if image_df.empty:
         st.info("No image rows available for this store.")
@@ -1498,7 +1501,8 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
 
 
 def _render_quality_summary(output: AnalysisOutput) -> None:
-    st.subheader("Quality Summary")
+    st.subheader("Data Health")
+    st.caption("Store-wise data reliability report: invalid files, naming issues, and detection errors.")
     if not output.stores:
         st.info("No store analysis loaded.")
         return
@@ -3134,7 +3138,7 @@ def main() -> None:
         _render_setup_help()
     elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes, root_dir=root_dir)
-    elif current_page == "Quality":
+    elif current_page == "Data Health":
         _render_quality_summary(view_output)
     elif current_page == "Customer Journeys":
         _render_customer_journeys(view_output)
@@ -3155,7 +3159,7 @@ def main() -> None:
             root_dir=root_dir,
         )
 
-    elif current_page == "QA Timeline":
+    elif current_page == "Frame Review":
         _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email)
 
     elif current_page == "Store Master":
