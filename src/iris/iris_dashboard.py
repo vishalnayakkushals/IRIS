@@ -16,10 +16,12 @@ from PIL import Image, ImageDraw
 
 from iris.iris_analysis import (
     AnalysisOutput,
+    IMAGE_EXTENSIONS,
     analyze_root,
     export_analysis,
     export_store_day_artifacts,
     load_exports,
+    parse_filename,
 )
 from iris.store_registry import (
     add_qa_feedback,
@@ -28,6 +30,7 @@ from iris.store_registry import (
     camera_config_map,
     create_user_session,
     create_license,
+    delete_location_master,
     delete_role,
     create_role,
     create_user,
@@ -49,6 +52,7 @@ from iris.store_registry import (
     list_employees,
     list_license_audit,
     list_licenses,
+    list_location_master,
     list_permission_codes,
     list_roles,
     list_store_master,
@@ -66,6 +70,7 @@ from iris.store_registry import (
     update_qa_feedback_review,
     upsert_alert_route,
     upsert_camera_config,
+    upsert_location_master,
     upsert_manager_access,
     upsert_store,
     upsert_app_settings,
@@ -98,7 +103,7 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
         ],
     },
     "Operations": {
-        "Store Setup": ["Store Mapping", "Camera Zones", "Store Master"],
+        "Store Setup": ["Store Mapping", "Store Camera Mapping", "Store Master"],
         "Workforce": ["Employee Management"],
     },
 }
@@ -128,6 +133,7 @@ COLOR_PRESETS: dict[str, str] = {
 LEGACY_PAGE_ALIAS = {
     "Store Admin": "Store Mapping",
     "Auth/RBAC": "Role Permissions",
+    "Camera Zones": "Store Camera Mapping",
 }
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
@@ -1728,6 +1734,42 @@ def _prefill_store_mapping_fields(db_path: Path, store_id: str) -> None:
     st.session_state["map_last_store_id"] = sid
 
 
+def _linked_cloud_store_rows(stores: list[object]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for store in stores:
+        source_uri = str(getattr(store, "drive_folder_url", "") or "").strip()
+        provider = detect_source_provider(source_uri)
+        if not source_uri or provider not in {"gdrive", "s3"}:
+            continue
+        rows.append(
+            {
+                "store_id": str(getattr(store, "store_id", "")),
+                "store_name": str(getattr(store, "store_name", "")),
+                "source_provider": provider,
+                "source_url": source_uri,
+                "updated_at": str(getattr(store, "updated_at", "")),
+            }
+        )
+    return rows
+
+
+def _discover_store_camera_ids(root_dir: Path, store_id: str, configured_ids: list[str]) -> list[str]:
+    discovered = {str(cid).strip().upper() for cid in configured_ids if str(cid).strip()}
+    store_dir = root_dir / store_id
+    if store_dir.exists() and store_dir.is_dir():
+        scanned = 0
+        for path in store_dir.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            parsed = parse_filename(path.name)
+            if parsed is not None and parsed.camera_id.strip():
+                discovered.add(parsed.camera_id.strip().upper())
+            scanned += 1
+            if scanned >= 50000:
+                break
+    return sorted(discovered)
+
+
 def _render_store_mapping(
     db_path: Path,
     data_root: Path,
@@ -1736,58 +1778,40 @@ def _render_store_mapping(
     active_email: str,
 ) -> None:
     st.subheader("Store Mapping")
-    st.caption(
-        "On save, store login is auto-created using Store Email + default password from Organisation settings."
-    )
+    st.caption("Select store and update only source link. Store name is auto-filled.")
     stores = list_stores(db_path)
-    if "map_store_id" not in st.session_state:
-        st.session_state["map_store_id"] = ""
-    if "map_store_name" not in st.session_state:
-        st.session_state["map_store_name"] = ""
-    if "map_store_email" not in st.session_state:
-        st.session_state["map_store_email"] = ""
-    if "map_drive_url" not in st.session_state:
-        st.session_state["map_drive_url"] = ""
-    if "map_existing_drive_url" not in st.session_state:
-        st.session_state["map_existing_drive_url"] = ""
-    if "map_replace_drive_url" not in st.session_state:
-        st.session_state["map_replace_drive_url"] = False
-    if "map_last_store_id" not in st.session_state:
-        st.session_state["map_last_store_id"] = ""
-    if "map_edit_store_select" not in st.session_state:
-        st.session_state["map_edit_store_select"] = ""
-
-    edit_ids = [""] + [s.store_id for s in stores]
-    selected_edit = st.selectbox(
-        "Edit Existing Store (optional)",
-        options=edit_ids,
-        key="map_edit_store_select",
-        help="Select a store to auto-fill Store Name, Store Email, and current source URL.",
+    master_df = pd.DataFrame(list_store_master(db_path=db_path))
+    master_ids = (
+        sorted(master_df["store_id"].astype(str).tolist())
+        if not master_df.empty and "store_id" in master_df.columns
+        else []
     )
-    if selected_edit and selected_edit != st.session_state.get("map_store_id", ""):
-        st.session_state["map_store_id"] = selected_edit
+    store_ids = sorted(set([s.store_id for s in stores] + master_ids))
+    if not store_ids:
+        st.info("No stores available. Load Store Master first.")
+        return
 
-    st.text_input("Store ID (unique)", key="map_store_id")
-    current_sid = st.session_state["map_store_id"].strip()
-    if current_sid and current_sid != st.session_state.get("map_last_store_id", ""):
+    if "map_store_id" not in st.session_state:
+        st.session_state["map_store_id"] = store_ids[0]
+    if st.session_state["map_store_id"] not in store_ids:
+        st.session_state["map_store_id"] = store_ids[0]
+    current_sid = st.selectbox("Store", options=store_ids, key="map_store_id")
+    if current_sid != st.session_state.get("map_last_store_id", ""):
         _prefill_store_mapping_fields(db_path=db_path, store_id=current_sid)
 
-    st.text_input("Store Name", key="map_store_name")
-    st.text_input("Store Email", key="map_store_email")
+    current_name = st.session_state.get("map_store_name", "").strip() or current_sid
+    st.markdown(f"**Store Name:** {current_name}")
     st.text_input(
-        "Source URL",
+        "Source URL (Google Drive / AWS S3)",
         key="map_drive_url",
-        help=(
-            "Supported: Google Drive folder URL, s3://bucket/prefix, "
-            "S3 HTTPS URL, or local folder path."
-        ),
+        help="Supported: Google Drive folder URL, s3://bucket/prefix, or S3 HTTPS URL.",
     )
 
-    existing_drive = st.session_state.get("map_existing_drive_url", "").strip()
-    new_drive = st.session_state.get("map_drive_url", "").strip()
+    existing_drive = str(st.session_state.get("map_existing_drive_url", "")).strip()
+    new_drive = str(st.session_state.get("map_drive_url", "")).strip()
     drive_changed = bool(existing_drive and new_drive and existing_drive != new_drive)
     if existing_drive:
-        st.caption(f"Current Source URL: {existing_drive}")
+        st.caption(f"Current source URL: {existing_drive}")
     if drive_changed:
         st.checkbox(
             "Replace existing source URL for this store",
@@ -1797,12 +1821,17 @@ def _render_store_mapping(
 
     save_cols = st.columns([1, 1, 2])
     if save_cols[0].button("Save / Update Store", type="primary"):
-        sid = st.session_state["map_store_id"].strip()
-        sname = st.session_state["map_store_name"].strip()
-        semail = st.session_state["map_store_email"].strip()
+        sid = current_sid.strip()
+        sname = current_name
+        semail = str(st.session_state.get("map_store_email", "")).strip().lower()
+        if not semail:
+            master = get_store_master_by_id(db_path=db_path, store_id=sid)
+            semail = str((master or {}).get("store_email", "")).strip().lower()
+        if not semail:
+            semail = f"{sid.lower()}@iris.local"
         sdrive = st.session_state["map_drive_url"].strip()
-        if not sid or not sname or not semail:
-            st.error("Store ID, Store Name, and Store Email are required.")
+        if not sid or not sname:
+            st.error("Store ID and Store Name are required.")
         elif drive_changed and not bool(st.session_state.get("map_replace_drive_url", False)):
             st.warning("Confirm drive replacement first, then save.")
         else:
@@ -1846,7 +1875,7 @@ def _render_store_mapping(
                         st.warning(message)
 
     if save_cols[1].button("Sync Selected Store"):
-        sid = st.session_state["map_store_id"].strip()
+        sid = current_sid.strip()
         matched = [s for s in list_stores(db_path) if s.store_id == sid]
         if not sid or not matched:
             st.warning("Select a valid store first.")
@@ -1858,62 +1887,188 @@ def _render_store_mapping(
                 st.warning(message)
 
     if stores:
-        synced_gdrive = list_synced_stores(db_path=db_path, provider_filter="gdrive")
-        if synced_gdrive:
-            st.markdown("**Registered Stores (Synced to Google Drive)**")
-            st.dataframe(pd.DataFrame(synced_gdrive), use_container_width=True)
+        cloud_rows = _linked_cloud_store_rows(stores)
+        if cloud_rows:
+            st.markdown("**Registered Stores (Cloud Links Only)**")
+            st.dataframe(pd.DataFrame(cloud_rows), use_container_width=True, hide_index=True)
         else:
-            st.info("No Google Drive store has completed sync yet.")
-        with st.expander("Show all mapped stores"):
-            all_df = pd.DataFrame([s.__dict__ for s in stores])
-            all_df["source_provider"] = all_df["drive_folder_url"].map(detect_source_provider)
-            st.dataframe(all_df, use_container_width=True)
+            st.info("No cloud-linked stores found yet.")
     else:
         st.info("No stores registered yet.")
 
 
-def _render_camera_zones(db_path: Path) -> None:
-    st.subheader("Camera Zones")
+def _render_camera_zones(db_path: Path, root_dir: Path) -> None:
+    st.subheader("Store Camera Mapping")
+    st.caption("Map camera IDs to floor/location master. Entry direction and line are optional advanced settings.")
     stores = list_stores(db_path)
     if not stores:
         st.info("Create at least one store before camera setup.")
         return
     store_ids = [s.store_id for s in stores]
-    with st.form("camera_zone_form", clear_on_submit=False):
-        cfg_store_id = st.selectbox("Store", options=store_ids)
-        cfg_camera_id = st.text_input("Camera ID (e.g., D01)")
-        cfg_floor = st.text_input("Floor Name (e.g., Ground, L1)")
-        cfg_location = st.text_input("Location Name (e.g., Zone1, Zone2)")
-        cfg_role = st.selectbox(
-            "Camera Role",
-            options=["ENTRANCE", "INSIDE", "BILLING", "BACKROOM", "EXIT", "ZONE"],
-            index=1,
+    selected_store = st.selectbox("Store", options=store_ids, key="camera_view_store")
+
+    st.markdown("**Location Name Master**")
+    with st.form("location_master_form", clear_on_submit=False):
+        lm_cols = st.columns(2)
+        lm_floor = lm_cols[0].text_input("Floor Name", value="Ground")
+        lm_location = lm_cols[1].text_input("Location Name")
+        save_location = st.form_submit_button("Add Location")
+    if save_location:
+        if not lm_location.strip():
+            st.error("Location Name is required.")
+        else:
+            upsert_location_master(
+                db_path=db_path,
+                store_id=selected_store,
+                floor_name=lm_floor.strip() or "Ground",
+                location_name=lm_location.strip(),
+            )
+            st.success("Location added.")
+
+    location_rows = list_location_master(db_path=db_path, store_id=selected_store)
+    location_df = pd.DataFrame(location_rows)
+    if location_df.empty:
+        st.caption("No locations defined yet for this store.")
+    else:
+        st.dataframe(location_df, use_container_width=True, hide_index=True)
+        with st.expander("Delete location"):
+            delete_floor = st.selectbox(
+                "Floor",
+                options=sorted(location_df["floor_name"].astype(str).unique().tolist()),
+                key=f"delete_floor_{selected_store}",
+            )
+            delete_candidates = (
+                location_df[location_df["floor_name"].astype(str) == str(delete_floor)]["location_name"]
+                .astype(str)
+                .tolist()
+            )
+            delete_location = st.selectbox(
+                "Location",
+                options=delete_candidates,
+                key=f"delete_location_{selected_store}",
+            )
+            if st.button("Delete Selected Location", key=f"delete_location_btn_{selected_store}"):
+                deleted = delete_location_master(
+                    db_path=db_path,
+                    store_id=selected_store,
+                    floor_name=str(delete_floor),
+                    location_name=str(delete_location),
+                )
+                if deleted:
+                    st.success("Location deleted.")
+                else:
+                    st.warning("Location not found.")
+
+    cfg_list = list_camera_configs(db_path=db_path, store_id=selected_store)
+    cfg_by_camera = {cfg.camera_id: cfg for cfg in cfg_list}
+    camera_ids = _discover_store_camera_ids(
+        root_dir=root_dir,
+        store_id=selected_store,
+        configured_ids=[cfg.camera_id for cfg in cfg_list],
+    )
+    if not camera_ids:
+        st.info("No camera IDs detected from filenames yet. Sync store images first.")
+        camera_ids = sorted(cfg_by_camera.keys())
+    st.markdown("**Camera -> Location Mapping**")
+    if camera_ids:
+        selected_camera = st.selectbox("Camera ID", options=camera_ids, key=f"camera_map_id_{selected_store}")
+    else:
+        selected_camera = st.text_input("Camera ID", value="", key=f"camera_map_manual_{selected_store}").strip().upper()
+
+    selected_cfg = cfg_by_camera.get(str(selected_camera).strip().upper())
+    location_options = []
+    location_lookup: dict[str, tuple[str, str]] = {}
+    for row in location_rows:
+        floor_name = str(row.get("floor_name", "Ground")).strip() or "Ground"
+        location_name = str(row.get("location_name", "")).strip()
+        label = f"{floor_name} > {location_name}"
+        location_options.append(label)
+        location_lookup[label] = (floor_name, location_name)
+
+    default_location_label = ""
+    if selected_cfg is not None:
+        default_location_label = f"{selected_cfg.floor_name or 'Ground'} > {selected_cfg.location_name or selected_cfg.camera_id}"
+        if default_location_label not in location_options:
+            location_options.append(default_location_label)
+            location_lookup[default_location_label] = (
+                selected_cfg.floor_name or "Ground",
+                selected_cfg.location_name or selected_cfg.camera_id,
+            )
+    if not location_options and selected_camera:
+        fallback_label = f"Ground > {selected_camera}"
+        location_options = [fallback_label]
+        location_lookup[fallback_label] = ("Ground", str(selected_camera))
+
+    if location_options:
+        selected_location_label = st.selectbox(
+            "Location Name Master",
+            options=location_options,
+            index=(location_options.index(default_location_label) if default_location_label in location_options else 0),
+            key=f"camera_map_location_{selected_store}",
         )
-        cfg_line_x = st.slider("Entry Line X (0=left,1=right)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
-        cfg_dir = st.selectbox("Entry Direction", options=["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"], index=0)
-        save_camera = st.form_submit_button("Save Camera")
-    if save_camera:
-        if not cfg_camera_id.strip():
+    else:
+        selected_location_label = ""
+
+    adv_default_role = selected_cfg.camera_role if selected_cfg is not None else "INSIDE"
+    adv_default_line = float(selected_cfg.entry_line_x) if selected_cfg is not None else 0.5
+    adv_default_dir = selected_cfg.entry_direction if selected_cfg is not None else "OUTSIDE_TO_INSIDE"
+    with st.expander("Advanced Traffic Settings (Optional)"):
+        st.caption("Use these only for footfall/session crossing logic.")
+        adv_role = st.selectbox(
+            "Role",
+            options=["ENTRANCE", "INSIDE", "BILLING", "BACKROOM", "EXIT", "ZONE"],
+            index=(["ENTRANCE", "INSIDE", "BILLING", "BACKROOM", "EXIT", "ZONE"].index(adv_default_role) if adv_default_role in ["ENTRANCE", "INSIDE", "BILLING", "BACKROOM", "EXIT", "ZONE"] else 1),
+            key=f"adv_role_{selected_store}",
+        )
+        adv_line_x = st.slider(
+            "Entry Line X",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(adv_default_line),
+            step=0.01,
+            key=f"adv_line_{selected_store}",
+        )
+        adv_dir = st.selectbox(
+            "Entry Direction",
+            options=["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"],
+            index=(0 if adv_default_dir == "OUTSIDE_TO_INSIDE" else 1),
+            key=f"adv_dir_{selected_store}",
+        )
+
+    if st.button("Save Store Camera Mapping", type="primary", key=f"save_camera_map_{selected_store}"):
+        camera_id = str(selected_camera).strip().upper()
+        if not camera_id:
             st.error("Camera ID is required.")
         else:
+            floor_name, location_name = location_lookup.get(selected_location_label, ("Ground", camera_id))
             upsert_camera_config(
                 db_path=db_path,
-                store_id=cfg_store_id,
-                camera_id=cfg_camera_id.strip().upper(),
-                camera_role=cfg_role,
-                floor_name=cfg_floor.strip(),
-                location_name=cfg_location.strip(),
-                entry_line_x=float(cfg_line_x),
-                entry_direction=cfg_dir,
+                store_id=selected_store,
+                camera_id=camera_id,
+                camera_role=adv_role,
+                floor_name=floor_name,
+                location_name=location_name,
+                entry_line_x=float(adv_line_x),
+                entry_direction=adv_dir,
             )
-            st.success("Camera zone saved.")
+            st.success("Store camera mapping saved.")
 
-    selected_store = st.selectbox("View Store Cameras", options=store_ids, key="camera_view_store")
     cfg_df = pd.DataFrame([c.__dict__ for c in list_camera_configs(db_path=db_path, store_id=selected_store)])
     if cfg_df.empty:
         st.caption("No camera configuration found for this store.")
     else:
-        st.dataframe(cfg_df, use_container_width=True)
+        st.markdown("**Current Store Camera Mapping**")
+        st.dataframe(
+            cfg_df[["camera_id", "floor_name", "location_name"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+        with st.expander("Show advanced traffic fields"):
+            st.dataframe(
+                cfg_df[["camera_id", "camera_role", "entry_line_x", "entry_direction"]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def _render_employee_management(db_path: Path, employee_assets_root: Path) -> None:
@@ -2930,8 +3085,8 @@ def main() -> None:
             default_user_password=default_user_password,
             active_email=active_email,
         )
-    elif current_page == "Camera Zones":
-        _render_camera_zones(db_path=db_path)
+    elif current_page == "Store Camera Mapping":
+        _render_camera_zones(db_path=db_path, root_dir=root_dir)
     elif current_page == "Employee Management":
         _render_employee_management(
             db_path=db_path,

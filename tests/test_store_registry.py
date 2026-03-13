@@ -20,7 +20,10 @@ from iris.store_registry import (
     delete_role,
     get_app_settings,
     list_camera_configs,
+    list_location_master,
     upsert_camera_config,
+    upsert_location_master,
+    delete_location_master,
     add_employee_image,
     get_store_by_email,
     list_employees,
@@ -252,6 +255,26 @@ def test_camera_config_persistence(tmp_path: Path) -> None:
     assert cfgs[0].location_name == "Zone1"
     mapped = camera_config_map(db_path=db)
     assert mapped["store_1"]["D01"].entry_line_x == 0.42
+
+
+def test_location_master_crud(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_store(
+        db_path=db,
+        store_id="store_1",
+        store_name="Store One",
+        email="store1@example.com",
+        drive_folder_url="",
+    )
+    upsert_location_master(db_path=db, store_id="store_1", floor_name="Ground", location_name="Zone1")
+    upsert_location_master(db_path=db, store_id="store_1", floor_name="L1", location_name="Zone2")
+    rows = list_location_master(db_path=db, store_id="store_1")
+    assert len(rows) == 2
+    assert rows[0]["floor_name"] in {"Ground", "L1"}
+    deleted = delete_location_master(db_path=db, store_id="store_1", floor_name="Ground", location_name="Zone1")
+    assert deleted is True
+    rows_after = list_location_master(db_path=db, store_id="store_1")
+    assert len(rows_after) == 1
 
 
 def test_auth_and_license_workflow(tmp_path: Path) -> None:

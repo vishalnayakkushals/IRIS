@@ -196,6 +196,16 @@ def init_db(db_path: Path) -> None:
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS location_master (
+                store_id TEXT NOT NULL,
+                floor_name TEXT NOT NULL DEFAULT 'Ground',
+                location_name TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(store_id, floor_name, location_name),
+                FOREIGN KEY(store_id) REFERENCES stores(store_id)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL UNIQUE,
@@ -1350,6 +1360,7 @@ def delete_store(db_path: Path, store_id: str) -> None:
         sid = store_id.strip()
         conn.execute("DELETE FROM stores WHERE store_id=?", (sid,))
         conn.execute("DELETE FROM camera_configs WHERE store_id=?", (sid,))
+        conn.execute("DELETE FROM location_master WHERE store_id=?", (sid,))
         conn.execute("DELETE FROM employees WHERE store_id=?", (sid,))
         conn.execute("DELETE FROM user_store_access WHERE store_id=?", (sid,))
         conn.commit()
@@ -1625,6 +1636,85 @@ def camera_config_map(db_path: Path) -> dict[str, dict[str, CameraConfig]]:
     for cfg in list_camera_configs(db_path=db_path):
         out.setdefault(cfg.store_id, {})[cfg.camera_id] = cfg
     return out
+
+
+def upsert_location_master(
+    db_path: Path,
+    store_id: str,
+    location_name: str,
+    floor_name: str = "Ground",
+) -> None:
+    init_db(db_path)
+    sid = store_id.strip()
+    lname = location_name.strip()
+    fname = floor_name.strip() or "Ground"
+    if not sid or not lname:
+        raise ValueError("store_id and location_name are required")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO location_master(store_id, floor_name, location_name, updated_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(store_id, floor_name, location_name) DO UPDATE SET
+              updated_at=excluded.updated_at
+            """,
+            (sid, fname, lname, _now_utc()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_location_master(
+    db_path: Path,
+    store_id: str,
+    location_name: str,
+    floor_name: str = "Ground",
+) -> bool:
+    init_db(db_path)
+    sid = store_id.strip()
+    lname = location_name.strip()
+    fname = floor_name.strip() or "Ground"
+    conn = sqlite3.connect(db_path)
+    try:
+        before = conn.total_changes
+        conn.execute(
+            "DELETE FROM location_master WHERE store_id=? AND floor_name=? AND location_name=?",
+            (sid, fname, lname),
+        )
+        conn.commit()
+        return conn.total_changes > before
+    finally:
+        conn.close()
+
+
+def list_location_master(db_path: Path, store_id: str | None = None) -> list[dict[str, str]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        if store_id:
+            rows = conn.execute(
+                "SELECT store_id,floor_name,location_name,updated_at FROM location_master WHERE store_id=? ORDER BY floor_name,location_name",
+                (store_id.strip(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT store_id,floor_name,location_name,updated_at FROM location_master ORDER BY store_id,floor_name,location_name"
+            ).fetchall()
+        out: list[dict[str, str]] = []
+        for row in rows:
+            out.append(
+                {
+                    "store_id": str(row[0]),
+                    "floor_name": str(row[1]),
+                    "location_name": str(row[2]),
+                    "updated_at": str(row[3]),
+                }
+            )
+        return out
+    finally:
+        conn.close()
 
 
 def parse_drive_folder_id(drive_folder_url: str) -> str | None:

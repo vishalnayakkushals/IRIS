@@ -135,3 +135,16 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Simplified store mapping UX and added Store Camera Mapping with location master + auto camera ID discovery from image filenames.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
