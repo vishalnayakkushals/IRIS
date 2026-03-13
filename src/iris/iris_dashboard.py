@@ -2038,7 +2038,19 @@ def _render_camera_zones(db_path: Path, root_dir: Path) -> None:
             )
 
 
-def _render_employee_management(db_path: Path, employee_assets_root: Path) -> None:
+def _recent_store_snapshot_paths(root_dir: Path, store_id: str, limit: int) -> list[Path]:
+    store_dir = root_dir / store_id
+    if not store_dir.exists() or not store_dir.is_dir():
+        return []
+    paths: list[Path] = []
+    for path in store_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+            paths.append(path)
+    paths.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return paths[: max(1, int(limit))]
+
+
+def _render_employee_management(db_path: Path, employee_assets_root: Path, root_dir: Path) -> None:
     st.subheader("Employee Management")
     stores = list_stores(db_path)
     if not stores:
@@ -2046,34 +2058,113 @@ def _render_employee_management(db_path: Path, employee_assets_root: Path) -> No
         return
     store_ids = [s.store_id for s in stores]
 
-    st.markdown("**Add Employee Images**")
-    with st.form("employee_upload_form", clear_on_submit=True):
-        upload_store = st.selectbox("Store", options=store_ids)
-        employee_name = st.text_input("Employee Name")
+    st.caption("AM/CM can label employee faces directly from photo previews.")
+    mode = st.radio(
+        "Onboarding Mode",
+        options=["Upload and Label", "Label From Store Snapshots"],
+        horizontal=True,
+        key="employee_onboarding_mode",
+    )
+
+    if mode == "Upload and Label":
+        st.markdown("**Upload Photos and Fill Name (Per Image)**")
+        upload_store = st.selectbox("Store", options=store_ids, key="employee_upload_store")
+        default_name = st.text_input(
+            "Default Name (optional)",
+            key="employee_default_name",
+            help="If provided, you can apply this name to all uploaded photos with one click.",
+        )
         upload_files = st.file_uploader(
             "Employee Image Files",
             type=["jpg", "jpeg", "png", "webp", "bmp"],
             accept_multiple_files=True,
+            key="employee_upload_files_multi",
         )
-        upload_clicked = st.form_submit_button("Upload")
-    if upload_clicked:
-        if not employee_name.strip():
-            st.error("Employee name is required.")
-        elif not upload_files:
-            st.error("Select at least one image.")
+        if upload_files:
+            if st.button("Apply Default Name to All", key="employee_apply_default_name"):
+                for idx, _file in enumerate(upload_files):
+                    st.session_state[f"employee_name_upload_{upload_store}_{idx}"] = default_name.strip()
+                st.rerun()
+            preview_cols = st.columns(4)
+            for idx, file in enumerate(upload_files):
+                key = f"employee_name_upload_{upload_store}_{idx}"
+                if default_name.strip() and key not in st.session_state:
+                    st.session_state[key] = default_name.strip()
+                with preview_cols[idx % 4]:
+                    st.image(file.getvalue(), use_container_width=True)
+                    st.caption(file.name)
+                    st.text_input("Employee Name", key=key)
+            if st.button("Save Labeled Photos", type="primary", key="employee_save_labeled_upload"):
+                missing = [
+                    file.name
+                    for idx, file in enumerate(upload_files)
+                    if not str(st.session_state.get(f"employee_name_upload_{upload_store}_{idx}", "")).strip()
+                ]
+                if missing:
+                    st.error(f"Employee name is required for: {', '.join(missing[:5])}")
+                else:
+                    uploaded = 0
+                    for idx, file in enumerate(upload_files):
+                        add_employee_image(
+                            db_path=db_path,
+                            employee_assets_root=employee_assets_root,
+                            store_id=upload_store,
+                            employee_name=str(st.session_state.get(f"employee_name_upload_{upload_store}_{idx}", "")).strip(),
+                            original_filename=file.name,
+                            content=file.getvalue(),
+                        )
+                        uploaded += 1
+                    st.success(f"Saved {uploaded} labeled employee image(s).")
         else:
-            uploaded = 0
-            for file in upload_files:
-                add_employee_image(
-                    db_path=db_path,
-                    employee_assets_root=employee_assets_root,
-                    store_id=upload_store,
-                    employee_name=employee_name.strip(),
-                    original_filename=file.name,
-                    content=file.getvalue(),
-                )
-                uploaded += 1
-            st.success(f"Uploaded {uploaded} image(s).")
+            st.caption("Upload photos to preview and label.")
+    else:
+        st.markdown("**Select Store and Label From Captured Snapshots**")
+        snapshot_store = st.selectbox("Store", options=store_ids, key="employee_snapshot_store")
+        max_snapshots = st.selectbox("Snapshots to review", options=[12, 24, 36, 48, 60], index=1)
+        candidates = _recent_store_snapshot_paths(
+            root_dir=root_dir,
+            store_id=snapshot_store,
+            limit=int(max_snapshots),
+        )
+        if not candidates:
+            st.info("No store snapshots found yet. Sync store images first.")
+        else:
+            preview_cols = st.columns(4)
+            for idx, path in enumerate(candidates):
+                select_key = f"employee_snapshot_pick_{snapshot_store}_{idx}"
+                name_key = f"employee_snapshot_name_{snapshot_store}_{idx}"
+                with preview_cols[idx % 4]:
+                    st.image(str(path), use_container_width=True)
+                    st.caption(path.name)
+                    st.checkbox("Use this", key=select_key, value=False)
+                    st.text_input("Employee Name", key=name_key)
+            if st.button("Save Selected Snapshots", type="primary", key="employee_save_snapshot_labels"):
+                selected: list[tuple[Path, str]] = []
+                missing_name: list[str] = []
+                for idx, path in enumerate(candidates):
+                    if bool(st.session_state.get(f"employee_snapshot_pick_{snapshot_store}_{idx}", False)):
+                        employee_name = str(st.session_state.get(f"employee_snapshot_name_{snapshot_store}_{idx}", "")).strip()
+                        if not employee_name:
+                            missing_name.append(path.name)
+                        else:
+                            selected.append((path, employee_name))
+                if not selected and not missing_name:
+                    st.warning("Select at least one snapshot.")
+                elif missing_name:
+                    st.error(f"Employee name is required for selected images: {', '.join(missing_name[:5])}")
+                else:
+                    saved = 0
+                    for path, employee_name in selected:
+                        add_employee_image(
+                            db_path=db_path,
+                            employee_assets_root=employee_assets_root,
+                            store_id=snapshot_store,
+                            employee_name=employee_name,
+                            original_filename=path.name,
+                            content=path.read_bytes(),
+                        )
+                        saved += 1
+                    st.success(f"Saved {saved} labeled employee image(s) from store snapshots.")
 
     st.markdown("**Employee Directory**")
     view_scope = st.selectbox("View Scope", options=["ALL"] + store_ids, key="employee_view_scope")
@@ -3061,6 +3152,7 @@ def main() -> None:
         _render_employee_management(
             db_path=db_path,
             employee_assets_root=employee_assets_root,
+            root_dir=root_dir,
         )
 
     elif current_page == "QA Timeline":

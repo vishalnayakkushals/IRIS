@@ -171,9 +171,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit 6bfe17b
 - Summary:
   - Removed `Trade/Display License Workflow` and `Alert Routing` modules from navigation and page routing; added legacy redirects to `Organisation`.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Added Google-Photos-style employee onboarding: per-image preview + name labeling during upload, plus optional labeling from selected store snapshots.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
