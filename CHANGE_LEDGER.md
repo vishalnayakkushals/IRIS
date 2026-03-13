@@ -125,7 +125,7 @@ Use this template for each new change:
   - `GOOGLE_API_KEY` required for reliable large Google Drive sync.
   - DeepFace is optional; age/gender fields remain empty when unavailable.
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit ef6f0bb
 - Summary:
   - Fixed date-filter export edge case by enforcing missing frame columns (`customer_ids/group_ids`) before store-day artifact export.
 - Changed Paths:
