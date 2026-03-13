@@ -28,7 +28,6 @@ from iris.store_registry import (
     bulk_upsert_store_access_rows,
     camera_config_map,
     create_user_session,
-    create_license,
     delete_location_master,
     delete_role,
     create_role,
@@ -42,15 +41,12 @@ from iris.store_registry import (
     get_user_by_session_token,
     get_store_by_email,
     init_db,
-    list_alert_routes,
     list_synced_stores,
     list_qa_feedback,
     list_user_activity,
     log_user_activity,
     list_camera_configs,
     list_employees,
-    list_license_audit,
-    list_licenses,
     list_location_master,
     list_permission_codes,
     list_roles,
@@ -58,16 +54,13 @@ from iris.store_registry import (
     list_stores,
     list_users,
     revoke_user_session,
-    route_alert,
     authenticate_user,
     detect_source_provider,
     set_employee_active,
     set_role_permissions,
     set_user_password,
     sync_store_from_drive,
-    transition_license,
     update_qa_feedback_review,
-    upsert_alert_route,
     upsert_camera_config,
     upsert_location_master,
     upsert_manager_access,
@@ -96,8 +89,6 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
             "Store Access Mapping",
             "Bulk Access Upload",
             "Setup Help",
-            "Licenses",
-            "Alert Routes",
             "Activity Logs",
         ],
     },
@@ -133,6 +124,8 @@ LEGACY_PAGE_ALIAS = {
     "Store Admin": "Store Mapping",
     "Auth/RBAC": "Role Permissions",
     "Camera Zones": "Store Camera Mapping",
+    "Licenses": "Organisation",
+    "Alert Routes": "Organisation",
 }
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
@@ -3069,36 +3062,6 @@ def main() -> None:
             db_path=db_path,
             employee_assets_root=employee_assets_root,
         )
-
-    elif current_page == "Licenses":
-        st.subheader("Trade/Display License Workflow")
-        lic_store = st.selectbox("License store", options=[s.store_id for s in list_stores(db_path)] or [""], key="lic_store")
-        lic_type = st.text_input("License type", value="trade_display")
-        if st.button("Create license") and lic_store:
-            lid = create_license(db_path, lic_store, lic_type, actor_email=active_email or "system@local")
-            st.success(f"Created {lid}")
-        licenses = pd.DataFrame(list_licenses(db_path))
-        st.dataframe(licenses, use_container_width=True)
-        if not licenses.empty:
-            sel = st.selectbox("License ID", options=licenses["license_id"].tolist())
-            new_status = st.selectbox("Transition to", options=["review", "approved", "rejected", "expired"])
-            note = st.text_input("Audit note")
-            if st.button("Apply transition"):
-                transition_license(db_path, sel, new_status, actor_email=active_email or "system@local", note=note)
-            st.dataframe(pd.DataFrame(list_license_audit(db_path, sel)), use_container_width=True)
-
-    elif current_page == "Alert Routes":
-        st.subheader("Alert Routing")
-        ar_store = st.selectbox("Route store", options=[s.store_id for s in list_stores(db_path)] or [""], key="route_store")
-        ch = st.selectbox("Channel", options=["email", "webhook", "slack", "whatsapp"])
-        tgt = st.text_input("Target")
-        if st.button("Add route") and ar_store and tgt:
-            upsert_alert_route(db_path, ar_store, ch, tgt, enabled=True)
-            st.success("Route saved")
-        if st.button("Test route") and ar_store:
-            delivered = route_alert(db_path, ar_store, "TEST_ALERT", '{"message":"test"}')
-            st.info("Delivered: " + ", ".join(delivered))
-        st.dataframe(pd.DataFrame(list_alert_routes(db_path, ar_store)) if ar_store else pd.DataFrame(), use_container_width=True)
 
     elif current_page == "QA Timeline":
         _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email)

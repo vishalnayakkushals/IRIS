@@ -160,9 +160,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit d8d0474
 - Summary:
   - Fixed Users directory crash when `accessible_stores` is absent by guarding DataFrame column handling before `fillna`.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-13 | Commit pending
+- Summary:
+  - Removed `Trade/Display License Workflow` and `Alert Routing` modules from navigation and page routing; added legacy redirects to `Organisation`.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
