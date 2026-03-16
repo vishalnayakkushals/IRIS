@@ -272,7 +272,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional env flag `IRIS_ALLOW_MOCK_DETECTOR=1` required to show `mock` detector in UI.
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | Commit b690c2c
 - Summary:
   - Fixed Visual Verification broken links (`/nan`) by sanitizing invalid URLs and routing verification links to in-app authenticated frame pages; added hover preview links in Customer Journey Visual Verification.
 - Changed Paths:
