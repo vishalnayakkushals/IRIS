@@ -1123,8 +1123,12 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
     auth_token = str(st.session_state.get("session_token", "")).strip()
     query_extra = f"&auth={quote(auth_token)}" if auth_token else ""
+    journey_link = (
+        f"?module=Reports&section=Business%20Health&page=Customer%20Journeys"
+        f"&store={quote(selected_store)}&customer_limit=80{query_extra}"
+    )
     st.markdown(
-        f'<a href="?module=Reports&section=Business%20Health&page=Customer%20Journeys&store={quote(selected_store)}{query_extra}" target="_blank">Open Unique Customer IDs for verification</a>',
+        f'<a href="{journey_link}" target="_self">Open customer-face validation (80 people)</a>',
         unsafe_allow_html=True,
     )
     cols2 = st.columns(3)
@@ -1226,7 +1230,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         if not proof_frames.empty:
             st.markdown("**Frame-Level Proof for Selected Date**")
             proof_frames = proof_frames.sort_values("timestamp").copy()
-            proof_frames["image_url"] = proof_frames.apply(
+            proof_frames["open_frame"] = proof_frames.apply(
                 lambda r: _row_image_hyperlink(
                     r,
                     store_id=selected_store,
@@ -1240,7 +1244,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                 "source_folder",
                 "timestamp",
                 "filename",
-                "image_url",
+                "open_frame",
                 "camera_id",
                 "floor_name",
                 "location_name",
@@ -1258,35 +1262,15 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "image_url": st.column_config.LinkColumn(
-                            "Filename Link",
-                            help="Open frame image for customer-id validation.",
+                        "open_frame": st.column_config.LinkColumn(
+                            "Open",
+                            help="Open this frame inside app for validation (no re-login).",
                             display_text="Open",
                         ),
                     },
                 )
             except Exception:
                 st.dataframe(proof_frames[proof_columns], use_container_width=True, hide_index=True)
-
-            # Explicit filename hyperlinks similar to spreadsheet hyperlink behavior.
-            link_rows = proof_frames.copy()
-            link_rows["image_url"] = link_rows["image_url"].fillna("").astype(str).str.strip()
-            link_rows = link_rows[
-                (link_rows["image_url"] != "")
-                & (link_rows["image_url"].str.lower() != "nan")
-                & (link_rows["image_url"] != "/nan")
-            ].copy()
-            if not link_rows.empty:
-                st.markdown("**Filename Hyperlinks**")
-                link_rows = link_rows[["timestamp", "camera_id", "filename", "image_url"]].head(500)
-                link_rows["filename"] = link_rows.apply(
-                    lambda r: (
-                        f'<a href="{html.escape(str(r["image_url"]))}" target="_self">'
-                        f'{html.escape(str(r["filename"]))}</a>'
-                    ),
-                    axis=1,
-                )
-                st.markdown(link_rows.to_html(index=False, escape=False), unsafe_allow_html=True)
 
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")
@@ -1385,6 +1369,10 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         )
 
     st.markdown("**Relevant Image Gallery**")
+    st.caption(
+        "Meaning: relevant = valid frame with at least one detected person. "
+        "Use this gallery for quick visual validation of crowd/customer activity by camera and time."
+    )
     camera_options = sorted([camera for camera in image_df["camera_id"].dropna().unique() if camera])
     selected_cameras = st.multiselect(
         "Cameras",
@@ -1431,9 +1419,13 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                     st.caption(caption)
             else:
                 st.caption(caption)
-            link = str(row_image.get("drive_link", "") or "").strip()
-            if link:
-                st.markdown(f"[{row_image.get('filename', 'Open image')}]({link})")
+            open_link = _frame_review_identity_link(
+                store_id=selected_store,
+                filename=str(row_image.get("filename", "")),
+                timestamp=str(row_image.get("timestamp", "")),
+                auth_token=auth_token,
+            )
+            st.markdown(f"[Open this frame for validation]({open_link})")
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str, root_dir: Path) -> None:
@@ -1722,11 +1714,41 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
         return
 
     st.caption("Unique IDs are derived from tracked detections across camera frames.")
-    limit = st.selectbox("Customer IDs to display", options=[20, 50, 100, 200], index=0)
+    limit_options = [20, 50, 80, 100, 200]
+    requested_limit_raw = _query_value("customer_limit", "").strip()
+    default_limit = 20
+    if requested_limit_raw.isdigit():
+        parsed_limit = int(requested_limit_raw)
+        if parsed_limit in limit_options:
+            default_limit = parsed_limit
+    limit = st.selectbox(
+        "Customer IDs to display",
+        options=limit_options,
+        index=limit_options.index(default_limit),
+    )
     show_df = summary_df.head(int(limit)).copy()
     show_df["first_seen"] = show_df["first_seen"].astype(str)
     show_df["last_seen"] = show_df["last_seen"].astype(str)
     st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+    st.markdown("**Customer Face Validation Grid**")
+    st.caption("One sample frame per customer ID. Use this to quickly validate 80+ detected customers.")
+    face_cols = st.columns(5)
+    shown_ids = show_df["customer_id"].astype(str).tolist()
+    for idx, cid in enumerate(shown_ids):
+        events_for_customer = events.get(cid, [])
+        first_evt = events_for_customer[0] if events_for_customer else {}
+        caption = f"{cid}"
+        with face_cols[idx % 5]:
+            raw_path = str(first_evt.get("path", "")).strip()
+            if raw_path and Path(raw_path).exists():
+                st.image(raw_path, caption=caption, use_container_width=True)
+            else:
+                drive_link = str(first_evt.get("drive_link", "")).strip()
+                if drive_link and drive_link.lower() != "nan":
+                    st.markdown(f"[{caption}]({drive_link})")
+                else:
+                    st.caption(caption)
 
     selected_customer = st.selectbox(
         "Customer ID for frame-by-frame proof",
