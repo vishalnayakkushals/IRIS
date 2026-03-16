@@ -622,6 +622,231 @@ def _safe_json_list(value: object) -> list[object]:
     return []
 
 
+def _coerce_box(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        x1 = float(value[0])  # type: ignore[index]
+        y1 = float(value[1])  # type: ignore[index]
+        x2 = float(value[2])  # type: ignore[index]
+        y2 = float(value[3])  # type: ignore[index]
+    except Exception:
+        return None
+    if not all(math.isfinite(v) for v in [x1, y1, x2, y2]):
+        return None
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    x1 = max(0.0, min(1.0, x1))
+    y1 = max(0.0, min(1.0, y1))
+    x2 = max(0.0, min(1.0, x2))
+    y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _parse_box_list(value: object) -> list[tuple[float, float, float, float]]:
+    out: list[tuple[float, float, float, float]] = []
+    for item in _safe_json_list(value):
+        box = _coerce_box(item)
+        if box is not None:
+            out.append(box)
+    return out
+
+
+def _parse_centroid_list(value: object) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for item in _safe_json_list(value):
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        try:
+            x = float(item[0])  # type: ignore[index]
+            y = float(item[1])  # type: ignore[index]
+        except Exception:
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            out.append((x, y))
+    return out
+
+
+def _parse_bool_list(value: object, expected: int) -> list[bool]:
+    parsed = [bool(v) for v in _safe_json_list(value)]
+    if len(parsed) < expected:
+        parsed.extend([False] * (expected - len(parsed)))
+    return parsed[:expected]
+
+
+def _parse_float_list(value: object, expected: int) -> list[float]:
+    parsed: list[float] = []
+    for item in _safe_json_list(value):
+        try:
+            parsed.append(float(item))
+        except Exception:
+            parsed.append(0.0)
+    if len(parsed) < expected:
+        parsed.extend([0.0] * (expected - len(parsed)))
+    return parsed[:expected]
+
+
+def _box_centroid(box: tuple[float, float, float, float]) -> tuple[float, float]:
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+def _box_area(box: tuple[float, float, float, float]) -> float:
+    return max(0.0, (box[2] - box[0]) * (box[3] - box[1]))
+
+
+def _box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    inter = (x2 - x1) * (y2 - y1)
+    union = _box_area(a) + _box_area(b) - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def _suppress_static_false_person_boxes(image_insights: pd.DataFrame) -> pd.DataFrame:
+    if image_insights.empty:
+        return image_insights
+    required_cols = {
+        "capture_date",
+        "camera_id",
+        "is_valid",
+        "detection_error",
+        "person_boxes",
+        "person_centroids",
+        "staff_flags",
+        "staff_scores",
+        "person_count",
+        "staff_count",
+        "customer_count",
+        "max_person_conf",
+        "relevant",
+    }
+    if not required_cols.issubset(set(image_insights.columns)):
+        return image_insights
+
+    df = image_insights.copy()
+    valid_mask = (
+        df["is_valid"].astype(bool)
+        & df["detection_error"].fillna("").astype(str).str.strip().eq("")
+        & df["camera_id"].fillna("").astype(str).str.strip().ne("")
+        & df["capture_date"].fillna("").astype(str).str.strip().ne("")
+    )
+    scoped = df[valid_mask]
+    if scoped.empty:
+        return df
+
+    for (_capture_date, _camera_id), indexes in scoped.groupby(["capture_date", "camera_id"]).groups.items():
+        idx_list = list(indexes)
+        if len(idx_list) < 6:
+            continue
+
+        clusters: list[dict[str, object]] = []
+        row_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
+        frames_with_boxes = 0
+        overlap_threshold = 0.72
+
+        for idx in idx_list:
+            boxes = _parse_box_list(df.at[idx, "person_boxes"])
+            row_boxes[int(idx)] = boxes
+            if not boxes:
+                continue
+            frames_with_boxes += 1
+            for box_idx, box in enumerate(boxes):
+                best_cluster: int | None = None
+                best_iou = 0.0
+                for c_idx, cluster in enumerate(clusters):
+                    rep_box = cluster["rep_box"]  # type: ignore[index]
+                    iou = _box_iou(box, rep_box)  # type: ignore[arg-type]
+                    if iou >= overlap_threshold and iou > best_iou:
+                        best_cluster = c_idx
+                        best_iou = iou
+                if best_cluster is None:
+                    clusters.append(
+                        {
+                            "rep_box": box,
+                            "occurrences": [(int(idx), int(box_idx), box)],
+                        }
+                    )
+                else:
+                    cluster = clusters[best_cluster]
+                    occurrences = cluster["occurrences"]  # type: ignore[index]
+                    occurrences.append((int(idx), int(box_idx), box))  # type: ignore[attr-defined]
+                    coords = np.array([o[2] for o in occurrences], dtype=float)
+                    cluster["rep_box"] = (
+                        float(coords[:, 0].mean()),
+                        float(coords[:, 1].mean()),
+                        float(coords[:, 2].mean()),
+                        float(coords[:, 3].mean()),
+                    )
+
+        if frames_with_boxes < 6:
+            continue
+
+        min_frames = max(6, int(math.ceil(frames_with_boxes * 0.65)))
+        drop_map: dict[int, set[int]] = {}
+        for cluster in clusters:
+            occurrences = cluster["occurrences"]  # type: ignore[index]
+            if not occurrences:
+                continue
+            frame_count = len({o[0] for o in occurrences})
+            if frame_count < min_frames:
+                continue
+            coverage = frame_count / float(max(1, frames_with_boxes))
+            centers = np.array([_box_centroid(o[2]) for o in occurrences], dtype=float)
+            areas = np.array([_box_area(o[2]) for o in occurrences], dtype=float)
+            center_std = float(max(np.std(centers[:, 0]), np.std(centers[:, 1])))
+            area_mean = float(np.mean(areas))
+            area_cv = float(np.std(areas) / max(1e-9, area_mean))
+            if coverage >= 0.65 and center_std <= 0.025 and area_cv <= 0.12:
+                for row_idx, box_idx, _ in occurrences:
+                    drop_map.setdefault(int(row_idx), set()).add(int(box_idx))
+
+        if not drop_map:
+            continue
+
+        for row_idx, remove_idxs in drop_map.items():
+            boxes = row_boxes.get(int(row_idx), _parse_box_list(df.at[row_idx, "person_boxes"]))
+            if not boxes:
+                continue
+            keep = [i for i in range(len(boxes)) if i not in remove_idxs]
+            if len(keep) == len(boxes):
+                continue
+            kept_boxes = [boxes[i] for i in keep]
+            centroids = _parse_centroid_list(df.at[row_idx, "person_centroids"])
+            if len(centroids) == len(boxes):
+                kept_centroids = [centroids[i] for i in keep]
+            else:
+                kept_centroids = [_box_centroid(box) for box in kept_boxes]
+            staff_flags = _parse_bool_list(df.at[row_idx, "staff_flags"], expected=len(boxes))
+            staff_scores = _parse_float_list(df.at[row_idx, "staff_scores"], expected=len(boxes))
+            kept_staff_flags = [staff_flags[i] for i in keep]
+            kept_staff_scores = [staff_scores[i] for i in keep]
+            person_count = int(len(kept_boxes))
+            staff_count = int(min(person_count, sum(1 for flag in kept_staff_flags if bool(flag))))
+            customer_count = int(max(0, person_count - staff_count))
+
+            df.at[row_idx, "person_boxes"] = json.dumps(kept_boxes)
+            df.at[row_idx, "person_centroids"] = json.dumps(kept_centroids)
+            df.at[row_idx, "staff_flags"] = json.dumps(kept_staff_flags)
+            df.at[row_idx, "staff_scores"] = json.dumps(kept_staff_scores)
+            df.at[row_idx, "person_count"] = person_count
+            df.at[row_idx, "staff_count"] = staff_count
+            df.at[row_idx, "customer_count"] = customer_count
+            if person_count <= 0:
+                df.at[row_idx, "max_person_conf"] = 0.0
+            det_err = str(df.at[row_idx, "detection_error"] or "").strip()
+            df.at[row_idx, "relevant"] = bool(df.at[row_idx, "is_valid"] and det_err == "" and person_count >= 1)
+
+    return df
+
+
 def _cross_in_out(side_a: int, side_b: int, direction: str) -> tuple[bool, bool]:
     crossed_in = False
     crossed_out = False
@@ -1757,6 +1982,7 @@ def analyze_store(
         image_insights = image_insights.sort_values(
             by=["timestamp", "camera_id", "filename"], na_position="last"
         ).reset_index(drop=True)
+        image_insights = _suppress_static_false_person_boxes(image_insights)
 
     # Exclude billing/backroom cameras from customer analytics while retaining raw rows
     role_map = {

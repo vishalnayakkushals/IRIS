@@ -3091,7 +3091,7 @@ def _render_pipeline_configuration_controls() -> bool:
         yolo_available = _is_yolo_available()
         tf_frcnn_available = _is_tf_frcnn_available()
         deepface_available = _is_deepface_available()
-        detector_options = ["yolo", "tf_frcnn", "mock"] if yolo_available else ["mock", "tf_frcnn", "yolo"]
+        detector_options = ["yolo", "tf_frcnn", "mock"]
         if st.session_state["ctrl_detector_type"] not in detector_options:
             st.session_state["ctrl_detector_type"] = detector_options[0]
         ctrl_cols_3[0].selectbox(
@@ -3155,7 +3155,10 @@ def _render_pipeline_configuration_controls() -> bool:
         )
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
         if not yolo_available:
-            st.caption("YOLO not installed in this runtime. Using `mock` is recommended.")
+            st.caption(
+                "YOLO is not installed in this runtime. Enable full build (`IRIS_ENABLE_YOLO=1`) for accurate person detection. "
+                "`mock` is test-only and not for production counting."
+            )
         if not tf_frcnn_available:
             st.caption(
                 "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
@@ -3224,7 +3227,7 @@ def main() -> None:
     if "ctrl_max_images_per_store" not in st.session_state:
         st.session_state["ctrl_max_images_per_store"] = 20
     if "ctrl_detector_type" not in st.session_state:
-        st.session_state["ctrl_detector_type"] = "mock"
+        st.session_state["ctrl_detector_type"] = "yolo"
     if "ctrl_store_filter" not in st.session_state:
         st.session_state["ctrl_store_filter"] = ""
     if "ctrl_capture_date" not in st.session_state:

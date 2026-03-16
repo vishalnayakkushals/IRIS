@@ -33,6 +33,23 @@ class FixedDetector(PersonDetector):
         return DetectionResult(person_count=count, max_person_conf=conf, detection_error="")
 
 
+class BoxDetector(PersonDetector):
+    def __init__(self, mapping: dict[str, list[tuple[float, float, float, float]]]) -> None:
+        self.mapping = mapping
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        boxes = self.mapping.get(image_path.name, [])
+        centroids = [((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) for b in boxes]
+        return DetectionResult(
+            person_count=len(boxes),
+            max_person_conf=0.9 if boxes else 0.0,
+            detection_error="",
+            person_centroids=centroids,
+            person_boxes=boxes,
+            bag_count=0,
+        )
+
+
 def _write_image(path: Path, color: tuple[int, int, int] = (120, 90, 60)) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (12, 12), color=color).save(path)
@@ -74,6 +91,39 @@ def test_relevant_rule_requires_valid_and_person_detected(tmp_path: Path) -> Non
     assert bool(rows.loc[img_person.name, "relevant"]) is True
     assert bool(rows.loc[img_empty.name, "relevant"]) is False
     assert bool(rows.loc[img_zero.name, "relevant"]) is False
+
+
+def test_static_banner_false_positive_is_suppressed(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    mapping: dict[str, list[tuple[float, float, float, float]]] = {}
+    static_box = (0.08, 0.10, 0.28, 0.62)
+    for i in range(8):
+        name = f"09-57-{i:02d}_D03-1.jpg"
+        _write_image(store / name)
+        boxes = [static_box]
+        if i in {2, 5}:
+            boxes.append((0.45 + (i * 0.02), 0.20, 0.62 + (i * 0.02), 0.82))
+        mapping[name] = boxes
+    detector = BoxDetector(mapping)
+    result = analyze_store(store_id="store_a", store_dir=store, detector=detector)
+    rows = result.image_insights.set_index("filename")
+    assert int(rows["person_count"].sum()) == 2
+    assert int(rows.loc["09-57-02_D03-1.jpg", "person_count"]) == 1
+    assert int(rows.loc["09-57-05_D03-1.jpg", "person_count"]) == 1
+    assert int(rows.loc["09-57-00_D03-1.jpg", "person_count"]) == 0
+    assert bool(rows.loc["09-57-00_D03-1.jpg", "relevant"]) is False
+
+
+def test_staff_is_counted_separately_from_customer(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    img = store / "09-57-27_D02-1.jpg"
+    _write_image(img, color=(240, 30, 30))
+    detector = BoxDetector({img.name: [(0.10, 0.05, 0.90, 0.95)]})
+    result = analyze_store(store_id="store_a", store_dir=store, detector=detector)
+    row = result.image_insights.iloc[0]
+    assert int(row["person_count"]) == 1
+    assert int(row["staff_count"]) == 1
+    assert int(row["customer_count"]) == 0
 
 
 def test_hotspot_ranking_tie_breaks_by_total_people_then_camera() -> None:

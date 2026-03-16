@@ -236,3 +236,16 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Fixed false person counts by adding static banner/poster suppression in analysis; kept staff separate from customers after suppression; switched dashboard default detector to `yolo` (mock remains test-only).
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - For accurate production counts, use YOLO runtime (`IRIS_ENABLE_YOLO=1` in Docker build).
