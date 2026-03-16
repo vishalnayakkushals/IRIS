@@ -3091,14 +3091,19 @@ def _render_pipeline_configuration_controls() -> bool:
         yolo_available = _is_yolo_available()
         tf_frcnn_available = _is_tf_frcnn_available()
         deepface_available = _is_deepface_available()
-        detector_options = ["yolo", "tf_frcnn", "mock"]
+        allow_mock_detector = os.getenv("IRIS_ALLOW_MOCK_DETECTOR", "0").strip() == "1"
+        detector_options = ["yolo", "tf_frcnn"]
+        if allow_mock_detector:
+            detector_options.append("mock")
+        if st.session_state.get("ctrl_detector_type") == "mock" and not allow_mock_detector:
+            st.session_state["ctrl_detector_type"] = "yolo"
         if st.session_state["ctrl_detector_type"] not in detector_options:
             st.session_state["ctrl_detector_type"] = detector_options[0]
         ctrl_cols_3[0].selectbox(
             "Detector",
             options=detector_options,
             key="ctrl_detector_type",
-            help="YOLO (recommended), TF_FRCNN (legacy TensorFlow), MOCK (testing).",
+            help="YOLO (recommended), TF_FRCNN (legacy TensorFlow). MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
         )
         ctrl_cols_3[1].selectbox(
             "Write Gzip CSV",
@@ -3156,9 +3161,10 @@ def _render_pipeline_configuration_controls() -> bool:
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
         if not yolo_available:
             st.caption(
-                "YOLO is not installed in this runtime. Enable full build (`IRIS_ENABLE_YOLO=1`) for accurate person detection. "
-                "`mock` is test-only and not for production counting."
+                "YOLO is not installed in this runtime. Enable full build (`IRIS_ENABLE_YOLO=1`) for accurate person detection."
             )
+            if not allow_mock_detector:
+                st.caption("MOCK detector is disabled in production mode (`IRIS_ALLOW_MOCK_DETECTOR=0`).")
         if not tf_frcnn_available:
             st.caption(
                 "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "

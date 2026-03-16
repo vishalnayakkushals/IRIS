@@ -260,3 +260,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Docker image now installs extra OS packages needed for YOLO/OpenCV runtime.
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Prevented accidental `mock` detector usage in production UI; detector list now defaults to real detectors (`yolo`, `tf_frcnn`) and auto-switches legacy `mock` session state back to `yolo` unless explicitly enabled by `IRIS_ALLOW_MOCK_DETECTOR=1`.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Optional env flag `IRIS_ALLOW_MOCK_DETECTOR=1` required to show `mock` detector in UI.
