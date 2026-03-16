@@ -249,3 +249,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - For accurate production counts, use YOLO runtime (`IRIS_ENABLE_YOLO=1` in Docker build).
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Fixed YOLO Docker runtime import failure by adding required OpenCV system libraries (`libxcb`, `libgl`, related X/GLib libs) to the image build.
+- Changed Paths:
+  - `deploy/Dockerfile`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Docker image now installs extra OS packages needed for YOLO/OpenCV runtime.

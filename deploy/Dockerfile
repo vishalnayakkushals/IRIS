@@ -10,6 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 ARG IRIS_ENABLE_YOLO=0
 COPY deploy/requirements.docker.txt ./requirements.docker.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libxcb1 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.docker.txt && \
     if [ "$IRIS_ENABLE_YOLO" = "1" ]; then \
