@@ -9,6 +9,7 @@ from PIL import Image
 from iris.store_registry import (
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
+    add_false_positive_signature,
     detect_source_provider,
     ensure_store_login,
     camera_config_map,
@@ -21,6 +22,7 @@ from iris.store_registry import (
     get_app_settings,
     list_camera_configs,
     list_location_master,
+    list_false_positive_signatures,
     upsert_camera_config,
     upsert_location_master,
     delete_location_master,
@@ -143,6 +145,31 @@ def test_parse_drive_folder_id() -> None:
     url = "https://drive.google.com/drive/folders/19tnfe64JVzdYUXuXJI1JVqOyRKQMBj3L"
     assert parse_drive_folder_id(url) == "19tnfe64JVzdYUXuXJI1JVqOyRKQMBj3L"
     assert parse_drive_folder_id("https://example.com") is None
+
+
+def test_false_positive_signature_persistence(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    upsert_store(
+        db_path=db,
+        store_id="store_1",
+        store_name="Store One",
+        email="store1@example.com",
+        drive_folder_url="",
+    )
+    sid = add_false_positive_signature(
+        db_path=db,
+        store_id="store_1",
+        camera_id="D03",
+        box_json='[0.1,0.2,0.3,0.6]',
+        hash64="a0b1c2d3e4f50123",
+        source_feedback_id=11,
+        hamming_threshold=9,
+    )
+    assert sid > 0
+    rows = list_false_positive_signatures(db_path=db, store_id="store_1")
+    assert len(rows) == 1
+    assert rows[0]["camera_id"] == "D03"
+    assert rows[0]["hamming_threshold"] == 9
 
 
 def test_employee_upload_is_optimized_to_jpeg(tmp_path: Path) -> None:

@@ -26,6 +26,7 @@ from iris.iris_analysis import (
 )
 from iris.store_registry import (
     add_qa_feedback,
+    add_false_positive_signature,
     add_employee_image,
     bulk_upsert_store_access_rows,
     camera_config_map,
@@ -45,6 +46,7 @@ from iris.store_registry import (
     init_db,
     list_synced_stores,
     list_qa_feedback,
+    list_false_positive_signatures,
     list_user_activity,
     log_user_activity,
     list_camera_configs,
@@ -638,6 +640,7 @@ def _run_analysis(
     enable_age_gender: bool,
     export_pilot_store_id: str,
     export_pilot_date: str,
+    false_positive_signatures_by_store: dict[str, list[dict[str, object]]] | None = None,
 ) -> AnalysisOutput:
     output = analyze_root(
         root_dir=root_dir,
@@ -653,6 +656,7 @@ def _run_analysis(
         capture_date_filter=capture_date_filter,
         session_timeout_sec=int(session_timeout_sec),
         enable_age_gender=bool(enable_age_gender),
+        false_positive_signatures_by_store=false_positive_signatures_by_store,
     )
     export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
     sid = export_pilot_store_id.strip()
@@ -760,6 +764,97 @@ def _safe_json_dict(value: object) -> dict[str, float]:
         except Exception:
             continue
     return out
+
+
+def _coerce_box(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        x1 = float(value[0])  # type: ignore[index]
+        y1 = float(value[1])  # type: ignore[index]
+        x2 = float(value[2])  # type: ignore[index]
+        y2 = float(value[3])  # type: ignore[index]
+    except Exception:
+        return None
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _ahash_from_crop(image: Image.Image, box: tuple[float, float, float, float], hash_side: int = 8) -> str:
+    width, height = image.size
+    x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+    y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+    x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+    y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+    crop = image.crop((x1, y1, x2, y2)).convert("L").resize((hash_side, hash_side))
+    arr = pd.Series(list(crop.getdata()), dtype="float64")
+    if arr.empty:
+        return ""
+    avg = float(arr.mean())
+    bits = ["1" if float(v) >= avg else "0" for v in arr.tolist()]
+    bit_string = "".join(bits)
+    if not bit_string:
+        return ""
+    return f"{int(bit_string, 2):0{(hash_side * hash_side + 3) // 4}x}"
+
+
+def _learn_false_positive_signatures_from_row(
+    db_path: Path,
+    store_id: str,
+    row: pd.Series,
+    root_dir: Path,
+    feedback_id: int,
+) -> int:
+    resolved = _resolve_row_image_path(row=row, store_id=store_id, root_dir=root_dir)
+    if resolved is None:
+        return 0
+    camera_id = str(row.get("camera_id", "") or "").strip()
+    person_boxes = [_coerce_box(v) for v in _safe_json_list(row.get("person_boxes", "[]"))]
+    boxes = [b for b in person_boxes if b is not None]
+    if not boxes:
+        return 0
+    learned = 0
+    try:
+        with Image.open(resolved) as img:
+            rgb = img.convert("RGB")
+            for box in boxes:
+                crop_hash = _ahash_from_crop(rgb, box)
+                if not crop_hash:
+                    continue
+                add_false_positive_signature(
+                    db_path=db_path,
+                    store_id=store_id,
+                    camera_id=camera_id,
+                    box_json=json.dumps(list(box)),
+                    hash64=crop_hash,
+                    source_feedback_id=int(feedback_id),
+                    hamming_threshold=10,
+                )
+                learned += 1
+    except Exception:
+        return 0
+    return learned
+
+
+def _false_positive_signature_map(db_path: Path) -> dict[str, list[dict[str, object]]]:
+    rows = list_false_positive_signatures(db_path=db_path, store_id=None, active_only=True, limit=200000)
+    by_store: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        sid = str(row.get("store_id", "")).strip()
+        if not sid:
+            continue
+        by_store.setdefault(sid, []).append(
+            {
+                "camera_id": str(row.get("camera_id", "")).strip(),
+                "box_json": str(row.get("box_json", "[]")),
+                "hash64": str(row.get("hash64", "")).strip(),
+                "hamming_threshold": int(row.get("hamming_threshold", 10) or 10),
+            }
+        )
+    return by_store
 
 
 def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataFrame) -> dict[str, object]:
@@ -1473,6 +1568,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     if image_df.empty:
         st.info("No image rows available for this store.")
         return
+    notice = str(st.session_state.pop("feedback_relearn_notice", "") or "").strip()
+    if notice:
+        st.success(notice)
 
     image_df = image_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
     image_df["predicted_label"] = image_df.apply(_predicted_label, axis=1)
@@ -1677,6 +1775,22 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             comment=comment,
         )
         st.success(f"Saved QA correction #{feedback_id}.")
+        learned = 0
+        if corrected_label == "no_person" and int(selected_row.get("person_count", 0) or 0) > 0:
+            learned = _learn_false_positive_signatures_from_row(
+                db_path=db_path,
+                store_id=sid,
+                row=selected_row,
+                root_dir=root_dir,
+                feedback_id=int(feedback_id),
+            )
+        if learned > 0:
+            st.session_state["feedback_relearn_notice"] = (
+                f"Learned {learned} banner false-positive signatures from feedback #{feedback_id}. "
+                "Analysis is regenerating automatically."
+            )
+            st.session_state["force_rerun_analysis"] = True
+            st.rerun()
 
     st.markdown("**Feedback Review Queue**")
     status_cols = st.columns([2, 2, 3])
@@ -3494,6 +3608,8 @@ def main() -> None:
     rerun_clicked = False
     if current_page == "Pipeline Configuration":
         rerun_clicked = _render_pipeline_configuration_controls()
+    if bool(st.session_state.pop("force_rerun_analysis", False)):
+        rerun_clicked = True
 
     root_dir = Path(st.session_state["ctrl_root_str"]).expanduser().resolve()
     out_dir = Path(st.session_state["ctrl_out_str"]).expanduser().resolve()
@@ -3563,6 +3679,7 @@ def main() -> None:
                 enable_age_gender=enable_age_gender,
                 export_pilot_store_id=store_filter,
                 export_pilot_date=capture_date_filter.isoformat() if capture_date_filter else "",
+                false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
             )
             st.session_state["analysis_output"] = output
             if st.session_state.get("login_email"):

@@ -293,3 +293,18 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Added auto-learning banner false-positive suppression: when QA correction marks `no_person`, the app stores camera/box perceptual-hash signatures and auto-reruns analysis; future runs suppress matching detections automatically.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_store_registry.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Database adds `qa_false_positive_signatures` table for learned suppression memory.

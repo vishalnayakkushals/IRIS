@@ -710,6 +710,132 @@ def _box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float,
     return inter / union
 
 
+def _ahash_from_crop(
+    image: Image.Image,
+    box: tuple[float, float, float, float],
+    hash_side: int = 8,
+) -> str:
+    width, height = image.size
+    x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+    y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+    x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+    y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+    crop = image.crop((x1, y1, x2, y2)).convert("L").resize((hash_side, hash_side))
+    arr = np.array(crop, dtype=np.float32)
+    if arr.size == 0:
+        return ""
+    avg = float(arr.mean())
+    bits = ["1" if float(v) >= avg else "0" for v in arr.flatten().tolist()]
+    bit_string = "".join(bits)
+    if not bit_string:
+        return ""
+    return f"{int(bit_string, 2):0{(hash_side * hash_side + 3) // 4}x}"
+
+
+def _hex_hamming_distance(a: str, b: str, bits: int = 64) -> int:
+    try:
+        a_int = int(str(a).strip(), 16)
+        b_int = int(str(b).strip(), 16)
+        xor_val = a_int ^ b_int
+        return int(bin(xor_val).count("1"))
+    except Exception:
+        return bits
+
+
+def _suppress_learned_false_positives(
+    image_insights: pd.DataFrame,
+    false_positive_signatures: list[dict[str, object]] | None,
+) -> pd.DataFrame:
+    if image_insights.empty or not false_positive_signatures:
+        return image_insights
+    df = image_insights.copy()
+    signatures_by_camera: dict[str, list[dict[str, object]]] = {}
+    for raw_sig in false_positive_signatures:
+        camera_id = str(raw_sig.get("camera_id", "")).strip().upper()
+        box = _coerce_box(_safe_json_list(raw_sig.get("box_json", "[]")))
+        sig_hash = str(raw_sig.get("hash64", "")).strip().lower()
+        try:
+            ham_th = max(1, int(raw_sig.get("hamming_threshold", 10)))
+        except Exception:
+            ham_th = 10
+        if not camera_id or box is None or not sig_hash:
+            continue
+        signatures_by_camera.setdefault(camera_id, []).append(
+            {
+                "box": box,
+                "hash64": sig_hash,
+                "hamming_threshold": ham_th,
+            }
+        )
+    if not signatures_by_camera:
+        return df
+
+    for row_idx in df.index.tolist():
+        camera_id = str(df.at[row_idx, "camera_id"]).strip().upper()
+        signatures = signatures_by_camera.get(camera_id, [])
+        if not signatures:
+            continue
+        is_valid = bool(df.at[row_idx, "is_valid"])
+        det_err = str(df.at[row_idx, "detection_error"] or "").strip()
+        if not is_valid or det_err:
+            continue
+        boxes = _parse_box_list(df.at[row_idx, "person_boxes"])
+        if not boxes:
+            continue
+        path = Path(str(df.at[row_idx, "path"] or "").strip())
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            with Image.open(path) as img:
+                rgb = img.convert("RGB")
+                box_hashes = [_ahash_from_crop(rgb, box) for box in boxes]
+        except Exception:
+            continue
+
+        remove_idxs: set[int] = set()
+        for i, box in enumerate(boxes):
+            crop_hash = box_hashes[i] if i < len(box_hashes) else ""
+            if not crop_hash:
+                continue
+            for sig in signatures:
+                sig_box = sig["box"]  # type: ignore[index]
+                if _box_iou(box, sig_box) < 0.45:  # type: ignore[arg-type]
+                    continue
+                dist = _hex_hamming_distance(crop_hash, str(sig["hash64"]))  # type: ignore[index]
+                if dist <= int(sig["hamming_threshold"]):  # type: ignore[index]
+                    remove_idxs.add(i)
+                    break
+
+        if not remove_idxs:
+            continue
+        keep = [i for i in range(len(boxes)) if i not in remove_idxs]
+        kept_boxes = [boxes[i] for i in keep]
+        centroids = _parse_centroid_list(df.at[row_idx, "person_centroids"])
+        if len(centroids) == len(boxes):
+            kept_centroids = [centroids[i] for i in keep]
+        else:
+            kept_centroids = [_box_centroid(box) for box in kept_boxes]
+        staff_flags = _parse_bool_list(df.at[row_idx, "staff_flags"], expected=len(boxes))
+        staff_scores = _parse_float_list(df.at[row_idx, "staff_scores"], expected=len(boxes))
+        kept_staff_flags = [staff_flags[i] for i in keep]
+        kept_staff_scores = [staff_scores[i] for i in keep]
+        person_count = int(len(kept_boxes))
+        staff_count = int(min(person_count, sum(1 for flag in kept_staff_flags if bool(flag))))
+        customer_count = int(max(0, person_count - staff_count))
+
+        df.at[row_idx, "person_boxes"] = json.dumps(kept_boxes)
+        df.at[row_idx, "person_centroids"] = json.dumps(kept_centroids)
+        df.at[row_idx, "staff_flags"] = json.dumps(kept_staff_flags)
+        df.at[row_idx, "staff_scores"] = json.dumps(kept_staff_scores)
+        df.at[row_idx, "person_count"] = person_count
+        df.at[row_idx, "staff_count"] = staff_count
+        df.at[row_idx, "customer_count"] = customer_count
+        if person_count <= 0:
+            df.at[row_idx, "max_person_conf"] = 0.0
+        df.at[row_idx, "relevant"] = bool(is_valid and person_count >= 1)
+    return df
+
+
 def _suppress_static_false_person_boxes(image_insights: pd.DataFrame) -> pd.DataFrame:
     if image_insights.empty:
         return image_insights
@@ -1771,6 +1897,7 @@ def analyze_store(
     capture_date_filter: date | None = None,
     session_timeout_sec: int = 180,
     enable_age_gender: bool = False,
+    false_positive_signatures: list[dict[str, object]] | None = None,
 ) -> StoreAnalysisResult:
     rows: list[dict[str, object]] = []
     image_paths = _iter_store_images(store_dir)
@@ -1982,6 +2109,10 @@ def analyze_store(
         image_insights = image_insights.sort_values(
             by=["timestamp", "camera_id", "filename"], na_position="last"
         ).reset_index(drop=True)
+        image_insights = _suppress_learned_false_positives(
+            image_insights=image_insights,
+            false_positive_signatures=false_positive_signatures,
+        )
         image_insights = _suppress_static_false_person_boxes(image_insights)
 
     # Exclude billing/backroom cameras from customer analytics while retaining raw rows
@@ -2093,6 +2224,7 @@ def analyze_root(
     capture_date_filter: date | None = None,
     session_timeout_sec: int = 180,
     enable_age_gender: bool = False,
+    false_positive_signatures_by_store: dict[str, list[dict[str, object]]] | None = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -2103,6 +2235,8 @@ def analyze_root(
     store_results: dict[str, StoreAnalysisResult] = {}
     if camera_configs_by_store is None:
         camera_configs_by_store = {}
+    if false_positive_signatures_by_store is None:
+        false_positive_signatures_by_store = {}
     normalized_filter = str(store_filter or "").strip()
     if normalized_filter:
         store_dirs = [path for path in store_dirs if path.name == normalized_filter]
@@ -2124,6 +2258,7 @@ def analyze_root(
             capture_date_filter=capture_date_filter,
             session_timeout_sec=session_timeout_sec,
             enable_age_gender=enable_age_gender,
+            false_positive_signatures=false_positive_signatures_by_store.get(store_id, []),
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)

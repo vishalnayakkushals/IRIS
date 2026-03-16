@@ -356,6 +356,25 @@ def init_db(db_path: Path) -> None:
                 reviewed_at TEXT NOT NULL DEFAULT ''
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS qa_false_positive_signatures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id TEXT NOT NULL,
+                camera_id TEXT NOT NULL DEFAULT '',
+                box_json TEXT NOT NULL DEFAULT '[]',
+                hash64 TEXT NOT NULL DEFAULT '',
+                hash_size INTEGER NOT NULL DEFAULT 64,
+                hamming_threshold INTEGER NOT NULL DEFAULT 10,
+                source_feedback_id INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fp_sig_store_camera_active "
+            "ON qa_false_positive_signatures(store_id, camera_id, is_active)"
+        )
         if "is_active" not in _table_columns(conn, "employees"):
             conn.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
         if "updated_at" not in _table_columns(conn, "employees"):
@@ -1144,6 +1163,98 @@ def update_qa_feedback_review(
             (status, reviewer_email.strip().lower(), _now_utc(), int(feedback_id)),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def add_false_positive_signature(
+    db_path: Path,
+    store_id: str,
+    camera_id: str,
+    box_json: str,
+    hash64: str,
+    source_feedback_id: int = 0,
+    hamming_threshold: int = 10,
+) -> int:
+    init_db(db_path)
+    now = _now_utc()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO qa_false_positive_signatures(
+                store_id,camera_id,box_json,hash64,hash_size,hamming_threshold,
+                source_feedback_id,is_active,created_at,updated_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                store_id.strip(),
+                camera_id.strip(),
+                box_json.strip(),
+                hash64.strip().lower(),
+                64,
+                max(1, int(hamming_threshold)),
+                max(0, int(source_feedback_id)),
+                1,
+                now,
+                now,
+            ),
+        )
+        row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+        return row_id
+    finally:
+        conn.close()
+
+
+def list_false_positive_signatures(
+    db_path: Path,
+    store_id: str | None = None,
+    camera_id: str | None = None,
+    active_only: bool = True,
+    limit: int = 100000,
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        query = (
+            "SELECT id,store_id,camera_id,box_json,hash64,hash_size,hamming_threshold,"
+            "source_feedback_id,is_active,created_at,updated_at "
+            "FROM qa_false_positive_signatures"
+        )
+        where: list[str] = []
+        params: list[Any] = []
+        if store_id and store_id.strip():
+            where.append("store_id=?")
+            params.append(store_id.strip())
+        if camera_id and camera_id.strip():
+            where.append("camera_id=?")
+            params.append(camera_id.strip())
+        if active_only:
+            where.append("is_active=1")
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        rows = conn.execute(query, tuple(params)).fetchall()
+        cols = [
+            "id",
+            "store_id",
+            "camera_id",
+            "box_json",
+            "hash64",
+            "hash_size",
+            "hamming_threshold",
+            "source_feedback_id",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        out = [dict(zip(cols, r)) for r in rows]
+        for row in out:
+            row["is_active"] = bool(row.get("is_active"))
+        return out
     finally:
         conn.close()
 

@@ -11,6 +11,7 @@ from iris.iris_analysis import (
     AnalysisOutput,
     DetectionResult,
     PersonDetector,
+    _ahash_from_crop,
     analyze_root,
     analyze_store,
     build_detector,
@@ -124,6 +125,35 @@ def test_staff_is_counted_separately_from_customer(tmp_path: Path) -> None:
     assert int(row["person_count"]) == 1
     assert int(row["staff_count"]) == 1
     assert int(row["customer_count"]) == 0
+
+
+def test_feedback_signature_suppresses_learned_banner_false_positive(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    img = store / "09-57-27_D03-1.jpg"
+    _write_image(img, color=(160, 160, 160))
+    box = (0.08, 0.10, 0.28, 0.62)
+    detector = BoxDetector({img.name: [box]})
+    baseline = analyze_store(store_id="store_a", store_dir=store, detector=detector)
+    assert int(baseline.image_insights.iloc[0]["person_count"]) == 1
+
+    with Image.open(img) as raw:
+        sig_hash = _ahash_from_crop(raw.convert("RGB"), box)
+    with_signature = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        false_positive_signatures=[
+            {
+                "camera_id": "D03",
+                "box_json": json.dumps(list(box)),
+                "hash64": sig_hash,
+                "hamming_threshold": 10,
+            }
+        ],
+    )
+    row = with_signature.image_insights.iloc[0]
+    assert int(row["person_count"]) == 0
+    assert bool(row["relevant"]) is False
 
 
 def test_hotspot_ranking_tie_breaks_by_total_people_then_camera() -> None:
