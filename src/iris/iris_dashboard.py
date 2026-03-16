@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 from datetime import date
 import html
+import io
 import json
 import os
 from pathlib import Path
@@ -309,6 +311,41 @@ header[data-testid="stHeader"] {{height: 0.1rem;}}
 div[data-testid="stWidgetLabel"] p {{
     font-weight: 700;
 }}
+.iris-hover-list {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.55rem;
+}}
+.iris-hover-item {{
+    position: relative;
+    background: #ffffff;
+    border: 1px solid #d7dee8;
+    border-radius: 8px;
+    padding: 0.45rem 0.55rem;
+}}
+.iris-hover-item a {{
+    text-decoration: none;
+}}
+.iris-hover-card {{
+    display: none;
+    position: absolute;
+    left: 0;
+    top: calc(100% + 4px);
+    width: 220px;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.25);
+    padding: 0.4rem;
+    z-index: 1200;
+}}
+.iris-hover-card img {{
+    width: 100%;
+    border-radius: 6px;
+}}
+.iris-hover-item:hover .iris-hover-card {{
+    display: block;
+}}
 </style>
         """,
         unsafe_allow_html=True,
@@ -350,6 +387,33 @@ def _render_brand_identity(app_name: str, logo_path: str) -> None:
             st.markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
     with brand_cols[1]:
         st.markdown(f"### {app_label}")
+
+
+def _frame_review_link(store_id: str, frame_idx: int, auth_token: str) -> str:
+    params = [
+        f"module={quote('Reports')}",
+        f"section={quote('Business Health')}",
+        f"page={quote('Frame Review')}",
+        f"store={quote(str(store_id).strip())}",
+        f"frame_idx={int(frame_idx)}",
+    ]
+    token = str(auth_token or "").strip()
+    if token:
+        params.append(f"auth={quote(token)}")
+    return "?" + "&".join(params)
+
+
+def _hover_preview_data_uri(image_path: Path, max_size: int = 260) -> str:
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((max_size, max_size))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=72, optimize=True)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return ""
 
 
 def _render_header_bar(
@@ -1223,7 +1287,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                 st.markdown(f"[{row_image.get('filename', 'Open image')}]({link})")
 
 
-def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str) -> None:
+def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str, root_dir: Path) -> None:
     st.subheader("Frame Review")
     st.caption("Frame-by-frame validation report to verify people counts, customer IDs, and image-level links.")
     if not output.stores:
@@ -1284,7 +1348,12 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "drive_link",
         "detection_error",
     ]
+    auth_token = str(st.session_state.get("session_token", "")).strip()
     preview_df = image_df[table_cols].head(500).copy()
+    preview_df["frame_idx"] = preview_df.index.astype(int)
+    preview_df["frame_link"] = preview_df["frame_idx"].map(
+        lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
+    )
     preview_df["timestamp"] = preview_df["timestamp"].astype(str)
     try:
         st.dataframe(
@@ -1293,37 +1362,76 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             height=360,
             hide_index=True,
             column_config={
+                "frame_link": st.column_config.LinkColumn("Image Link", display_text="Open"),
                 "drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open")
             },
         )
     except Exception:
         st.dataframe(preview_df, use_container_width=True, height=360, hide_index=True)
-    quick_links = preview_df[preview_df["drive_link"].fillna("").astype(str).str.strip() != ""].head(20)
-    if not quick_links.empty:
-        st.markdown("**Quick Image Links**")
-        for _, row in quick_links.iterrows():
-            st.markdown(f"- [{row['filename']}]({row['drive_link']})")
+    st.markdown("**Hyperlinked Filenames (Hover Preview)**")
+    hover_rows = preview_df.head(30)
+    hover_items: list[str] = []
+    for _, row in hover_rows.iterrows():
+        frame_url = str(row.get("frame_link", "")).strip()
+        filename = html.escape(str(row.get("filename", "Open image")))
+        resolved_path = _resolve_row_image_path(row=row, store_id=sid, root_dir=root_dir)
+        preview_uri = _hover_preview_data_uri(resolved_path) if resolved_path is not None else ""
+        if preview_uri:
+            hover_items.append(
+                (
+                    '<div class="iris-hover-item">'
+                    f'<a href="{frame_url}" target="_self">{filename}</a>'
+                    f'<div class="iris-hover-card"><img src="{preview_uri}" alt="{filename}" /></div>'
+                    "</div>"
+                )
+            )
+        else:
+            hover_items.append(
+                f'<div class="iris-hover-item"><a href="{frame_url}" target="_self">{filename}</a></div>'
+            )
+    if hover_items:
+        st.markdown('<div class="iris-hover-list">' + "".join(hover_items) + "</div>", unsafe_allow_html=True)
 
     selector = image_df.head(500).copy()
     selector["row_label"] = selector.apply(
         lambda r: f"{str(r.get('timestamp', 'NA'))} | {str(r.get('camera_id', ''))} | {str(r.get('filename', ''))}",
         axis=1,
     )
+    selector["frame_idx"] = selector.index.astype(int)
+    requested_frame_idx_raw = _query_value("frame_idx", "").strip()
+    selector_key = f"qa_frame_selector_{sid}"
+    if requested_frame_idx_raw.isdigit():
+        requested_frame_idx = int(requested_frame_idx_raw)
+        matched = selector[selector["frame_idx"] == requested_frame_idx]
+        if not matched.empty:
+            target_label = str(matched.iloc[0]["row_label"])
+            if st.session_state.get(selector_key) != target_label:
+                st.session_state[selector_key] = target_label
     selected_label = st.selectbox(
         "Frame for proof and QA correction",
         options=selector["row_label"].tolist(),
-        key=f"qa_frame_selector_{sid}",
+        key=selector_key,
     )
     selected_row = selector[selector["row_label"] == selected_label].iloc[0]
+    selected_frame_link = _frame_review_link(
+        store_id=sid,
+        frame_idx=int(selected_row.get("frame_idx", 0)),
+        auth_token=auth_token,
+    )
 
     proof_cols = st.columns(2)
     with proof_cols[0]:
         drive_link = str(selected_row.get("drive_link", "")).strip()
+        if hasattr(st, "link_button"):
+            st.link_button("Open Frame Link", selected_frame_link)
+        else:
+            st.markdown(f"[Open Frame Link]({selected_frame_link})")
         if drive_link:
+            st.caption("Google Drive link may ask Google login if not publicly accessible.")
             if hasattr(st, "link_button"):
-                st.link_button("Open Source Image in Google Drive", drive_link)
+                st.link_button("Open Google Drive Source (Optional)", drive_link)
             else:
-                st.markdown(f"[Open Source Image in Google Drive]({drive_link})")
+                st.markdown(f"[Open Google Drive Source (Optional)]({drive_link})")
         st.caption(f"File: {selected_row.get('filename', '')}")
         st.caption(f"Camera: {selected_row.get('camera_id', '')}")
         st.caption(f"Predicted: {_predicted_label(selected_row)}")
@@ -3160,7 +3268,7 @@ def main() -> None:
         )
 
     elif current_page == "Frame Review":
-        _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email)
+        _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email, root_dir=root_dir)
 
     elif current_page == "Store Master":
         st.subheader("Store Master")

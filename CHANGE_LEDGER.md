@@ -193,9 +193,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-13 | Commit pending
+### 2026-03-13 | Commit fe12326
 - Summary:
   - Renamed unclear report pages: `Quality` -> `Data Health` and `QA Timeline` -> `Frame Review`, including headers and legacy URL alias support.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Added in-app frame hyperlinks and hover image previews in Frame Review, with internal links that preserve auth token and reduce repeated login prompts.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
