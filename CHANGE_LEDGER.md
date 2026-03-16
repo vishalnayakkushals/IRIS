@@ -261,7 +261,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Docker image now installs extra OS packages needed for YOLO/OpenCV runtime.
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | Commit 968c2c7
 - Summary:
   - Prevented accidental `mock` detector usage in production UI; detector list now defaults to real detectors (`yolo`, `tf_frcnn`) and auto-switches legacy `mock` session state back to `yolo` unless explicitly enabled by `IRIS_ALLOW_MOCK_DETECTOR=1`.
 - Changed Paths:
