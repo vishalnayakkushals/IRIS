@@ -916,6 +916,36 @@ def _row_image_hyperlink(row: pd.Series, store_id: str, root_dir: Path, auth_tok
     return resolved.as_uri()
 
 
+def _valid_link_or_empty(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower() in {"nan", "none", "null", "nat"}:
+        return ""
+    return text
+
+
+def _event_verification_link(evt: dict[str, object], store_id: str, auth_token: str) -> str:
+    filename = str(evt.get("filename", "") or "").strip()
+    timestamp = str(evt.get("timestamp", "") or "").strip()
+    if filename:
+        return _frame_review_identity_link(
+            store_id=store_id,
+            filename=filename,
+            timestamp=timestamp,
+            auth_token=auth_token,
+        )
+    drive_link = _valid_link_or_empty(evt.get("drive_link", ""))
+    if drive_link:
+        return drive_link
+    raw_path = str(evt.get("path", "") or "").strip()
+    if raw_path:
+        p = Path(raw_path)
+        if p.exists() and p.is_file():
+            return p.as_uri()
+    return ""
+
+
 def _predicted_label(row: pd.Series) -> str:
     person_count = int(row.get("person_count", 0) or 0)
     staff_count = int(row.get("staff_count", 0) or 0)
@@ -1707,6 +1737,7 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
     preselected_store = _query_value("store", "").strip()
     default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
     sid = st.selectbox("Store", options=store_ids, index=default_index, key="journey_store")
+    auth_token = str(st.session_state.get("session_token", "") or "").strip()
     image_df = _normalize_image_df(output.stores[sid].image_insights)
     summary_df, events = _build_customer_journey_summary(image_df=image_df)
     if summary_df.empty:
@@ -1741,12 +1772,14 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
         caption = f"{cid}"
         with face_cols[idx % 5]:
             raw_path = str(first_evt.get("path", "")).strip()
+            frame_link = _event_verification_link(first_evt, store_id=sid, auth_token=auth_token)
             if raw_path and Path(raw_path).exists():
                 st.image(raw_path, caption=caption, use_container_width=True)
+                if frame_link:
+                    st.markdown(f"[Open verification]({frame_link})")
             else:
-                drive_link = str(first_evt.get("drive_link", "")).strip()
-                if drive_link and drive_link.lower() != "nan":
-                    st.markdown(f"[{caption}]({drive_link})")
+                if frame_link:
+                    st.markdown(f"[{caption}]({frame_link})")
                 else:
                     st.caption(caption)
 
@@ -1763,30 +1796,73 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
     events_df = pd.DataFrame(customer_events)
     events_df["timestamp"] = pd.to_datetime(events_df["timestamp"], errors="coerce")
     events_df["timestamp"] = events_df["timestamp"].astype(str)
+    events_df["frame_link"] = events_df.apply(
+        lambda r: _event_verification_link(
+            evt={
+                "filename": r.get("filename", ""),
+                "timestamp": r.get("timestamp", ""),
+                "drive_link": r.get("drive_link", ""),
+                "path": r.get("path", ""),
+            },
+            store_id=sid,
+            auth_token=auth_token,
+        ),
+        axis=1,
+    )
+    events_df["drive_link"] = events_df["drive_link"].map(_valid_link_or_empty)
     try:
         st.dataframe(
             events_df,
             use_container_width=True,
             hide_index=True,
-            column_config={"drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open")},
+            column_config={
+                "frame_link": st.column_config.LinkColumn("Image Link", display_text="Open"),
+                "drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open"),
+            },
         )
     except Exception:
         st.dataframe(events_df, use_container_width=True, hide_index=True)
 
     st.markdown("**Visual Verification**")
     gallery_cols = st.columns(4)
+    hover_items: list[str] = []
     for idx, evt in enumerate(customer_events[:20]):
         caption = f"{evt.get('timestamp')} | {evt.get('camera_id')} | {evt.get('filename')}"
         with gallery_cols[idx % 4]:
             path = str(evt.get("path", "")).strip()
+            frame_link = _event_verification_link(evt, store_id=sid, auth_token=auth_token)
+            preview_uri = _hover_preview_data_uri(Path(path)) if path and Path(path).exists() else ""
             if path and Path(path).exists():
                 st.image(path, caption=caption, use_container_width=True)
+                if frame_link:
+                    st.markdown(f"[Open verification]({frame_link})")
             else:
-                link = str(evt.get("drive_link", "")).strip()
-                if link:
-                    st.markdown(f"[{evt.get('filename', 'Open frame')}]({link})")
+                if frame_link:
+                    st.markdown(f"[{evt.get('filename', 'Open frame')}]({frame_link})")
                 else:
                     st.caption(caption)
+            if frame_link:
+                safe_name = html.escape(str(evt.get("filename", "Open frame")))
+                safe_link = html.escape(frame_link, quote=True)
+                if preview_uri:
+                    hover_items.append(
+                        (
+                            '<div class="iris-hover-item">'
+                            f'<a href="{safe_link}" target="_self">{safe_name}</a>'
+                            f'<div class="iris-hover-card"><img src="{preview_uri}" alt="{safe_name}" /></div>'
+                            "</div>"
+                        )
+                    )
+                else:
+                    hover_items.append(
+                        f'<div class="iris-hover-item"><a href="{safe_link}" target="_self">{safe_name}</a></div>'
+                    )
+    if hover_items:
+        st.markdown("**Hover Preview Links**")
+        st.markdown(
+            '<div class="iris-hover-list">' + "".join(hover_items) + "</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def _render_quality_summary(output: AnalysisOutput) -> None:
