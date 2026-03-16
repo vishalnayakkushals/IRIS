@@ -282,3 +282,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Simplified QA review workflow: clearer correction form, searchable feedback queue with status KPIs, frame-open links, reviewer workbench with image preview, and one-click Approve/Reject/Set Pending actions.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None

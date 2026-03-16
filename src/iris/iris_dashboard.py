@@ -1636,6 +1636,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     st.caption(
         "Corrections are stored first as pending review. Confirmed rows are exported for retraining, so accidental labels can be rejected safely."
     )
+    st.markdown("1. Select the frame above. 2. Pick the corrected label. 3. Save correction. Reviewer can approve/reject below.")
     with st.form(f"qa_feedback_form_{sid}", clear_on_submit=False):
         track_ids = [str(x) for x in _safe_json_list(selected_row.get("track_ids", "[]")) if str(x).strip()]
         track_option = st.selectbox(
@@ -1643,15 +1644,18 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             options=["frame"] + track_ids,
             help="Use a specific track ID if only one person in the frame is wrong.",
         )
-        predicted_label = st.selectbox(
+        predicted_label = _predicted_label(selected_row)
+        st.text_input(
             "Predicted label",
-            options=["customer", "staff", "mixed", "no_person"],
-            index=["customer", "staff", "mixed", "no_person"].index(_predicted_label(selected_row)),
+            value=predicted_label,
+            disabled=True,
+            help="Auto-filled from current model output for this frame.",
         )
-        corrected_label = st.selectbox(
+        corrected_label = st.radio(
             "Corrected label",
             options=["customer", "staff", "mixed", "no_person"],
-            index=0,
+            index=["customer", "staff", "mixed", "no_person"].index(predicted_label),
+            horizontal=True,
         )
         confidence = st.slider("Correction confidence", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
         needs_review = st.checkbox("Require reviewer approval", value=True)
@@ -1675,12 +1679,27 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         st.success(f"Saved QA correction #{feedback_id}.")
 
     st.markdown("**Feedback Review Queue**")
-    status_filter = st.selectbox(
-        "Feedback status",
-        options=["all", "pending", "confirmed", "rejected"],
-        index=0,
-        key=f"qa_feedback_filter_{sid}",
-    )
+    status_cols = st.columns([2, 2, 3])
+    with status_cols[0]:
+        status_filter = st.selectbox(
+            "Feedback status",
+            options=["all", "pending", "confirmed", "rejected"],
+            index=0,
+            key=f"qa_feedback_filter_{sid}",
+        )
+    with status_cols[1]:
+        sort_mode = st.selectbox(
+            "Sort",
+            options=["newest", "oldest"],
+            index=0,
+            key=f"qa_feedback_sort_{sid}",
+        )
+    with status_cols[2]:
+        feedback_search = st.text_input(
+            "Search (filename / camera / ID / comment)",
+            value="",
+            key=f"qa_feedback_search_{sid}",
+        ).strip().lower()
     feedback_rows = list_qa_feedback(
         db_path=db_path,
         store_id=sid,
@@ -1691,22 +1710,128 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         st.caption("No feedback records yet.")
         return
     feedback_df = pd.DataFrame(feedback_rows)
-    st.dataframe(feedback_df, use_container_width=True, hide_index=True)
-    pending_df = feedback_df[feedback_df["review_status"].astype(str).str.lower() == "pending"].copy()
+    feedback_df["review_status"] = feedback_df["review_status"].astype(str).str.lower()
+    if feedback_search:
+        search_cols = ["id", "filename", "camera_id", "comment", "predicted_label", "corrected_label"]
+        mask = feedback_df[search_cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower().str.contains(feedback_search, regex=False)
+        feedback_df = feedback_df[mask].copy()
+        if feedback_df.empty:
+            st.caption("No feedback rows match this search.")
+            return
+
+    created_sort = pd.to_datetime(feedback_df.get("created_at"), errors="coerce")
+    feedback_df = feedback_df.assign(_created_sort=created_sort).sort_values(
+        "_created_sort",
+        ascending=(sort_mode == "oldest"),
+    ).drop(columns=["_created_sort"]).reset_index(drop=True)
+    pending_df = feedback_df[feedback_df["review_status"] == "pending"].copy()
+    confirmed_df = feedback_df[feedback_df["review_status"] == "confirmed"].copy()
+    rejected_df = feedback_df[feedback_df["review_status"] == "rejected"].copy()
+
+    kpi_cols = st.columns(4)
+    kpi_cols[0].metric("Total feedback", int(len(feedback_df)))
+    kpi_cols[1].metric("Pending", int(len(pending_df)))
+    kpi_cols[2].metric("Confirmed", int(len(confirmed_df)))
+    kpi_cols[3].metric("Rejected", int(len(rejected_df)))
+
+    feedback_df["frame_link"] = feedback_df.apply(
+        lambda r: _frame_review_identity_link(
+            store_id=sid,
+            filename=str(r.get("filename", "")),
+            timestamp="",
+            auth_token=auth_token,
+        ),
+        axis=1,
+    )
+    if "drive_link" not in feedback_df.columns:
+        feedback_df["drive_link"] = ""
+    feedback_df["drive_link"] = feedback_df["drive_link"].map(_valid_link_or_empty)
+    try:
+        st.dataframe(
+            feedback_df[
+                [
+                    "id",
+                    "review_status",
+                    "capture_date",
+                    "camera_id",
+                    "filename",
+                    "track_id",
+                    "predicted_label",
+                    "corrected_label",
+                    "confidence",
+                    "comment",
+                    "actor_email",
+                    "reviewer_email",
+                    "created_at",
+                    "reviewed_at",
+                    "frame_link",
+                    "drive_link",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            height=280,
+            column_config={
+                "frame_link": st.column_config.LinkColumn("Frame", display_text="Open"),
+                "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
+            },
+        )
+    except Exception:
+        st.dataframe(feedback_df, use_container_width=True, hide_index=True, height=280)
+
     if pending_df.empty:
         export_path = _sync_confirmed_feedback_export(db_path=db_path)
         st.caption(f"Confirmed feedback export: {export_path}")
         return
 
+    st.markdown("**Reviewer Workbench**")
+    pending_df = pending_df.copy()
+    pending_df["pending_label"] = pending_df.apply(
+        lambda r: (
+            f"#{int(r.get('id', 0))} | {str(r.get('filename', ''))} | "
+            f"{str(r.get('camera_id', ''))} | {str(r.get('predicted_label', ''))} -> {str(r.get('corrected_label', ''))}"
+        ),
+        axis=1,
+    )
+    selected_pending_label = st.selectbox(
+        "Pick pending item",
+        options=pending_df["pending_label"].tolist(),
+        key=f"qa_feedback_id_{sid}",
+    )
+    selected_pending = pending_df[pending_df["pending_label"] == selected_pending_label].iloc[0]
+    selected_feedback_id = int(selected_pending["id"])
+
+    detail_cols = st.columns([2, 1])
+    with detail_cols[0]:
+        confidence_val = pd.to_numeric([selected_pending.get("confidence", 0.0)], errors="coerce")[0]
+        confidence_show = float(0.0 if pd.isna(confidence_val) else confidence_val)
+        st.caption(
+            f"Feedback #{selected_feedback_id} | Predicted `{selected_pending.get('predicted_label', '')}` "
+            f"-> Corrected `{selected_pending.get('corrected_label', '')}` | Confidence {confidence_show:.2f}"
+        )
+        st.caption(f"Comment: {str(selected_pending.get('comment', '')).strip() or '-'}")
+        st.caption(f"Submitted by: {selected_pending.get('actor_email', '')}")
+        review_open_link = _frame_review_identity_link(
+            store_id=sid,
+            filename=str(selected_pending.get("filename", "")),
+            timestamp="",
+            auth_token=auth_token,
+        )
+        st.markdown(f"[Open frame for this feedback]({review_open_link})")
+    with detail_cols[1]:
+        matched_rows = image_df[
+            (image_df["filename"].astype(str) == str(selected_pending.get("filename", "")))
+            & (image_df["camera_id"].astype(str) == str(selected_pending.get("camera_id", "")))
+        ]
+        if not matched_rows.empty:
+            preview_row = matched_rows.iloc[0]
+            preview_path = _resolve_row_image_path(preview_row, store_id=sid, root_dir=root_dir)
+            if preview_path is not None:
+                st.image(str(preview_path), caption="Feedback frame", use_container_width=True)
+
     review_cols = st.columns(3)
     with review_cols[0]:
-        selected_feedback_id = st.selectbox(
-            "Pending feedback ID",
-            options=pending_df["id"].astype(int).tolist(),
-            key=f"qa_feedback_id_{sid}",
-        )
-    with review_cols[1]:
-        if st.button("Confirm selected", key=f"qa_confirm_{sid}"):
+        if st.button("Approve", key=f"qa_confirm_{sid}", type="primary"):
             update_qa_feedback_review(
                 db_path=db_path,
                 feedback_id=int(selected_feedback_id),
@@ -1716,8 +1841,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             _sync_confirmed_feedback_export(db_path=db_path)
             st.success(f"Feedback #{selected_feedback_id} confirmed.")
             st.rerun()
-    with review_cols[2]:
-        if st.button("Reject selected", key=f"qa_reject_{sid}"):
+    with review_cols[1]:
+        if st.button("Reject", key=f"qa_reject_{sid}"):
             update_qa_feedback_review(
                 db_path=db_path,
                 feedback_id=int(selected_feedback_id),
@@ -1725,6 +1850,16 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 reviewer_email=(active_email or "system@local"),
             )
             st.warning(f"Feedback #{selected_feedback_id} rejected.")
+            st.rerun()
+    with review_cols[2]:
+        if st.button("Set Pending", key=f"qa_pending_{sid}"):
+            update_qa_feedback_review(
+                db_path=db_path,
+                feedback_id=int(selected_feedback_id),
+                review_status="pending",
+                reviewer_email=(active_email or "system@local"),
+            )
+            st.info(f"Feedback #{selected_feedback_id} set back to pending.")
             st.rerun()
 
 
