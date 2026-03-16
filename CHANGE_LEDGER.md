@@ -237,7 +237,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | Commit 996925f
 - Summary:
   - Fixed false person counts by adding static banner/poster suppression in analysis; kept staff separate from customers after suppression; switched dashboard default detector to `yolo` (mock remains test-only).
 - Changed Paths:
