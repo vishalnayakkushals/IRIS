@@ -308,3 +308,17 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Database adds `qa_false_positive_signatures` table for learned suppression memory.
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Tuned detection accuracy defaults: upgraded YOLO model default (`yolov8m`), relaxed red-shirt staff threshold, made static false-positive suppression stricter, and lowered default detection confidence to `0.18` across analysis/CLI/dashboard defaults.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `scripts/analyze_stores.py`
+  - `scripts/run_async_worker.py`
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Default YOLO model is heavier (`yolov8m`) and may require more CPU/GPU and RAM than `yolov8n`.

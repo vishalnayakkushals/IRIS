@@ -115,7 +115,7 @@ class UnavailableDetector:
 class YoloPersonDetector:
     def __init__(
         self,
-        model_name: str = "data/models/yolov8n.pt",
+        model_name: str = "data/models/yolov8m.pt",
         conf_threshold: float = 0.25,
         device: str = "cpu",
     ) -> None:
@@ -273,7 +273,7 @@ class LegacyTfPersonDetector:
             )
 
 
-def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.25) -> tuple[PersonDetector, str]:
+def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.18) -> tuple[PersonDetector, str]:
     normalized = str(detector_type).strip().lower()
     if normalized in {"tensorflow_frcnn", "tf_frcnn", "legacy_tf_frcnn"}:
         model_path = os.getenv("TF_FRCNN_MODEL_PATH", "data/models/frozen_inference_graph.pb").strip()
@@ -420,7 +420,7 @@ def _classify_staff_by_shirt_color(
                     continue
                 red_pixels = 0
                 for r, g, b in data:
-                    if r >= 100 and r > g * 1.22 and r > b * 1.22:
+                    if r >= 90 and r > g * 1.15 and r > b * 1.15:
                         red_pixels += 1
                 red_ratio = red_pixels / len(data)
                 flags.append(red_ratio >= float(red_threshold))
@@ -439,7 +439,7 @@ def _estimate_red_ratio(path: Path) -> float:
                 return 0.0
             red_pixels = 0
             for r, g, b in data:
-                if r >= 100 and r > g * 1.22 and r > b * 1.22:
+                if r >= 90 and r > g * 1.15 and r > b * 1.15:
                     red_pixels += 1
             return float(red_pixels / len(data))
     except Exception:
@@ -930,7 +930,7 @@ def _suppress_static_false_person_boxes(image_insights: pd.DataFrame) -> pd.Data
             center_std = float(max(np.std(centers[:, 0]), np.std(centers[:, 1])))
             area_mean = float(np.mean(areas))
             area_cv = float(np.std(areas) / max(1e-9, area_mean))
-            if coverage >= 0.65 and center_std <= 0.025 and area_cv <= 0.12:
+            if coverage >= 0.80 and center_std <= 0.015 and area_cv <= 0.08:
                 for row_idx, box_idx, _ in occurrences:
                     drop_map.setdefault(int(row_idx), set()).add(int(box_idx))
 
@@ -2210,7 +2210,7 @@ def analyze_store(
 
 def analyze_root(
     root_dir: Path,
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.18,
     detector_type: str = "yolo",
     time_bucket_minutes: int = 1,
     reference_day: date | None = None,

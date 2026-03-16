@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", type=Path, default=Path("data/exports/current"))
     p.add_argument("--db", type=Path, default=Path("data/store_registry.db"))
     p.add_argument("--detector", choices=["yolo", "mock"], default="mock")
-    p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--conf", type=float, default=0.18)
     p.add_argument("--idle-sleep", type=float, default=1.0)
     p.add_argument("--max-events", type=int, default=0, help="Stop after processing N events. 0 means run forever.")
     p.add_argument(

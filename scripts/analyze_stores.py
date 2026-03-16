@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.25,
+        default=0.18,
         help="Person detection confidence threshold.",
     )
     parser.add_argument(

@@ -3546,7 +3546,7 @@ def main() -> None:
     if "ctrl_out_str" not in st.session_state:
         st.session_state["ctrl_out_str"] = str(default_exports_dir)
     if "ctrl_conf_threshold" not in st.session_state:
-        st.session_state["ctrl_conf_threshold"] = 0.25
+        st.session_state["ctrl_conf_threshold"] = 0.18
     if "ctrl_time_bucket_minutes" not in st.session_state:
         st.session_state["ctrl_time_bucket_minutes"] = 1
     if "ctrl_bounce_threshold_sec" not in st.session_state:
