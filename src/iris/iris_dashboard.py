@@ -403,6 +403,25 @@ def _frame_review_link(store_id: str, frame_idx: int, auth_token: str) -> str:
     return "?" + "&".join(params)
 
 
+def _frame_review_identity_link(store_id: str, filename: str, timestamp: str, auth_token: str) -> str:
+    params = [
+        f"module={quote('Reports')}",
+        f"section={quote('Business Health')}",
+        f"page={quote('Frame Review')}",
+        f"store={quote(str(store_id).strip())}",
+    ]
+    file_name = str(filename or "").strip()
+    ts_text = str(timestamp or "").strip()
+    if file_name:
+        params.append(f"frame_file={quote(file_name)}")
+    if ts_text and ts_text.lower() != "nat":
+        params.append(f"frame_ts={quote(ts_text)}")
+    token = str(auth_token or "").strip()
+    if token:
+        params.append(f"auth={quote(token)}")
+    return "?" + "&".join(params)
+
+
 def _hover_preview_data_uri(image_path: Path, max_size: int = 260) -> str:
     try:
         with Image.open(image_path) as img:
@@ -712,6 +731,89 @@ def _safe_json_list(value: object) -> list[object]:
     return []
 
 
+def _safe_json_dict(value: object) -> dict[str, float]:
+    if isinstance(value, dict):
+        out: dict[str, float] = {}
+        for key, val in value.items():
+            try:
+                out[str(key)] = float(val)
+            except Exception:
+                continue
+        return out
+    if value is None:
+        return {}
+    if isinstance(value, float) and pd.isna(value):
+        return {}
+    text = str(value).strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, val in parsed.items():
+        try:
+            out[str(key)] = float(val)
+        except Exception:
+            continue
+    return out
+
+
+def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataFrame) -> dict[str, object]:
+    entries = int(len(customer_sessions_df)) if not customer_sessions_df.empty else 0
+    closed_exits = 0
+    converted = 0
+    if not customer_sessions_df.empty:
+        if "exit_ts" in customer_sessions_df.columns:
+            closed_exits = int(
+                customer_sessions_df["exit_ts"].fillna("").astype(str).str.strip().ne("").sum()
+            )
+        if "converted_proxy" in customer_sessions_df.columns:
+            converted = int(pd.to_numeric(customer_sessions_df["converted_proxy"], errors="coerce").fillna(0).sum())
+
+    per_customer_gender: dict[str, str] = {}
+    per_customer_age: dict[str, str] = {}
+    if not image_df.empty:
+        relevant_df = image_df[image_df["relevant"] == True].copy()  # noqa: E712
+        relevant_df = relevant_df.sort_values("timestamp")
+        for _, row in relevant_df.iterrows():
+            customer_ids = [str(x) for x in _safe_json_list(row.get("store_day_customer_ids", "[]")) if str(x).strip()]
+            if not customer_ids:
+                customer_ids = [str(x) for x in _safe_json_list(row.get("customer_ids", "[]")) if str(x).strip()]
+            if not customer_ids:
+                continue
+            gender_scores = _safe_json_dict(row.get("gender_likelihood", "{}"))
+            age_scores = _safe_json_dict(row.get("age_bucket_counts", "{}"))
+            top_gender = max(gender_scores, key=gender_scores.get) if gender_scores else ""
+            top_age = max(age_scores, key=age_scores.get) if age_scores else ""
+            for cid in customer_ids:
+                if cid not in per_customer_gender and top_gender:
+                    per_customer_gender[cid] = str(top_gender).lower()
+                if cid not in per_customer_age and top_age:
+                    per_customer_age[cid] = str(top_age)
+
+    male = sum(1 for g in per_customer_gender.values() if g.startswith("m"))
+    female = sum(1 for g in per_customer_gender.values() if g.startswith("f"))
+    known_gender = male + female
+    unknown = max(entries - known_gender, 0)
+
+    age_counts: dict[str, int] = {}
+    for bucket in per_customer_age.values():
+        age_counts[bucket] = age_counts.get(bucket, 0) + 1
+
+    return {
+        "entries": entries,
+        "closed_exits": closed_exits,
+        "converted": converted,
+        "conversion_rate": (float(converted) / float(entries)) if entries > 0 else 0.0,
+        "gender_counts": {"male": male, "female": female, "unknown": unknown},
+        "age_bucket_counts": age_counts,
+    }
+
+
 def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     out = image_df.copy()
     defaults: dict[str, object] = {
@@ -791,11 +893,23 @@ def _resolve_row_image_path(row: pd.Series, store_id: str, root_dir: Path) -> Pa
     return None
 
 
-def _row_image_hyperlink(row: pd.Series, store_id: str, root_dir: Path) -> str:
+def _row_image_hyperlink(row: pd.Series, store_id: str, root_dir: Path, auth_token: str = "") -> str:
+    # Use authenticated in-app link first so users are not forced into external Drive login.
+    file_name = str(row.get("filename", "") or "").strip()
+    ts_value = str(row.get("timestamp", "") or "").strip()
+    if file_name:
+        return _frame_review_identity_link(
+            store_id=store_id,
+            filename=file_name,
+            timestamp=ts_value,
+            auth_token=auth_token,
+        )
+
     drive_link = str(row.get("drive_link", "") or "").strip()
-    if drive_link:
+    if drive_link and drive_link.lower() != "nan":
         return drive_link
-    # Fallback to file URI only when local file exists.
+
+    # Final fallback: local file URI only when local file exists.
     resolved = _resolve_row_image_path(row=row, store_id=store_id, root_dir=root_dir)
     if resolved is None:
         return ""
@@ -988,6 +1102,11 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     store_result = output.stores[selected_store]
     image_df = _normalize_image_df(store_result.image_insights)
     hotspot_df = store_result.camera_hotspots.copy()
+    customer_sessions_df = (
+        store_result.customer_sessions.copy()
+        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
+        else pd.DataFrame()
+    )
 
     row = output.all_stores_summary[
         output.all_stores_summary["store_id"] == selected_store
@@ -1012,6 +1131,30 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     cols2[0].metric("Daily Walk-ins (Actual)", int(row.get("daily_walkins", 0)))
     cols2[1].metric("Daily Conversions", int(row.get("daily_conversions", 0)))
     cols2[2].metric("Daily Conversion Rate", f"{float(row.get('daily_conversion_rate', 0.0)):.2%}")
+
+    business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
+    st.markdown("**Customer Business Summary**")
+    kpi_cols = st.columns(4)
+    kpi_cols[0].metric("Total Entries", int(business_kpi["entries"]))
+    kpi_cols[1].metric("Closed Exits", int(business_kpi["closed_exits"]))
+    kpi_cols[2].metric("Converted", int(business_kpi["converted"]))
+    kpi_cols[3].metric("Conversion Rate", f"{float(business_kpi['conversion_rate']):.2%}")
+
+    gender_counts = business_kpi["gender_counts"] if isinstance(business_kpi.get("gender_counts"), dict) else {}
+    gender_cols = st.columns(3)
+    gender_cols[0].metric("Male", int(gender_counts.get("male", 0)))
+    gender_cols[1].metric("Female", int(gender_counts.get("female", 0)))
+    gender_cols[2].metric("Unknown Gender", int(gender_counts.get("unknown", 0)))
+
+    age_counts = business_kpi["age_bucket_counts"] if isinstance(business_kpi.get("age_bucket_counts"), dict) else {}
+    if age_counts:
+        age_df = pd.DataFrame(
+            [{"age_group": str(k), "count": int(v)} for k, v in age_counts.items()]
+        ).sort_values(["age_group"])
+        st.markdown("**Age Group Count**")
+        st.dataframe(age_df, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Age group count not available (enable and configure age/gender model).")
 
     if hasattr(store_result, "daily_report") and not store_result.daily_report.empty:
         st.markdown("**Daily Walk-in & Conversion Report**")
@@ -1084,7 +1227,12 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
             st.markdown("**Frame-Level Proof for Selected Date**")
             proof_frames = proof_frames.sort_values("timestamp").copy()
             proof_frames["image_url"] = proof_frames.apply(
-                lambda r: _row_image_hyperlink(r, store_id=selected_store, root_dir=root_dir),
+                lambda r: _row_image_hyperlink(
+                    r,
+                    store_id=selected_store,
+                    root_dir=root_dir,
+                    auth_token=auth_token,
+                ),
                 axis=1,
             )
             proof_columns = [
@@ -1121,13 +1269,19 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
                 st.dataframe(proof_frames[proof_columns], use_container_width=True, hide_index=True)
 
             # Explicit filename hyperlinks similar to spreadsheet hyperlink behavior.
-            link_rows = proof_frames[proof_frames["image_url"].astype(str).str.strip() != ""].copy()
+            link_rows = proof_frames.copy()
+            link_rows["image_url"] = link_rows["image_url"].fillna("").astype(str).str.strip()
+            link_rows = link_rows[
+                (link_rows["image_url"] != "")
+                & (link_rows["image_url"].str.lower() != "nan")
+                & (link_rows["image_url"] != "/nan")
+            ].copy()
             if not link_rows.empty:
                 st.markdown("**Filename Hyperlinks**")
                 link_rows = link_rows[["timestamp", "camera_id", "filename", "image_url"]].head(500)
                 link_rows["filename"] = link_rows.apply(
                     lambda r: (
-                        f'<a href="{html.escape(str(r["image_url"]))}" target="_blank">'
+                        f'<a href="{html.escape(str(r["image_url"]))}" target="_self">'
                         f'{html.escape(str(r["filename"]))}</a>'
                     ),
                     axis=1,
@@ -1172,11 +1326,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.plotly_chart(loc_chart, use_container_width=True)
         st.dataframe(location_hotspot_df, use_container_width=True, hide_index=True)
 
-    customer_sessions_df = (
-        store_result.customer_sessions.copy()
-        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
-        else pd.DataFrame()
-    )
     if not customer_sessions_df.empty:
         st.markdown("**Customer Sessions (Store-Day IDs)**")
         cs = customer_sessions_df.copy()
@@ -1399,7 +1548,17 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     )
     selector["frame_idx"] = selector.index.astype(int)
     requested_frame_idx_raw = _query_value("frame_idx", "").strip()
+    requested_frame_file = _query_value("frame_file", "").strip()
+    requested_frame_ts = _query_value("frame_ts", "").strip()
     selector_key = f"qa_frame_selector_{sid}"
+    if requested_frame_file:
+        matched = selector[selector["filename"].astype(str) == requested_frame_file]
+        if requested_frame_ts:
+            matched = matched[matched["timestamp"].astype(str) == requested_frame_ts]
+        if not matched.empty:
+            target_label = str(matched.iloc[0]["row_label"])
+            if st.session_state.get(selector_key) != target_label:
+                st.session_state[selector_key] = target_label
     if requested_frame_idx_raw.isdigit():
         requested_frame_idx = int(requested_frame_idx_raw)
         matched = selector[selector["frame_idx"] == requested_frame_idx]

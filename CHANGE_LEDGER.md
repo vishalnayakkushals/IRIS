@@ -204,9 +204,20 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | Commit 00fe5d8
 - Summary:
   - Added in-app frame hyperlinks and hover image previews in Frame Review, with internal links that preserve auth token and reduce repeated login prompts.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-16 | Commit pending
+- Summary:
+  - Fixed `/nan` filename-link bug in frame proof table and added simple business KPI summary cards (entries, closed exits, conversion, gender split, age-group split) for store drill-down.
 - Changed Paths:
   - `src/iris/iris_dashboard.py`
   - `CHANGE_LEDGER.md`
