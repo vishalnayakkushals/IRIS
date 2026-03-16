@@ -294,7 +294,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | Commit f561268
 - Summary:
   - Added auto-learning banner false-positive suppression: when QA correction marks `no_person`, the app stores camera/box perceptual-hash signatures and auto-reruns analysis; future runs suppress matching detections automatically.
 - Changed Paths:
