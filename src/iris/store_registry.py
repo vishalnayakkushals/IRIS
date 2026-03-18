@@ -40,16 +40,18 @@ class StoreRecord:
     updated_at: str
 
 
-@dataclass(frozen=True)
-class CameraConfig:
+from pydantic import BaseModel, Field, field_validator
+
+class CameraConfig(BaseModel):
     store_id: str
     camera_id: str
-    camera_role: str
+    camera_role: str = Field(pattern="^(INSIDE|BILLING|BACKROOM|ENTRANCE)$")
     floor_name: str
     location_name: str
-    entry_line_x: float
-    entry_direction: str
+    entry_line_x: float = Field(ge=0.0, le=1.0)
+    entry_direction: str = Field(pattern="^(OUTSIDE_TO_INSIDE|INSIDE_TO_OUTSIDE)$")
     updated_at: str
+
 
 
 @dataclass(frozen=True)
@@ -1737,7 +1739,19 @@ def list_camera_configs(db_path: Path, store_id: str | None = None) -> list[Came
             rows=conn.execute("SELECT store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
         else:
             rows=conn.execute("SELECT store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs ORDER BY store_id,camera_id").fetchall()
-        return [CameraConfig(*r) for r in rows]
+        return [
+            CameraConfig(
+                store_id=r[0],
+                camera_id=r[1],
+                camera_role=r[2],
+                floor_name=r[3],
+                location_name=r[4],
+                entry_line_x=float(r[5]),
+                entry_direction=r[6],
+                updated_at=r[7],
+            )
+            for r in rows
+        ]
     finally:
         conn.close()
 

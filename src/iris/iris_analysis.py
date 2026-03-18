@@ -8,10 +8,18 @@ import csv
 import json
 import os
 import re
-from typing import Any, Protocol
+import colorsys
+from typing import Any, Protocol, Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
+import cv2
 
 import numpy as np
 import pandas as pd
+from PIL import Image
+from pydantic import BaseModel, Field, field_validator
+import hashlib
+
 from PIL import Image
 
 
@@ -43,6 +51,7 @@ class DetectionResult:
     detection_error: str
     person_centroids: list[tuple[float, float]] = field(default_factory=list)
     person_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+    person_confidences: list[float] = field(default_factory=list)
     bag_count: int = 0
 
 
@@ -71,6 +80,57 @@ class PersonDetector(Protocol):
         ...
 
 
+class CachedPersonDetector:
+    """Wrapper that caches detection results to disk based on file hash and mtime."""
+
+    def __init__(self, detector: PersonDetector, cache_dir: Path):
+        self.detector = detector
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_cache_path(self, image_path: Path) -> Path:
+        try:
+            stats = image_path.stat()
+            content = f"{image_path.name}_{stats.st_size}_{stats.st_mtime}".encode()
+            hash_val = hashlib.md5(content).hexdigest()
+            return self.cache_dir / f"{hash_val}.json"
+        except Exception:
+            # Fallback if stat fails
+            return self.cache_dir / f"{image_path.stem}_fallback.json"
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        cache_path = self._get_cache_path(image_path)
+        
+        # Try to load from cache
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return DetectionResult(**data)
+            except Exception:
+                pass
+        
+        # Run detection and cache
+        result = self.detector.detect(image_path)
+        
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                data = {
+                    "person_count": result.person_count,
+                    "max_person_conf": result.max_person_conf,
+                    "detection_error": result.detection_error,
+                    "person_centroids": result.person_centroids,
+                    "person_boxes": result.person_boxes,
+                    "bag_count": result.bag_count,
+                }
+                json.dump(data, f)
+        except Exception:
+            pass
+        
+        return result
+
+
+
 class MockPersonDetector:
     """Deterministic detector useful for tests and local fallback."""
 
@@ -81,7 +141,15 @@ class MockPersonDetector:
         seed = sum(ord(ch) for ch in image_path.name)
         person_count = seed % 4
         if person_count == 0:
-            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=0)
+            return DetectionResult(
+                person_count=0,
+                max_person_conf=0.0,
+                detection_error="",
+                person_centroids=[],
+                person_boxes=[],
+                person_confidences=[],
+                bag_count=0,
+            )
         max_conf = max(self.conf_threshold, min(0.95, 0.55 + (seed % 30) / 100))
         centroids = [(round(0.2 + i * 0.2, 3), round(0.45 + (seed % 10) * 0.01, 3)) for i in range(person_count)]
         boxes: list[tuple[float, float, float, float]] = []
@@ -100,6 +168,7 @@ class MockPersonDetector:
             detection_error="",
             person_centroids=centroids,
             person_boxes=boxes,
+            person_confidences=[round(max_conf, 3)] * person_count,
             bag_count=0,
         )
 
@@ -109,14 +178,37 @@ class UnavailableDetector:
         self.reason = reason
 
     def detect(self, image_path: Path) -> DetectionResult:
-        return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=self.reason, person_centroids=[], person_boxes=[], bag_count=0)
+        return DetectionResult(
+            person_count=0,
+            max_person_conf=0.0,
+            detection_error=self.reason,
+            person_centroids=[],
+            person_boxes=[],
+            person_confidences=[],
+            bag_count=0,
+        )
+
+
+def _is_reasonable_person_box(box: tuple[float, float, float, float]) -> bool:
+    x1, y1, x2, y2 = box
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    area = w * h
+    if w <= 0 or h <= 0:
+        return False
+    aspect = h / max(w, 1e-6)
+    return (
+        0.003 <= area <= 0.65 and
+        1.0 <= aspect <= 5.5 and
+        h >= 0.06
+    )
 
 
 class YoloPersonDetector:
     def __init__(
         self,
-        model_name: str = "data/models/yolov8m.pt",
-        conf_threshold: float = 0.25,
+        model_name: str = "data/models/yolov8s.pt",
+        conf_threshold: float = 0.20,
         device: str = "cpu",
     ) -> None:
         from ultralytics import YOLO  # type: ignore
@@ -138,7 +230,15 @@ class YoloPersonDetector:
             )
             boxes = results[0].boxes if results else None
             if boxes is None or len(boxes) == 0:
-                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=0)
+                return DetectionResult(
+                    person_count=0,
+                    max_person_conf=0.0,
+                    detection_error="",
+                    person_centroids=[],
+                    person_boxes=[],
+                    person_confidences=[],
+                    bag_count=0,
+                )
 
             cls_values = boxes.cls.tolist() if hasattr(boxes, "cls") else []
             conf_values = boxes.conf.tolist() if hasattr(boxes, "conf") else []
@@ -151,23 +251,40 @@ class YoloPersonDetector:
             bag_count = 0
             for i, cls_id in enumerate(cls_values):
                 if int(cls_id) == 0:
-                    person_conf.append(float(conf_values[i]))
+                    conf_val = float(conf_values[i]) if i < len(conf_values) else 0.0
+                    centroid = None
+                    box = None
                     if i < len(xywhn):
-                        person_centroids.append((float(xywhn[i][0]), float(xywhn[i][1])))
+                        centroid = (float(xywhn[i][0]), float(xywhn[i][1]))
                     if i < len(xyxyn):
-                        person_boxes.append(
-                            (
-                                float(xyxyn[i][0]),
-                                float(xyxyn[i][1]),
-                                float(xyxyn[i][2]),
-                                float(xyxyn[i][3]),
-                            )
+                        candidate_box = (
+                            float(xyxyn[i][0]),
+                            float(xyxyn[i][1]),
+                            float(xyxyn[i][2]),
+                            float(xyxyn[i][3]),
                         )
+                        if _is_reasonable_person_box(candidate_box):
+                            box = candidate_box
+                    if box is not None:
+                        person_conf.append(conf_val)
+                        person_boxes.append(box)
+                        if centroid is not None:
+                            person_centroids.append(centroid)
+                        else:
+                            person_centroids.append(((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0))
                 elif int(cls_id) == 26:
                     bag_count += 1
 
             if not person_conf:
-                return DetectionResult(person_count=0, max_person_conf=0.0, detection_error="", person_centroids=[], person_boxes=[], bag_count=bag_count)
+                return DetectionResult(
+                    person_count=0,
+                    max_person_conf=0.0,
+                    detection_error="",
+                    person_centroids=[],
+                    person_boxes=[],
+                    person_confidences=[],
+                    bag_count=bag_count,
+                )
 
             return DetectionResult(
                 person_count=len(person_conf),
@@ -175,10 +292,19 @@ class YoloPersonDetector:
                 detection_error="",
                 person_centroids=person_centroids,
                 person_boxes=person_boxes,
+                person_confidences=person_conf,
                 bag_count=bag_count,
             )
         except Exception as exc:
-            return DetectionResult(person_count=0, max_person_conf=0.0, detection_error=str(exc), person_centroids=[], person_boxes=[], bag_count=0)
+            return DetectionResult(
+                person_count=0,
+                max_person_conf=0.0,
+                detection_error=str(exc),
+                person_centroids=[],
+                person_boxes=[],
+                person_confidences=[],
+                bag_count=0,
+            )
 
 
 class LegacyTfPersonDetector:
@@ -252,6 +378,7 @@ class LegacyTfPersonDetector:
                     detection_error="",
                     person_centroids=[],
                     person_boxes=[],
+                    person_confidences=[],
                     bag_count=0,
                 )
             return DetectionResult(
@@ -260,6 +387,7 @@ class LegacyTfPersonDetector:
                 detection_error="",
                 person_centroids=person_centroids,
                 person_boxes=person_boxes,
+                person_confidences=person_conf,
                 bag_count=0,
             )
         except Exception as exc:
@@ -269,33 +397,43 @@ class LegacyTfPersonDetector:
                 detection_error=str(exc),
                 person_centroids=[],
                 person_boxes=[],
+                person_confidences=[],
                 bag_count=0,
             )
 
 
-def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.18) -> tuple[PersonDetector, str]:
+def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, use_cache: bool = True) -> tuple[PersonDetector, str]:
     normalized = str(detector_type).strip().lower()
+    detector: PersonDetector
+    warning = ""
+    
     if normalized in {"tensorflow_frcnn", "tf_frcnn", "legacy_tf_frcnn"}:
         model_path = os.getenv("TF_FRCNN_MODEL_PATH", "data/models/frozen_inference_graph.pb").strip()
         try:
-            return LegacyTfPersonDetector(model_path=model_path, conf_threshold=conf_threshold), ""
+            detector = LegacyTfPersonDetector(model_path=model_path, conf_threshold=conf_threshold)
         except Exception as exc:
-            reason = f"TF_FRCNN detector unavailable: {exc}"
-            return UnavailableDetector(reason), reason
-
-    if normalized == "mock":
-        return MockPersonDetector(conf_threshold=conf_threshold), ""
-    if normalized != "yolo":
-        return (
-            UnavailableDetector(f"Unsupported detector_type='{detector_type}'"),
-            f"Unsupported detector_type='{detector_type}', using unavailable detector fallback.",
-        )
-
-    try:
-        return YoloPersonDetector(conf_threshold=conf_threshold), ""
-    except Exception as exc:
-        reason = f"Detector unavailable: {exc}"
-        return UnavailableDetector(reason), reason
+            warning = f"TF_FRCNN detector unavailable: {exc}"
+            detector = UnavailableDetector(warning)
+    elif normalized == "mock":
+        detector = MockPersonDetector(conf_threshold=conf_threshold)
+    elif normalized != "yolo":
+        warning = f"Unsupported detector_type='{detector_type}', using unavailable detector fallback."
+        detector = UnavailableDetector(warning)
+    else:
+        try:
+            detector = YoloPersonDetector(
+                model_name=os.getenv("YOLO_MODEL_PATH", "data/models/yolov8s.pt"),
+                conf_threshold=conf_threshold,
+            )
+        except Exception as exc:
+            warning = f"Detector unavailable: {exc}"
+            detector = UnavailableDetector(warning)
+            
+    if use_cache and not isinstance(detector, UnavailableDetector):
+        cache_dir = Path("data/cache/detections")
+        detector = CachedPersonDetector(detector, cache_dir)
+        
+    return detector, warning
 
 
 def _parse_date_token(token: str) -> date | None:
@@ -387,13 +525,102 @@ def _load_drive_link_map(store_dir: Path) -> dict[str, str]:
     return mapping
 
 
+def _compute_color_histogram(image: Image.Image) -> np.ndarray:
+    """Compute normalized HSV color histogram."""
+    img_cv = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2HSV)
+    hist = cv2.calcHist([img_cv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+    return hist
+
+def _load_staff_reference_shirts(store_id: str, employee_assets_root: Path | None) -> list[Image.Image]:
+    if employee_assets_root is None:
+        return []
+    store_dir = employee_assets_root / store_id
+    if not store_dir.exists() or not store_dir.is_dir():
+        return []
+    
+    refs: list[Image.Image] = []
+    for path in sorted(store_dir.rglob("*")):
+        if path.is_file() and path.suffix.lower() in EMPLOYEE_IMAGE_EXTENSIONS:
+            try:
+                img = Image.open(path)
+                img.load()
+                refs.append(img)
+                if len(refs) >= 50:  # limit
+                    break
+            except Exception:
+                pass
+    return refs
+
 def _classify_staff_by_shirt_color(
+    image_path: Path,
+    person_boxes: list[tuple[float, float, float, float]],
+    store_id: str,
+    reference_shirts: Optional[list[Image.Image]] = None,
+    red_threshold: float = 0.22,  # kept for signature backward compat if needed
+) -> tuple[list[bool], list[float]]:
+    if not person_boxes:
+        return [], []
+    try:
+        if reference_shirts is None or len(reference_shirts) == 0:
+            # Fallback to simple logic if no reference images
+            return _classify_staff_by_red_ratio_fallback(image_path, person_boxes, red_threshold)
+            
+        with Image.open(image_path) as img:
+            rgb = img.convert("RGB")
+            width, height = rgb.size
+            flags: list[bool] = []
+            scores: list[float] = []
+            
+            for box in person_boxes:
+                x1 = max(0, min(width - 1, int(float(box[0]) * width)))
+                y1 = max(0, min(height - 1, int(float(box[1]) * height)))
+                x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
+                y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
+                h = max(1, y2 - y1)
+                
+                # Approximate shirt region (upper-middle body crop)
+                sy1 = y1 + int(h * 0.30)
+                sy2 = y1 + int(h * 0.70)
+                if sy2 <= sy1:
+                    sy1 = y1
+                    sy2 = y2
+                    
+                shirt_crop = rgb.crop((x1, sy1, x2, sy2))
+                
+                # Use color histogram comparison
+                hist = _compute_color_histogram(shirt_crop)
+                best_match = 0.0
+                for ref_shirt in reference_shirts:
+                    ref_hist = _compute_color_histogram(ref_shirt)
+                    similarity = cv2.compareHist(hist, ref_hist, cv2.HISTCMP_CORREL)
+                    best_match = max(best_match, similarity)
+                
+                is_staff = best_match > 0.6  # Threshold on histogram correlation
+                flags.append(is_staff)
+                scores.append(round(best_match, 4))
+            
+            return flags, scores
+    except Exception:
+        return [False for _ in person_boxes], [0.0 for _ in person_boxes]
+
+
+def _is_red_pixel(r: int, g: int, b: int) -> bool:
+    h_val, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    hue_deg = h_val * 360.0
+    return (
+        ((hue_deg <= 20.0) or (hue_deg >= 340.0)) and
+        s >= 0.35 and
+        v >= 0.20
+    )
+
+
+def _classify_staff_by_red_ratio_fallback(
     image_path: Path,
     person_boxes: list[tuple[float, float, float, float]],
     red_threshold: float = 0.22,
 ) -> tuple[list[bool], list[float]]:
-    if not person_boxes:
-        return [], []
+    """Legacy color-threshold fallback."""
     try:
         with Image.open(image_path) as img:
             rgb = img.convert("RGB")
@@ -406,13 +633,12 @@ def _classify_staff_by_shirt_color(
                 x2 = max(x1 + 1, min(width, int(float(box[2]) * width)))
                 y2 = max(y1 + 1, min(height, int(float(box[3]) * height)))
                 h = max(1, y2 - y1)
-                # Approximate shirt region (upper-middle body crop)
                 sy1 = y1 + int(h * 0.30)
                 sy2 = y1 + int(h * 0.70)
                 if sy2 <= sy1:
                     sy1 = y1
                     sy2 = y2
-                crop = rgb.crop((x1, sy1, x2, sy2)).resize((40, 40))
+                crop = rgb.crop((x1, sy1, x2, y2)).resize((40, 40))
                 data = list(crop.getdata())
                 if not data:
                     flags.append(False)
@@ -420,7 +646,7 @@ def _classify_staff_by_shirt_color(
                     continue
                 red_pixels = 0
                 for r, g, b in data:
-                    if r >= 90 and r > g * 1.15 and r > b * 1.15:
+                    if _is_red_pixel(r, g, b):
                         red_pixels += 1
                 red_ratio = red_pixels / len(data)
                 flags.append(red_ratio >= float(red_threshold))
@@ -428,7 +654,6 @@ def _classify_staff_by_shirt_color(
             return flags, scores
     except Exception:
         return [False for _ in person_boxes], [0.0 for _ in person_boxes]
-
 
 def _estimate_red_ratio(path: Path) -> float:
     try:
@@ -439,7 +664,7 @@ def _estimate_red_ratio(path: Path) -> float:
                 return 0.0
             red_pixels = 0
             for r, g, b in data:
-                if r >= 90 and r > g * 1.15 and r > b * 1.15:
+                if _is_red_pixel(r, g, b):
                     red_pixels += 1
             return float(red_pixels / len(data))
     except Exception:
@@ -450,7 +675,7 @@ def _estimate_store_staff_red_threshold(
     store_id: str,
     employee_assets_root: Path | None,
 ) -> float:
-    baseline = 0.22
+    baseline = 0.18
     if employee_assets_root is None:
         return baseline
     store_dir = employee_assets_root / store_id
@@ -469,8 +694,8 @@ def _estimate_store_staff_red_threshold(
         return baseline
     avg_ratio = float(sum(ratios) / len(ratios))
     # Slightly below employee average to tolerate lighting variance.
-    adaptive = avg_ratio * 0.7
-    return max(0.14, min(0.35, adaptive))
+    adaptive = avg_ratio * 0.75
+    return max(0.12, min(0.30, adaptive))
 
 
 def validate_image(path: Path) -> tuple[bool, str]:
@@ -710,6 +935,84 @@ def _box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float,
     return inter / union
 
 
+def _suppress_false_positives_ml(
+    image_insights: pd.DataFrame,
+    false_positive_model: Optional[Any] = None,
+) -> pd.DataFrame:
+    """
+    Use a small classifier to refine non-person crops if provided.
+    Placeholder integration - skip if model is not set.
+    """
+    if image_insights.empty or false_positive_model is None:
+        return image_insights
+        
+    df = image_insights.copy()
+    
+    for idx in df[df["person_count"] > 0].index:
+        path_str = str(df.at[idx, "path"]).strip()
+        if not path_str:
+            continue
+        path = Path(path_str)
+        boxes = _parse_box_list(df.at[idx, "person_boxes"])
+        
+        if not boxes or not path.exists():
+            continue
+            
+        try:
+            with Image.open(path) as img:
+                rgb = img.convert("RGB")
+                width, height = rgb.size
+                
+                keep_idxs = []
+                for i, box in enumerate(boxes):
+                    x1 = int(box[0] * width)
+                    y1 = int(box[1] * height)
+                    x2 = int(box[2] * width)
+                    y2 = int(box[3] * height)
+                    
+                    if x1 >= x2 or y1 >= y2:
+                        continue
+                        
+                    crop = rgb.crop((x1, y1, x2, y2)).resize((64, 64))
+                    crop_array = np.array(crop) / 255.0
+                    
+                    # Assuming a scikit-learn 'predict_proba' style interface
+                    if hasattr(false_positive_model, "predict_proba"):
+                        proba = false_positive_model.predict_proba([crop_array])
+                        is_person_prob = proba[0][1] if proba.shape[1] > 1 else proba[0][0]
+                    else:
+                        is_person_prob = 1.0
+                        
+                    if is_person_prob > 0.3:  # keep if confident it's a person
+                        keep_idxs.append(i)
+                
+                if len(keep_idxs) < len(boxes):
+                    dropped_count = len(boxes) - len(keep_idxs)
+                    
+                    try:
+                        raw_c = str(df.at[idx, "person_centroids"]).strip()
+                        centroids = json.loads(raw_c)
+                        raw_f = str(df.at[idx, "staff_flags"]).strip()
+                        staff_flags = [bool(v) for v in json.loads(raw_f)]
+                        
+                        new_boxes = [boxes[i] for i in keep_idxs]
+                        new_centroids = [centroids[i] for i in keep_idxs if i < len(centroids)]
+                        new_staff_flags = [staff_flags[i] for i in keep_idxs if i < len(staff_flags)]
+                        
+                        df.at[idx, "person_boxes"] = json.dumps(new_boxes)
+                        df.at[idx, "person_centroids"] = json.dumps(new_centroids)
+                        df.at[idx, "staff_flags"] = json.dumps(new_staff_flags)
+                        df.at[idx, "person_count"] = max(0, int(df.at[idx, "person_count"]) - dropped_count)
+                        new_staff_count = sum(1 for f in new_staff_flags if f)
+                        df.at[idx, "staff_count"] = new_staff_count
+                        df.at[idx, "customer_count"] = max(0, int(df.at[idx, "person_count"]) - new_staff_count)
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+            
+    return df
+
 def _ahash_from_crop(
     image: Image.Image,
     box: tuple[float, float, float, float],
@@ -915,7 +1218,7 @@ def _suppress_static_false_person_boxes(image_insights: pd.DataFrame) -> pd.Data
         if frames_with_boxes < 6:
             continue
 
-        min_frames = max(6, int(math.ceil(frames_with_boxes * 0.65)))
+        min_frames = max(6, int(math.ceil(frames_with_boxes * 0.80)))
         drop_map: dict[int, set[int]] = {}
         for cluster in clusters:
             occurrences = cluster["occurrences"]  # type: ignore[index]
@@ -1882,6 +2185,145 @@ def build_daily_calculation_proof(
     grouped = grouped.sort_values("date", ascending=False).reset_index(drop=True)
     return grouped[columns]
 
+def _analyze_single_image(
+    image_path: Path,
+    store_dir: Path,
+    store_id: str,
+    detector: PersonDetector,
+    reference_day: date | None,
+    camera_configs: dict[str, dict[str, object]],
+    staff_red_threshold: float,
+    enable_age_gender: bool,
+    drive_link_map: dict[str, str],
+) -> dict[str, Any] | None:
+    """Worker function for single image processing, picklable for multiprocessing."""
+    rel_path = _relative_image_path(image_path=image_path, store_dir=store_dir)
+    drive_link = drive_link_map.get(rel_path, "")
+    image_day, capture_date, source_folder = _infer_image_context(
+        image_path=image_path,
+        store_dir=store_dir,
+        fallback_day=reference_day,
+    )
+    
+    parsed = parse_filename(image_path.name, reference_day=image_day)
+    if parsed is None:
+        return {
+            "store_id": store_id,
+            "filename": image_path.name,
+            "camera_id": "",
+            "timestamp": pd.NaT,
+            "capture_date": capture_date,
+            "source_folder": source_folder,
+            "is_valid": False,
+            "person_count": 0,
+            "max_person_conf": 0.0,
+            "relevant": False,
+            "person_centroids": "[]",
+            "person_boxes": "[]",
+            "person_confidences": "[]",
+            "staff_flags": "[]",
+            "staff_scores": "[]",
+            "staff_count": 0,
+            "customer_count": 0,
+            "bag_count": 0,
+            "gender_likelihood": "{}",
+            "age_bucket_counts": "{}",
+            "age_confidence": 0.0,
+            "age_gender_error": "",
+            "floor_name": "",
+            "location_name": "",
+            "reject_reason": "bad_filename",
+            "detection_error": "",
+            "relative_path": rel_path,
+            "drive_link": drive_link,
+            "path": str(image_path),
+        }
+
+    is_valid, reject_reason = validate_image(image_path)
+    cfg = camera_configs.get(parsed.camera_id, {})
+    location_name = str(cfg.get("location_name", parsed.camera_id)).strip() or parsed.camera_id
+    floor_name = str(cfg.get("floor_name", "Ground")).strip() or "Ground"
+    
+    detection = DetectionResult(
+        person_count=0,
+        max_person_conf=0.0,
+        detection_error="",
+        person_centroids=[],
+        person_boxes=[],
+        person_confidences=[],
+        bag_count=0,
+    )
+    if is_valid:
+        detection = detector.detect(image_path)
+        
+    staff_flags: list[bool] = []
+    staff_scores: list[float] = []
+    if is_valid and detection.person_count > 0 and detection.person_boxes:
+        staff_flags, staff_scores = _classify_staff_by_shirt_color(
+            image_path=image_path,
+            person_boxes=detection.person_boxes,
+            store_id=store_id,
+            red_threshold=staff_red_threshold,
+        )
+        
+    staff_count = min(
+        int(detection.person_count),
+        int(sum(1 for flag in staff_flags if bool(flag))),
+    )
+    customer_count = max(0, int(detection.person_count) - int(staff_count))
+    
+    gender_likelihood = "{}"
+    age_bucket_counts = "{}"
+    age_confidence = 0.0
+    age_gender_error = ""
+    if enable_age_gender and is_valid and detection.person_boxes:
+        customer_boxes: list[tuple[float, float, float, float]] = []
+        for idx, box in enumerate(detection.person_boxes):
+            is_staff = bool(staff_flags[idx]) if idx < len(staff_flags) else False
+            if not is_staff:
+                customer_boxes.append(box)
+        if customer_boxes:
+            gender_likelihood, age_bucket_counts, age_confidence, age_gender_error = _analyze_age_gender_deepface(
+                image_path=image_path,
+                person_boxes=customer_boxes,
+            )
+            
+    relevant = bool(
+        is_valid and detection.detection_error == "" and detection.person_count >= 1
+    )
+
+    return {
+        "store_id": store_id,
+        "filename": image_path.name,
+        "camera_id": parsed.camera_id,
+        "timestamp": parsed.timestamp,
+        "capture_date": capture_date,
+        "source_folder": source_folder,
+        "is_valid": is_valid,
+        "person_count": int(detection.person_count),
+        "max_person_conf": float(detection.max_person_conf),
+        "relevant": relevant,
+        "person_centroids": json.dumps(detection.person_centroids),
+        "person_boxes": json.dumps(detection.person_boxes),
+        "person_confidences": json.dumps(detection.person_confidences),
+        "staff_flags": json.dumps(staff_flags),
+        "staff_scores": json.dumps(staff_scores),
+        "staff_count": int(staff_count),
+        "customer_count": int(customer_count),
+        "bag_count": int(detection.bag_count),
+        "gender_likelihood": gender_likelihood,
+        "age_bucket_counts": age_bucket_counts,
+        "age_confidence": float(age_confidence),
+        "age_gender_error": age_gender_error,
+        "floor_name": floor_name,
+        "location_name": location_name,
+        "reject_reason": reject_reason,
+        "detection_error": detection.detection_error,
+        "relative_path": rel_path,
+        "drive_link": drive_link,
+        "path": str(image_path),
+    }
+
 def analyze_store(
     store_id: str,
     store_dir: Path,
@@ -1898,7 +2340,23 @@ def analyze_store(
     session_timeout_sec: int = 180,
     enable_age_gender: bool = False,
     false_positive_signatures: list[dict[str, object]] | None = None,
+    use_parallel: bool = True,
+    use_streaming: bool = True,
+    false_positive_model: Optional[Any] = None,
 ) -> StoreAnalysisResult:
+    if use_parallel and use_streaming:
+        return analyze_store_streaming(
+            store_id=store_id, store_dir=store_dir, detector=detector,
+            reference_day=reference_day, time_bucket_minutes=time_bucket_minutes,
+            bounce_threshold_sec=bounce_threshold_sec, session_gap_sec=session_gap_sec,
+            camera_configs=camera_configs, engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+            max_images_per_store=max_images_per_store, employee_assets_root=employee_assets_root,
+            capture_date_filter=capture_date_filter, session_timeout_sec=session_timeout_sec,
+            enable_age_gender=enable_age_gender, false_positive_signatures=false_positive_signatures,
+            false_positive_model=false_positive_model
+        )
+    
+    # Original linear processing
     rows: list[dict[str, object]] = []
     image_paths = _iter_store_images(store_dir)
     drive_link_map = _load_drive_link_map(store_dir)
@@ -1911,133 +2369,32 @@ def analyze_store(
     processed_images = 0
 
     for image_path in image_paths:
-        rel_path = _relative_image_path(image_path=image_path, store_dir=store_dir)
-        drive_link = drive_link_map.get(rel_path, "")
-        image_day, capture_date, source_folder = _infer_image_context(
-            image_path=image_path,
-            store_dir=store_dir,
-            fallback_day=reference_day,
-        )
-        if capture_date_filter is not None and image_day != capture_date_filter:
-            continue
+        if capture_date_filter is not None:
+             image_day, _, _ = _infer_image_context(
+                image_path=image_path,
+                store_dir=store_dir,
+                fallback_day=reference_day,
+            )
+             if image_day != capture_date_filter:
+                continue
+                
         if max_images_per_store is not None and max_images_per_store > 0 and processed_images >= max_images_per_store:
             break
-        parsed = parse_filename(image_path.name, reference_day=image_day)
-        if parsed is None:
+            
+        res = _analyze_single_image(
+            image_path=image_path,
+            store_dir=store_dir,
+            store_id=store_id,
+            detector=detector,
+            reference_day=reference_day,
+            camera_configs=camera_configs,
+            staff_red_threshold=staff_red_threshold,
+            enable_age_gender=enable_age_gender,
+            drive_link_map=drive_link_map
+        )
+        if res:
+            rows.append(res)
             processed_images += 1
-            rows.append(
-                {
-                    "store_id": store_id,
-                    "filename": image_path.name,
-                    "camera_id": "",
-                    "timestamp": pd.NaT,
-                    "capture_date": capture_date,
-                    "source_folder": source_folder,
-                    "is_valid": False,
-                    "person_count": 0,
-                    "max_person_conf": 0.0,
-                    "relevant": False,
-                    "person_centroids": "[]",
-                    "person_boxes": "[]",
-                    "staff_flags": "[]",
-                    "staff_scores": "[]",
-                    "staff_count": 0,
-                    "customer_count": 0,
-                    "bag_count": 0,
-                    "gender_likelihood": "{}",
-                    "age_bucket_counts": "{}",
-                    "age_confidence": 0.0,
-                    "age_gender_error": "",
-                    "floor_name": "",
-                    "location_name": "",
-                    "reject_reason": "bad_filename",
-                    "detection_error": "",
-                    "relative_path": rel_path,
-                    "drive_link": drive_link,
-                    "path": str(image_path),
-                }
-            )
-            continue
-
-        is_valid, reject_reason = validate_image(image_path)
-        cfg = camera_configs.get(parsed.camera_id, {})
-        location_name = str(cfg.get("location_name", parsed.camera_id)).strip() or parsed.camera_id
-        floor_name = str(cfg.get("floor_name", "Ground")).strip() or "Ground"
-        detection = DetectionResult(
-            person_count=0,
-            max_person_conf=0.0,
-            detection_error="",
-            person_centroids=[],
-            person_boxes=[],
-            bag_count=0,
-        )
-        if is_valid:
-            detection = detector.detect(image_path)
-        staff_flags: list[bool] = []
-        staff_scores: list[float] = []
-        if is_valid and detection.person_count > 0 and detection.person_boxes:
-            staff_flags, staff_scores = _classify_staff_by_shirt_color(
-                image_path=image_path,
-                person_boxes=detection.person_boxes,
-                red_threshold=staff_red_threshold,
-            )
-        staff_count = min(
-            int(detection.person_count),
-            int(sum(1 for flag in staff_flags if bool(flag))),
-        )
-        customer_count = max(0, int(detection.person_count) - int(staff_count))
-        gender_likelihood = "{}"
-        age_bucket_counts = "{}"
-        age_confidence = 0.0
-        age_gender_error = ""
-        if enable_age_gender and is_valid and detection.person_boxes:
-            customer_boxes: list[tuple[float, float, float, float]] = []
-            for idx, box in enumerate(detection.person_boxes):
-                is_staff = bool(staff_flags[idx]) if idx < len(staff_flags) else False
-                if not is_staff:
-                    customer_boxes.append(box)
-            if customer_boxes:
-                gender_likelihood, age_bucket_counts, age_confidence, age_gender_error = _analyze_age_gender_deepface(
-                    image_path=image_path,
-                    person_boxes=customer_boxes,
-                )
-        relevant = bool(
-            is_valid and detection.detection_error == "" and detection.person_count >= 1
-        )
-
-        processed_images += 1
-        rows.append(
-            {
-                "store_id": store_id,
-                "filename": image_path.name,
-                "camera_id": parsed.camera_id,
-                "timestamp": parsed.timestamp,
-                "capture_date": capture_date,
-                "source_folder": source_folder,
-                "is_valid": is_valid,
-                "person_count": int(detection.person_count),
-                "max_person_conf": float(detection.max_person_conf),
-                "relevant": relevant,
-                "person_centroids": json.dumps(detection.person_centroids),
-                "person_boxes": json.dumps(detection.person_boxes),
-                "staff_flags": json.dumps(staff_flags),
-                "staff_scores": json.dumps(staff_scores),
-                "staff_count": int(staff_count),
-                "customer_count": int(customer_count),
-                "bag_count": int(detection.bag_count),
-                "gender_likelihood": gender_likelihood,
-                "age_bucket_counts": age_bucket_counts,
-                "age_confidence": float(age_confidence),
-                "age_gender_error": age_gender_error,
-                "floor_name": floor_name,
-                "location_name": location_name,
-                "reject_reason": reject_reason,
-                "detection_error": detection.detection_error,
-                "relative_path": rel_path,
-                "drive_link": drive_link,
-                "path": str(image_path),
-            }
-        )
 
     image_insights = pd.DataFrame(
         rows,
@@ -2054,6 +2411,7 @@ def analyze_store(
             "relevant",
             "person_centroids",
             "person_boxes",
+            "person_confidences",
             "staff_flags",
             "staff_scores",
             "staff_count",
@@ -2087,6 +2445,7 @@ def analyze_store(
                 "relevant",
                 "person_centroids",
                 "person_boxes",
+                "person_confidences",
                 "staff_flags",
                 "staff_scores",
                 "staff_count",
@@ -2106,6 +2465,11 @@ def analyze_store(
             ]
         )
     else:
+        if false_positive_model is not None:
+             image_insights = _suppress_false_positives_ml(
+                image_insights=image_insights,
+                false_positive_model=false_positive_model
+             )
         image_insights = image_insights.sort_values(
             by=["timestamp", "camera_id", "filename"], na_position="last"
         ).reset_index(drop=True)
@@ -2120,6 +2484,7 @@ def analyze_store(
         str(cid).strip().upper(): (cfg.get("camera_role", "INSIDE") if isinstance(cfg, dict) else "INSIDE")
         for cid, cfg in camera_configs.items()
     }
+
     if "camera_id" in image_insights.columns:
         mask = image_insights["camera_id"].map(
             lambda c: str(role_map.get(str(c).strip().upper(), "INSIDE")).upper() in {"BILLING", "BACKROOM"}
@@ -2208,6 +2573,225 @@ def analyze_store(
     )
 
 
+def analyze_store_streaming(
+    store_id: str,
+    store_dir: Path,
+    detector: PersonDetector,
+    reference_day: date | None = None,
+    time_bucket_minutes: int = 1,
+    bounce_threshold_sec: int = 120,
+    session_gap_sec: int = 30,
+    camera_configs: dict[str, dict[str, object]] | None = None,
+    engaged_dwell_threshold_sec: int = 180,
+    max_images_per_store: int | None = None,
+    employee_assets_root: Path | None = None,
+    capture_date_filter: date | None = None,
+    session_timeout_sec: int = 180,
+    enable_age_gender: bool = False,
+    false_positive_signatures: list[dict[str, object]] | None = None,
+    false_positive_model: Optional[Any] = None,
+    chunk_size: int = 500,
+) -> StoreAnalysisResult:
+    """Implement memory optimization using chunks + parquet storage + multiprocessing."""
+    image_paths = _iter_store_images(store_dir)
+    drive_link_map = _load_drive_link_map(store_dir)
+    
+    if camera_configs is None:
+        camera_configs = {}
+        
+    staff_red_threshold = _estimate_store_staff_red_threshold(
+        store_id=store_id,
+        employee_assets_root=employee_assets_root,
+    )
+    
+    # Filter targets
+    targets = []
+    for ip in image_paths:
+        if capture_date_filter is not None:
+             image_day, _, _ = _infer_image_context(
+                image_path=ip,
+                store_dir=store_dir,
+                fallback_day=reference_day,
+            )
+             if image_day != capture_date_filter:
+                continue
+        targets.append(ip)
+        if max_images_per_store and len(targets) >= max_images_per_store:
+            break
+            
+    # Process chunks in parallel
+    parquet_files: list[Path] = []
+    temp_dir = Path("data/cache/temp_chunks")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Simple chunking
+    target_chunks = [targets[i:i + chunk_size] for i in range(0, len(targets), chunk_size)]
+    
+    # Run chunks (sequentially saving to disk) using multiprocessing for frames
+    num_workers = max(1, multiprocessing.cpu_count() - 1)
+    
+    for chunk_idx, chunk in enumerate(target_chunks):
+        rows = []
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(
+                    _analyze_single_image,
+                    ip,
+                    store_dir,
+                    store_id,
+                    detector,
+                    reference_day,
+                    camera_configs,
+                    staff_red_threshold,
+                    enable_age_gender,
+                    drive_link_map
+                ) for ip in chunk
+            ]
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    rows.append(res)
+                    
+        # Write to temporary parquet
+        if rows:
+            df = pd.DataFrame(rows)
+            chunk_file = temp_dir / f"{store_id}_{chunk_idx}.parquet"
+            df.to_parquet(chunk_file)
+            parquet_files.append(chunk_file)
+            
+    # Concatenate all parquet chunks
+    if not parquet_files:
+        image_insights = pd.DataFrame(
+            columns=[
+                "store_id", "filename", "camera_id", "timestamp", "capture_date",
+                "source_folder", "is_valid", "person_count", "max_person_conf",
+                "relevant", "person_centroids", "person_boxes", "person_confidences", "staff_flags",
+                "staff_scores", "staff_count", "customer_count", "bag_count",
+                "gender_likelihood", "age_bucket_counts", "age_confidence",
+                "age_gender_error", "floor_name", "location_name", "reject_reason",
+                "detection_error", "relative_path", "drive_link", "path",
+            ]
+        )
+    else:
+        dfs = [pd.read_parquet(pf) for pf in parquet_files]
+        image_insights = pd.concat(dfs, ignore_index=True)
+        # Cleanup temp chunks
+        for pf in parquet_files:
+            try:
+                pf.unlink()
+            except Exception:
+                pass
+                
+        if false_positive_model is not None:
+             image_insights = _suppress_false_positives_ml(
+                image_insights=image_insights,
+                false_positive_model=false_positive_model
+             )
+             
+        if not image_insights.empty:
+            image_insights = image_insights.sort_values(
+                by=["timestamp", "camera_id", "filename"], na_position="last"
+            ).reset_index(drop=True)
+            image_insights = _suppress_learned_false_positives(
+                image_insights=image_insights,
+                false_positive_signatures=false_positive_signatures,
+            )
+            image_insights = _suppress_static_false_person_boxes(image_insights)
+
+    # Exclude billing/backroom cameras from customer analytics while retaining raw rows
+    role_map = {
+        str(cid).strip().upper(): (cfg.get("camera_role", "INSIDE") if isinstance(cfg, dict) else "INSIDE")
+        for cid, cfg in camera_configs.items()
+    }
+    if "camera_id" in image_insights.columns:
+        mask = image_insights["camera_id"].map(
+            lambda c: str(role_map.get(str(c).strip().upper(), "INSIDE")).upper() in {"BILLING", "BACKROOM"}
+        )
+        image_insights.loc[mask, "relevant"] = False
+        
+    image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
+    image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
+    image_insights, daily_report = build_daily_customer_report(
+        image_insights=image_insights,
+        camera_configs=camera_configs,
+    )
+    for col, default_val in {
+        "customer_ids": "[]",
+        "group_ids": "[]",
+        "track_ids": "[]",
+        "person_centroids": "[]",
+        "person_boxes": "[]",
+        "person_confidences": "[]",
+    }.items():
+        if col not in image_insights.columns:
+            image_insights[col] = default_val
+    image_insights, customer_sessions = build_store_day_customer_sessions(
+        image_insights=image_insights,
+        store_id=store_id,
+        camera_configs=camera_configs,
+        session_timeout_sec=session_timeout_sec,
+    )
+    if "customer_ids" not in image_insights.columns:
+        image_insights["customer_ids"] = "[]"
+    image_insights["legacy_customer_ids"] = image_insights["customer_ids"].astype(str)
+    image_insights["customer_ids"] = image_insights.apply(
+        lambda row: str(row.get("store_day_customer_ids", "[]"))
+        if str(row.get("store_day_customer_ids", "[]")).strip() not in {"", "[]"}
+        else str(row.get("customer_ids", "[]")),
+        axis=1,
+    )
+    daily_proof = build_daily_calculation_proof(
+        store_id=store_id,
+        image_insights=image_insights,
+        daily_report=daily_report,
+    )
+
+    footfall, alerts_df = compute_footfall_and_alerts(
+        image_insights=image_insights,
+        camera_configs=camera_configs,
+        engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+    )
+
+    camera_hotspots = build_camera_hotspots(image_insights, store_id=store_id)
+    location_hotspots = build_location_hotspots(image_insights=image_insights, store_id=store_id)
+    summary_row = build_store_summary(
+        store_id=store_id,
+        image_insights=image_insights,
+        camera_hotspots=camera_hotspots,
+        time_bucket_minutes=time_bucket_minutes,
+        bounce_threshold_sec=bounce_threshold_sec,
+        session_gap_sec=session_gap_sec,
+    )
+    summary_row["footfall"] = int(footfall)
+    summary_row["loss_of_sale_alerts"] = int(len(alerts_df))
+    if not customer_sessions.empty:
+        summary_row["daily_walkins"] = int(len(customer_sessions))
+        summary_row["daily_conversions"] = int(pd.to_numeric(customer_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
+        summary_row["daily_conversion_rate"] = float(
+            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
+        )
+    elif not daily_report.empty:
+        summary_row["daily_walkins"] = int(daily_report["actual_customers"].sum())
+        summary_row["daily_conversions"] = int(daily_report["actual_conversions"].sum())
+        summary_row["daily_conversion_rate"] = float(
+            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
+        )
+    else:
+        summary_row["daily_walkins"] = 0
+        summary_row["daily_conversions"] = 0
+        summary_row["daily_conversion_rate"] = 0.0
+
+    return StoreAnalysisResult(
+        image_insights=image_insights,
+        camera_hotspots=camera_hotspots,
+        location_hotspots=location_hotspots,
+        customer_sessions=customer_sessions,
+        summary_row=summary_row,
+        alerts=alerts_df,
+        daily_report=daily_report,
+        daily_proof=daily_proof,
+    )
+
 def analyze_root(
     root_dir: Path,
     conf_threshold: float = 0.18,
@@ -2225,6 +2809,9 @@ def analyze_root(
     session_timeout_sec: int = 180,
     enable_age_gender: bool = False,
     false_positive_signatures_by_store: dict[str, list[dict[str, object]]] | None = None,
+    use_parallel: bool = True,
+    use_streaming: bool = True,
+    false_positive_model: Optional[Any] = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -2259,6 +2846,9 @@ def analyze_root(
             session_timeout_sec=session_timeout_sec,
             enable_age_gender=enable_age_gender,
             false_positive_signatures=false_positive_signatures_by_store.get(store_id, []),
+            use_parallel=use_parallel,
+            use_streaming=use_streaming,
+            false_positive_model=false_positive_model,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)
@@ -2346,6 +2936,7 @@ def export_analysis(
                     "location_name",
                     "person_centroids",
                     "person_boxes",
+                    "person_confidences",
                     "staff_flags",
                     "staff_scores",
                     "reject_reason",

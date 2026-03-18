@@ -322,3 +322,28 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Default YOLO model is heavier (`yolov8m`) and may require more CPU/GPU and RAM than `yolov8n`.
+
+### 2026-03-18 | Work In Progress
+- Summary:
+  - Raised person-detection config defaults (`YOLO_MODEL_PATH`, 0.20 confidence), added per-detection confidence tracking, HSV-based redshirt detection, and stricter static/banner suppression helpers plus new `person_confidences` hygiene in exports/tests.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `tests/test_iris_analysis.py`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Optional `YOLO_MODEL_PATH` env lets you steer between `yolov8s.pt` and larger weights; nothing else changed.
+
+### 2026-03-18 | Commit pending
+- Summary:
+  - Merged both local working change sets into canonical branch: added optional detection-cache/parallel analysis scaffolding, `person_confidences` propagation, HSV red-shirt fallback updates, and dependency additions (`pydantic`, `pyarrow`), then fixed merge regressions (`CameraConfig` reconstruction and static-banner suppression behavior) to keep tests passing.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/store_registry.py`
+  - `requirements.txt`
+  - `deploy/requirements.docker.txt`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Adds Python deps `pydantic>=2.0,<3.0` and `pyarrow>=15.0,<16.0`.
