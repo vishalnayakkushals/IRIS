@@ -2343,7 +2343,11 @@ def analyze_store(
     use_parallel: bool = True,
     use_streaming: bool = True,
     false_positive_model: Optional[Any] = None,
+    filename_prefixes: list[str] | None = None,
 ) -> StoreAnalysisResult:
+    normalized_prefixes = [
+        str(p).strip() for p in (filename_prefixes or []) if str(p).strip()
+    ]
     if use_parallel and use_streaming:
         return analyze_store_streaming(
             store_id=store_id, store_dir=store_dir, detector=detector,
@@ -2353,7 +2357,8 @@ def analyze_store(
             max_images_per_store=max_images_per_store, employee_assets_root=employee_assets_root,
             capture_date_filter=capture_date_filter, session_timeout_sec=session_timeout_sec,
             enable_age_gender=enable_age_gender, false_positive_signatures=false_positive_signatures,
-            false_positive_model=false_positive_model
+            false_positive_model=false_positive_model,
+            filename_prefixes=normalized_prefixes,
         )
     
     # Original linear processing
@@ -2369,6 +2374,10 @@ def analyze_store(
     processed_images = 0
 
     for image_path in image_paths:
+        if normalized_prefixes and not any(
+            image_path.name.startswith(pref) for pref in normalized_prefixes
+        ):
+            continue
         if capture_date_filter is not None:
              image_day, _, _ = _infer_image_context(
                 image_path=image_path,
@@ -2591,6 +2600,7 @@ def analyze_store_streaming(
     false_positive_signatures: list[dict[str, object]] | None = None,
     false_positive_model: Optional[Any] = None,
     chunk_size: int = 500,
+    filename_prefixes: list[str] | None = None,
 ) -> StoreAnalysisResult:
     """Implement memory optimization using chunks + parquet storage + multiprocessing."""
     image_paths = _iter_store_images(store_dir)
@@ -2607,6 +2617,8 @@ def analyze_store_streaming(
     # Filter targets
     targets = []
     for ip in image_paths:
+        if filename_prefixes and not any(ip.name.startswith(pref) for pref in filename_prefixes):
+            continue
         if capture_date_filter is not None:
              image_day, _, _ = _infer_image_context(
                 image_path=ip,
@@ -2812,6 +2824,7 @@ def analyze_root(
     use_parallel: bool = True,
     use_streaming: bool = True,
     false_positive_model: Optional[Any] = None,
+    filename_prefixes: list[str] | None = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -2849,6 +2862,7 @@ def analyze_root(
             use_parallel=use_parallel,
             use_streaming=use_streaming,
             false_positive_model=false_positive_model,
+            filename_prefixes=filename_prefixes,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)

@@ -118,6 +118,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not write plain CSV files; keep only .csv.gz exports.",
     )
+    parser.add_argument(
+        "--filename-prefixes",
+        default="",
+        help="Optional comma-separated filename prefixes (e.g., 11-35,12-15,12-17).",
+    )
     return parser.parse_args()
 
 
@@ -137,6 +142,7 @@ def main() -> None:
     max_images_per_store = (None if args.max_images_per_store == 0 else args.max_images_per_store)
     if args.full_day:
         max_images_per_store = None
+    filename_prefixes = [x.strip() for x in str(args.filename_prefixes).split(",") if x.strip()]
 
     output = analyze_root(
         root_dir=args.root,
@@ -150,6 +156,7 @@ def main() -> None:
         capture_date_filter=capture_date,
         session_timeout_sec=int(args.session_timeout_sec),
         enable_age_gender=bool(args.enable_age_gender),
+        filename_prefixes=filename_prefixes,
     )
     export_analysis(output=output, out_dir=args.out, write_gzip_exports=args.gzip_exports, keep_plain_csv=not args.drop_plain_csv)
     if args.store_id.strip() and capture_date is not None:

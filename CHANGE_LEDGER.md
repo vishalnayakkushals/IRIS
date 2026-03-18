@@ -370,3 +370,15 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Adds `opencv-python-headless>=4.10,<5.0` to runtime dependencies.
+
+### 2026-03-18 | Commit pending
+- Summary:
+  - Added optional filename-prefix filtering in analysis pipeline and CLI so targeted windows (for example `11-35`, `12-15`, `12-17`) can be analyzed without processing the full store set.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `scripts/analyze_stores.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
