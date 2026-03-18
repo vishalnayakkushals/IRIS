@@ -1943,6 +1943,7 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
 def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path, api_key: str) -> tuple[int, list[dict[str, str]]]:
     n = 0
     manifest_rows: list[dict[str, str]] = []
+    media_blocked = False
     for item in file_items:
         relative_path = str(item.get("relative_path", item.get("name", ""))).strip()
         relative_obj = Path(relative_path)
@@ -1951,9 +1952,56 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
             safe_parts = [Path(str(item.get("name", "image.jpg"))).name]
         dest = target_dir.joinpath(*safe_parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        resp=requests.get(f"https://www.googleapis.com/drive/v3/files/{item['id']}", params={"alt":"media","key":api_key}, timeout=60)
-        if resp.status_code!=200: continue
-        dest.write_bytes(resp.content)
+        if dest.exists() and dest.stat().st_size > 0:
+            continue
+
+        file_id = str(item.get("id", "")).strip()
+        if not file_id:
+            continue
+
+        payload: bytes | None = None
+        name = Path(str(item.get("name", "image.jpg"))).name
+
+        if not media_blocked:
+            try:
+                resp = requests.get(
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}",
+                    params={"alt": "media", "key": api_key},
+                    timeout=30,
+                )
+                headers = getattr(resp, "headers", {}) or {}
+                ctype = (headers.get("content-type") or "").lower()
+                if resp.status_code == 200 and "text/html" not in ctype:
+                    payload = resp.content
+                elif (
+                    resp.status_code in {403, 429}
+                    and "automated queries" in str(getattr(resp, "text", "")).lower()
+                ):
+                    # Corporate/shared networks can trigger this block. Fall back to uc download.
+                    media_blocked = True
+            except requests.RequestException:
+                pass
+
+        if payload is None:
+            try:
+                fallback = requests.get(
+                    "https://drive.google.com/uc",
+                    params={"id": file_id, "export": "download"},
+                    timeout=30,
+                )
+                fallback_headers = getattr(fallback, "headers", {}) or {}
+                fallback_type = (fallback_headers.get("content-type") or "").lower()
+                if fallback.status_code == 200 and (
+                    "image/" in fallback_type or Path(name).suffix.lower() in _IMAGE_EXTS
+                ):
+                    payload = fallback.content
+            except requests.RequestException:
+                pass
+
+        if payload is None:
+            continue
+
+        dest.write_bytes(payload)
         n += 1
         manifest_rows.append(
             {
