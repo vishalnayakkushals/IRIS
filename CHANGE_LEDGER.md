@@ -358,3 +358,15 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-18 | Commit pending
+- Summary:
+  - Fixed Docker runtime crash (`ModuleNotFoundError: cv2`) by adding OpenCV headless dependency to app and Docker requirement sets.
+- Changed Paths:
+  - `requirements.txt`
+  - `deploy/requirements.docker.txt`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Adds `opencv-python-headless>=4.10,<5.0` to runtime dependencies.

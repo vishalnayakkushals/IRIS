@@ -6,3 +6,4 @@ ultralytics>=8.3,<9.0
 gdown>=5.2,<6.0
 pydantic>=2.0,<3.0
 pyarrow>=15.0,<16.0
+opencv-python-headless>=4.10,<5.0
