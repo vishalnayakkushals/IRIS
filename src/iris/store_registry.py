@@ -171,6 +171,28 @@ def init_db(db_path: Path) -> None:
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS store_source_file_index (
+                store_id TEXT NOT NULL,
+                source_provider TEXT NOT NULL,
+                source_file_id TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL DEFAULT '',
+                source_link TEXT NOT NULL DEFAULT '',
+                local_path TEXT NOT NULL DEFAULT '',
+                file_ext TEXT NOT NULL DEFAULT '',
+                local_size_bytes INTEGER NOT NULL DEFAULT 0,
+                is_present INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                last_download_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(store_id, source_provider, source_file_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_file_index_store_provider_present "
+            "ON store_source_file_index(store_id, source_provider, is_present)"
+        )
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS employees (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 store_id TEXT NOT NULL,
@@ -1756,6 +1778,74 @@ def list_camera_configs(db_path: Path, store_id: str | None = None) -> list[Came
         conn.close()
 
 
+def _safe_relative_parts(relative_path: str, fallback_name: str) -> list[str]:
+    relative_obj = Path(relative_path)
+    safe_parts = [p for p in relative_obj.parts if p not in {"", ".", ".."}]
+    if safe_parts:
+        return safe_parts
+    return [Path(str(fallback_name or "image.jpg")).name]
+
+
+def _drive_item_dest_path(target_dir: Path, item: dict[str, str]) -> tuple[Path, str]:
+    relative_path = str(item.get("relative_path", item.get("name", ""))).strip()
+    safe_parts = _safe_relative_parts(relative_path=relative_path, fallback_name=str(item.get("name", "image.jpg")))
+    rel = str(Path(*safe_parts)).replace("\\", "/")
+    return target_dir.joinpath(*safe_parts), rel
+
+
+def _list_indexed_source_file_ids(db_path: Path, store_id: str, source_provider: str) -> set[str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT source_file_id
+            FROM store_source_file_index
+            WHERE store_id=? AND source_provider=? AND is_present=1
+            """,
+            (store_id.strip(), source_provider.strip()),
+        ).fetchall()
+        return {str(row[0]) for row in rows if str(row[0]).strip()}
+    finally:
+        conn.close()
+
+
+def _upsert_source_index_rows(
+    db_path: Path,
+    rows: list[tuple[str, str, str, str, str, str, str, str, int, int, str, str, str]],
+) -> None:
+    if not rows:
+        return
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO store_source_file_index(
+                store_id,source_provider,source_file_id,source_name,relative_path,source_link,
+                local_path,file_ext,local_size_bytes,is_present,first_seen_at,last_seen_at,last_download_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(store_id,source_provider,source_file_id) DO UPDATE SET
+                source_name=excluded.source_name,
+                relative_path=excluded.relative_path,
+                source_link=excluded.source_link,
+                local_path=excluded.local_path,
+                file_ext=excluded.file_ext,
+                local_size_bytes=excluded.local_size_bytes,
+                is_present=excluded.is_present,
+                last_seen_at=excluded.last_seen_at,
+                last_download_at=CASE
+                    WHEN excluded.last_download_at<>'' THEN excluded.last_download_at
+                    ELSE store_source_file_index.last_download_at
+                END
+            """,
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def camera_config_map(db_path: Path) -> dict[str, dict[str, CameraConfig]]:
     out: dict[str, dict[str, CameraConfig]] = {}
     for cfg in list_camera_configs(db_path=db_path):
@@ -1945,12 +2035,7 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
     manifest_rows: list[dict[str, str]] = []
     media_blocked = False
     for item in file_items:
-        relative_path = str(item.get("relative_path", item.get("name", ""))).strip()
-        relative_obj = Path(relative_path)
-        safe_parts = [p for p in relative_obj.parts if p not in {"", ".", ".."}]
-        if not safe_parts:
-            safe_parts = [Path(str(item.get("name", "image.jpg"))).name]
-        dest = target_dir.joinpath(*safe_parts)
+        dest, rel = _drive_item_dest_path(target_dir=target_dir, item=item)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() and dest.stat().st_size > 0:
             continue
@@ -2007,7 +2092,7 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
             {
                 "file_id": str(item.get("id", "")),
                 "name": str(item.get("name", "")),
-                "relative_path": str(Path(*safe_parts)).replace("\\", "/"),
+                "relative_path": rel,
                 "drive_web_link": str(item.get("drive_web_link", "")),
                 "local_path": str(dest),
             }
@@ -2015,7 +2100,12 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
     return n, manifest_rows
 
 
-def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: str) -> tuple[bool, str]:
+def _sync_store_from_drive_api(
+    store: StoreRecord,
+    target_dir: Path,
+    api_key: str,
+    db_path: Path | None = None,
+) -> tuple[bool, str]:
     folder_id=parse_drive_folder_id(store.drive_folder_url)
     if not folder_id:
         return False, f"{store.store_id}: invalid Google Drive folder URL"
@@ -2023,7 +2113,54 @@ def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: st
         items=_drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
         if not items:
             return False, f"{store.store_id}: no files found via Drive API"
-        downloaded, manifest_rows = _drive_api_download_files(items, target_dir=target_dir, api_key=api_key)
+        known_ids = (
+            _list_indexed_source_file_ids(db_path=db_path, store_id=store.store_id, source_provider="gdrive")
+            if db_path is not None
+            else set()
+        )
+        pending_items: list[dict[str, str]] = []
+        reused = 0
+        for item in items:
+            source_file_id = str(item.get("id", "")).strip()
+            dest, _ = _drive_item_dest_path(target_dir=target_dir, item=item)
+            if dest.exists() and dest.stat().st_size > 0 and (not source_file_id or source_file_id in known_ids):
+                reused += 1
+                continue
+            if dest.exists() and dest.stat().st_size > 0:
+                reused += 1
+                continue
+            pending_items.append(item)
+
+        downloaded, manifest_rows = _drive_api_download_files(pending_items, target_dir=target_dir, api_key=api_key)
+        downloaded_ids = {str(row.get("file_id", "")).strip() for row in manifest_rows if str(row.get("file_id", "")).strip()}
+        if db_path is not None:
+            now = _now_utc()
+            index_rows: list[tuple[str, str, str, str, str, str, str, str, int, int, str, str, str]] = []
+            for item in items:
+                source_file_id = str(item.get("id", "")).strip()
+                if not source_file_id:
+                    continue
+                dest, rel = _drive_item_dest_path(target_dir=target_dir, item=item)
+                exists = dest.exists() and dest.stat().st_size > 0
+                size = int(dest.stat().st_size) if exists else 0
+                index_rows.append(
+                    (
+                        store.store_id,
+                        "gdrive",
+                        source_file_id,
+                        str(item.get("name", "")),
+                        rel,
+                        str(item.get("drive_web_link", "")),
+                        str(dest),
+                        dest.suffix.lower(),
+                        size,
+                        1 if exists else 0,
+                        now,
+                        now,
+                        now if source_file_id in downloaded_ids else "",
+                    )
+                )
+            _upsert_source_index_rows(db_path=db_path, rows=index_rows)
         if manifest_rows:
             manifest_path = target_dir / "_drive_manifest.csv"
             with manifest_path.open("w", newline="", encoding="utf-8") as f:
@@ -2033,8 +2170,14 @@ def _sync_store_from_drive_api(store: StoreRecord, target_dir: Path, api_key: st
                 )
                 writer.writeheader()
                 writer.writerows(manifest_rows)
-        processed,failed=optimize_store_image_files(target_dir)
-        return True, f"{store.store_id}: api_sync downloaded={downloaded} optimized={processed} failed={failed} dir={target_dir}"
+        if downloaded > 0:
+            processed,failed=optimize_store_image_files(target_dir)
+        else:
+            processed, failed = 0, 0
+        return True, (
+            f"{store.store_id}: api_sync listed={len(items)} reused={reused} "
+            f"downloaded={downloaded} optimized={processed} failed={failed} dir={target_dir}"
+        )
     except Exception as exc:
         return False, f"{store.store_id}: Drive API sync failed ({exc})"
 
@@ -2105,7 +2248,7 @@ def sync_store_from_source(store: StoreRecord, data_root: Path, db_path: Path | 
     if provider == "gdrive":
         api_key=os.getenv("GOOGLE_API_KEY","").strip()
         if api_key:
-            ok,msg=_sync_store_from_drive_api(store=store, target_dir=target_dir, api_key=api_key)
+            ok,msg=_sync_store_from_drive_api(store=store, target_dir=target_dir, api_key=api_key, db_path=db_path)
             if ok:
                 synced_files = len([p for p in target_dir.rglob("*") if p.is_file() and p.suffix.lower() in _IMAGE_EXTS])
         if not ok:

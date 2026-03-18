@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+import sqlite3
 
 from PIL import Image
 
@@ -13,6 +14,7 @@ from iris.store_registry import (
     detect_source_provider,
     ensure_store_login,
     camera_config_map,
+    init_db,
     list_synced_stores,
     list_user_store_access,
     replace_user_store_access,
@@ -234,6 +236,57 @@ def test_drive_api_sync_path_with_mocked_requests(tmp_path: Path, monkeypatch) -
     assert "api_sync" in msg
     assert calls["list"] >= 1
     assert calls["download"] >= 1
+
+
+def test_drive_api_sync_uses_delta_and_skips_existing_file(tmp_path: Path, monkeypatch) -> None:
+    from iris.store_registry import StoreRecord
+
+    db = tmp_path / "registry.db"
+    init_db(db)
+    target = tmp_path / "stores" / "s1"
+    target.mkdir(parents=True)
+    existing = target / "09-57-27_D02-1.jpg"
+    existing.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 10)
+
+    store = StoreRecord("s1", "Store 1", "s1@example.com", "https://drive.google.com/drive/folders/f123", "", "")
+    calls = {"list": 0, "download": 0}
+
+    class Resp:
+        def __init__(self, status_code=200, payload=None, content=b"", headers=None):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.content = content
+            self.headers = headers or {"content-type": "image/jpeg"}
+            self.text = ""
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise Exception("http error")
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params=None, timeout=0):
+        if url.endswith('/drive/v3/files'):
+            calls["list"] += 1
+            return Resp(payload={"files": [{"id": "file1", "name": "09-57-27_D02-1.jpg", "mimeType": "image/jpeg"}]})
+        calls["download"] += 1
+        return Resp(content=b"\xff\xd8\xff\xe0" + b"0" * 10)
+
+    monkeypatch.setattr("iris.store_registry.requests.get", fake_get)
+    ok, msg = _sync_store_from_drive_api(store=store, target_dir=target, api_key="k", db_path=db)
+    assert ok is True
+    assert "reused=1" in msg
+    assert calls["list"] >= 1
+    assert calls["download"] == 0
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT is_present, local_size_bytes FROM store_source_file_index WHERE store_id='s1' AND source_provider='gdrive' AND source_file_id='file1'"
+        ).fetchone()
+        assert row == (1, existing.stat().st_size)
+    finally:
+        conn.close()
 
 
 def test_drive_api_list_non_json_response_is_explained(monkeypatch) -> None:

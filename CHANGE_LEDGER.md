@@ -385,6 +385,18 @@ Use this template for each new change:
 
 ### 2026-03-18 | Commit pending
 - Summary:
+  - Implemented Drive delta-sync foundation: added `store_source_file_index` table and sync logic that compares indexed/local files against Drive listing, downloads only missing files, and never erases existing local snapshots.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - SQLite schema adds `store_source_file_index` and index `idx_source_file_index_store_provider_present`.
+
+### 2026-03-18 | Commit pending
+- Summary:
   - Fixed Google Drive API sync reliability on restricted networks by adding download fallback (`drive.google.com/uc`) when `alt=media` is blocked, and skipping already-present files to speed repeated syncs.
 - Changed Paths:
   - `src/iris/store_registry.py`
