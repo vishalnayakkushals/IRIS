@@ -347,3 +347,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Adds Python deps `pydantic>=2.0,<3.0` and `pyarrow>=15.0,<16.0`.
+
+### 2026-03-18 | Commit pending
+- Summary:
+  - Switched repository workflow source-of-truth path to `Desktop\\Github\\IRIS` in agent instructions so local working convention matches requested deployment flow.
+- Changed Paths:
+  - `AGENTS.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None

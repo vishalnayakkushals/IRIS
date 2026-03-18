@@ -1,7 +1,7 @@
 # IRIS Agent Workflow
 
 ## Source of Truth
-- Primary repository path: `C:\Users\Kushals.DESKTOP-D51MT8S\Documents\VSCode\IRIS`
+- Primary repository path: `C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS`
 - GitHub repository: `https://github.com/vishalnayakkushals/IRIS`
 - Default branch: `main`
 
