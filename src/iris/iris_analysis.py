@@ -1426,6 +1426,7 @@ def _compute_entry_exit_event_counts(
     day_cam_with_crossings: set[tuple[str, str]] = set()
     for (capture_date, camera_id, _track_id), events in track_events.items():
         ordered = sorted(events, key=lambda x: pd.Timestamp(x["ts"]))
+        has_entered = False
         for a, b in zip(ordered, ordered[1:]):
             side_a = _line_side(float(a["cx"]), float(a["line_x"]))
             side_b = _line_side(float(b["cx"]), float(a["line_x"]))
@@ -1435,14 +1436,16 @@ def _compute_entry_exit_event_counts(
                 direction=str(a["direction"]),
             )
             ts = pd.Timestamp(b["ts"])
-            if crossed_in:
+            if crossed_in and not has_entered:
                 entry_counts.setdefault(capture_date, {})
                 entry_counts[capture_date][ts] = int(entry_counts[capture_date].get(ts, 0)) + 1
                 day_cam_with_crossings.add((capture_date, camera_id))
-            if crossed_out:
+                has_entered = True
+            if crossed_out and has_entered:
                 exit_counts.setdefault(capture_date, {})
                 exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + 1
                 day_cam_with_crossings.add((capture_date, camera_id))
+                has_entered = False
 
     # Fallback: if track IDs are unstable, infer crossing via side-count deltas between gate frames.
     gate_rows = rows[rows["camera_id"].astype(str).map(lambda v: str(v).strip() in camera_configs)].copy()
@@ -1622,6 +1625,7 @@ def build_store_day_customer_sessions(
     df = image_insights.copy()
     df["store_day_customer_ids"] = "[]"
     df["customer_session_ids"] = "[]"
+    df["event_label"] = "INVALID"
     if df.empty or "timestamp" not in df.columns:
         return df, pd.DataFrame(
             columns=[
@@ -1636,6 +1640,11 @@ def build_store_day_customer_sessions(
                 "cameras_seen",
                 "locations_seen",
                 "floors_seen",
+                "entry_image",
+                "entry_image_path",
+                "exit_image",
+                "exit_image_path",
+                "session_class",
             ]
         )
 
@@ -1699,6 +1708,7 @@ def build_store_day_customer_sessions(
         )
         invalid_reason = ""
         is_valid_session = True
+        session_class = "CUSTOMER"
         if strict_gate_mode:
             if reason != "exit_crossing":
                 is_valid_session = False
@@ -1712,6 +1722,13 @@ def build_store_day_customer_sessions(
         if is_staff_session:
             is_valid_session = False
             invalid_reason = "staff_like"
+            session_class = "STAFF"
+        elif not is_valid_session:
+            gate_only = bool(cameras_seen) and all(str(c).upper() in gate_camera_ids for c in cameras_seen)
+            if gate_only and invalid_reason in {"no_exit_crossing", "no_movement"}:
+                session_class = "OUTSIDE_PASSER"
+            else:
+                session_class = "INVALID"
 
         sessions_out.append(
             {
@@ -1726,12 +1743,17 @@ def build_store_day_customer_sessions(
                 "cameras_seen": ",".join(cameras_seen),
                 "locations_seen": ",".join(locations_seen),
                 "floors_seen": ",".join(floors_seen),
+                "entry_image": str(state.get("entry_image", "")),
+                "entry_image_path": str(state.get("entry_image_path", "")),
+                "exit_image": str(state.get("exit_image", "")),
+                "exit_image_path": str(state.get("exit_image_path", "")),
                 "frames_seen": frames_seen,
                 "movement_score": movement_score,
                 "staff_ratio_max": round(float(state.get("staff_ratio_max", 0.0) or 0.0), 4),
                 "is_staff_session": int(is_staff_session),
                 "is_valid_session": int(bool(is_valid_session)),
                 "invalid_reason": invalid_reason,
+                "session_class": session_class,
             }
         )
 
@@ -1761,6 +1783,12 @@ def build_store_day_customer_sessions(
                     "entry_ts": ts,
                     "last_seen": ts,
                     "exit_ts": ts,
+                    "entry_image": "",
+                    "entry_image_path": "",
+                    "exit_image": "",
+                    "exit_image_path": "",
+                    "last_image": "",
+                    "last_image_path": "",
                     "closed": False,
                     "close_reason": "",
                     "converted_proxy": False,
@@ -1789,6 +1817,12 @@ def build_store_day_customer_sessions(
                         "entry_ts": ts,
                         "last_seen": ts,
                         "exit_ts": ts,
+                        "entry_image": "",
+                        "entry_image_path": "",
+                        "exit_image": "",
+                        "exit_image_path": "",
+                        "last_image": "",
+                        "last_image_path": "",
                         "closed": False,
                         "close_reason": "",
                         "converted_proxy": False,
@@ -1818,6 +1852,8 @@ def build_store_day_customer_sessions(
                 df.at[idx, "store_day_customer_ids"] = json.dumps(row_ids)
                 df.at[idx, "customer_session_ids"] = json.dumps(row_ids)
                 camera_id = str(df.at[idx, "camera_id"])
+                file_name = str(df.at[idx, "filename"]) if "filename" in df.columns else ""
+                file_path = str(df.at[idx, "path"]) if "path" in df.columns else ""
                 location_name = str(df.at[idx, "location_name"]) if "location_name" in df.columns else camera_id
                 floor_name = str(df.at[idx, "floor_name"]) if "floor_name" in df.columns else "Ground"
                 row_staff = int(pd.to_numeric([df.at[idx, "staff_count"]], errors="coerce")[0] or 0)
@@ -1826,6 +1862,11 @@ def build_store_day_customer_sessions(
                 for sid in row_ids:
                     state = session_state[sid]
                     state["last_seen"] = ts
+                    if not str(state.get("entry_image", "")).strip():
+                        state["entry_image"] = file_name
+                        state["entry_image_path"] = file_path
+                    state["last_image"] = file_name
+                    state["last_image_path"] = file_path
                     state["cameras_seen"].add(camera_id)
                     state["locations_seen"].add(location_name if location_name.strip() else camera_id)
                     state["floors_seen"].add(floor_name if floor_name.strip() else "Ground")
@@ -1843,10 +1884,16 @@ def build_store_day_customer_sessions(
                     key=lambda sid: pd.Timestamp(session_state[sid]["entry_ts"]),
                 )
                 for sid in closable[:n_exit]:
+                    state = session_state.get(sid, {})
+                    state["exit_image"] = str(state.get("last_image", ""))
+                    state["exit_image_path"] = str(state.get("last_image_path", ""))
                     _close_session(sid=sid, close_ts=ts, reason="exit_crossing")
             active_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
 
         for sid in [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]:
+            state = session_state.get(sid, {})
+            state["exit_image"] = str(state.get("last_image", ""))
+            state["exit_image_path"] = str(state.get("last_image_path", ""))
             _close_session(
                 sid=sid,
                 close_ts=pd.Timestamp(session_state[sid]["last_seen"]),
@@ -1868,16 +1915,46 @@ def build_store_day_customer_sessions(
                 "cameras_seen",
                 "locations_seen",
                 "floors_seen",
+                "entry_image",
+                "entry_image_path",
+                "exit_image",
+                "exit_image_path",
                 "frames_seen",
                 "movement_score",
                 "staff_ratio_max",
                 "is_staff_session",
                 "is_valid_session",
                 "invalid_reason",
+                "session_class",
             ]
         )
     else:
         sessions_df = sessions_df.sort_values(["capture_date", "entry_ts"]).reset_index(drop=True)
+
+    # Frame-level class label for QA/dashboard:
+    # CUSTOMER, STAFF, OUTSIDE_PASSER, INVALID
+    if "event_label" not in df.columns:
+        df["event_label"] = "INVALID"
+    gate_ids_upper = {str(x).upper() for x in gate_camera_ids}
+    for idx, row in df.iterrows():
+        is_valid = bool(row.get("is_valid", False))
+        det_err = str(row.get("detection_error", "") or "").strip()
+        reject_reason = str(row.get("reject_reason", "") or "").strip()
+        if (not is_valid) or det_err or reject_reason:
+            df.at[idx, "event_label"] = "INVALID"
+            continue
+        staff_count = int(pd.to_numeric([row.get("staff_count", 0)], errors="coerce")[0] or 0)
+        customer_count = int(pd.to_numeric([row.get("customer_count", 0)], errors="coerce")[0] or 0)
+        has_session = bool([x for x in _safe_json_list(row.get("store_day_customer_ids", "[]")) if str(x).strip()])
+        camera_id = str(row.get("camera_id", "")).strip().upper()
+        if has_session and customer_count > 0:
+            df.at[idx, "event_label"] = "CUSTOMER"
+        elif staff_count > 0 and customer_count <= 0:
+            df.at[idx, "event_label"] = "STAFF"
+        elif strict_gate_mode and camera_id in gate_ids_upper and customer_count > 0:
+            df.at[idx, "event_label"] = "OUTSIDE_PASSER"
+        else:
+            df.at[idx, "event_label"] = "INVALID"
     return df, sessions_df
 
 
@@ -3231,6 +3308,7 @@ def export_analysis(
                     "relevant",
                     "staff_count",
                     "customer_count",
+                    "event_label",
                     "gender_likelihood",
                     "age_bucket_counts",
                     "age_confidence",
@@ -3300,6 +3378,11 @@ def export_analysis(
                     "cameras_seen",
                     "locations_seen",
                     "floors_seen",
+                    "entry_image",
+                    "entry_image_path",
+                    "exit_image",
+                    "exit_image_path",
+                    "session_class",
                 ]
             ],
             sessions_path,

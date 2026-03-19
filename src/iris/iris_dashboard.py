@@ -926,9 +926,13 @@ def _false_positive_signature_map(db_path: Path) -> dict[str, list[dict[str, obj
 
 def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataFrame) -> dict[str, object]:
     scoped_sessions = customer_sessions_df.copy() if not customer_sessions_df.empty else customer_sessions_df
+    if scoped_sessions is not None and not scoped_sessions.empty and "session_class" in scoped_sessions.columns:
+        scoped_sessions = scoped_sessions[
+            scoped_sessions["session_class"].fillna("").astype(str).str.upper().eq("CUSTOMER")
+        ].copy()
     if not customer_sessions_df.empty and "is_valid_session" in customer_sessions_df.columns:
-        scoped_sessions = customer_sessions_df[
-            pd.to_numeric(customer_sessions_df["is_valid_session"], errors="coerce").fillna(0).astype(int) > 0
+        scoped_sessions = scoped_sessions[
+            pd.to_numeric(scoped_sessions["is_valid_session"], errors="coerce").fillna(0).astype(int) > 0
         ].copy()
     entries = int(len(scoped_sessions)) if scoped_sessions is not None and not scoped_sessions.empty else 0
     closed_exits = 0
@@ -990,6 +994,7 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
         "person_count": 0,
         "staff_count": 0,
         "customer_count": 0,
+        "event_label": "",
         "timestamp": pd.NaT,
         "filename": "",
         "path": "",
@@ -1145,6 +1150,9 @@ def _resolve_event_image_path(evt: dict[str, object], store_id: str, root_dir: P
 
 
 def _predicted_label(row: pd.Series) -> str:
+    explicit = str(row.get("event_label", "") or "").strip().upper()
+    if explicit in {"CUSTOMER", "STAFF", "OUTSIDE_PASSER", "INVALID"}:
+        return explicit.lower()
     person_count = int(row.get("person_count", 0) or 0)
     staff_count = int(row.get("staff_count", 0) or 0)
     if person_count <= 0:
@@ -1856,8 +1864,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
         corrected_label = st.radio(
             "Corrected label",
-            options=["customer", "staff", "mixed", "no_person"],
-            index=["customer", "staff", "mixed", "no_person"].index(predicted_label),
+            options=["customer", "staff", "outside_passer", "invalid", "mixed", "no_person"],
+            index=["customer", "staff", "outside_passer", "invalid", "mixed", "no_person"].index(
+                predicted_label if predicted_label in {"customer", "staff", "outside_passer", "invalid", "mixed", "no_person"} else "invalid"
+            ),
             horizontal=True,
         )
         confidence = st.slider("Correction confidence", min_value=0.0, max_value=1.0, value=0.7, step=0.05)

@@ -496,3 +496,35 @@ def test_summary_kpis_use_only_valid_closed_sessions(tmp_path: Path) -> None:
     assert int(row["estimated_visits"]) == 1
     assert int(row["daily_walkins"]) == 1
     assert float(row["avg_dwell_sec"]) >= 2.0
+
+
+def test_d07_session_has_entry_exit_images_and_customer_class(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    _write_image(store / "09-00-00_D07-1.jpg")
+    _write_image(store / "09-00-10_D07-2.jpg")
+    _write_image(store / "09-00-20_D07-3.jpg")
+    detector = CrossingDetector(
+        {
+            "09-00-00_D07-1.jpg": [(0.40, 0.5)],
+            "09-00-10_D07-2.jpg": [(0.60, 0.5)],
+            "09-00-20_D07-3.jpg": [(0.40, 0.5)],
+        }
+    )
+    result = analyze_store(
+        store_id="BLRJAY",
+        store_dir=store,
+        detector=detector,
+        camera_configs={
+            "D07": {
+                "camera_role": "ENTRANCE",
+                "entry_line_x": 0.5,
+                "entry_direction": "OUTSIDE_TO_INSIDE",
+            }
+        },
+        session_gap_sec=120,
+    )
+    assert not result.customer_sessions.empty
+    sess = result.customer_sessions.iloc[0]
+    assert str(sess.get("session_class", "")) == "CUSTOMER"
+    assert str(sess.get("entry_image", "")).strip() != ""
+    assert str(sess.get("exit_image", "")).strip() != ""

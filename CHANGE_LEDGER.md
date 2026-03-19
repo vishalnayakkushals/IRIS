@@ -546,3 +546,19 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - No new required env vars. `opencv-python-headless` fallback is already part of runtime dependencies.
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Redesigned D07 session lifecycle to be entry/exit-track aware: exit events are counted only for tracks that previously entered, reducing outside-passer inflation.
+  - Added session classification (CUSTOMER, STAFF, OUTSIDE_PASSER, INVALID) and persisted session proof fields (ntry_image, ntry_image_path, xit_image, xit_image_path).
+  - Added frame-level vent_label and updated dashboard KPI summary to prioritize CUSTOMER sessions from session table.
+- Changed Paths:
+  - src/iris/iris_analysis.py`r
+  - src/iris/iris_dashboard.py`r
+  - 	ests/test_iris_analysis.py`r
+  - CHANGE_LEDGER.md`r
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
