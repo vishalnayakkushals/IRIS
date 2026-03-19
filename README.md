@@ -138,6 +138,44 @@ Sidebar:
 - `Access Email (optional)` filters dashboard view to mapped store
 - `Auto-sync linked drives before analysis` syncs data points before run
 
+## Automated Daily Drive Sync (6 AM)
+
+Use the new scheduler for fully automated extraction that is independent of your local terminal session.
+
+Behavior:
+- First run: full backfill of all images in the mapped Drive folder.
+- Next runs: delta sync mode (latest date-folder only when date folders exist).
+- Only missing files are downloaded (existing local files are reused).
+- Deleted Drive files are marked inactive in sync index (optionally can be physically removed).
+- Multi-queue parallel downloader is used for faster extraction.
+
+Run once:
+
+```powershell
+python scripts/drive_delta_sync_scheduler.py --store-id BLRJAY --run-once --workers 8
+```
+
+Run daily at 6 AM (Asia/Kolkata):
+
+```powershell
+python scripts/drive_delta_sync_scheduler.py --store-id BLRJAY --run-at 06:00 --tz Asia/Kolkata --workers 8
+```
+
+Docker service (always-on scheduler):
+- `deploy/docker-compose.yml` now includes `iris-sync`.
+- Configure env vars:
+  - `GOOGLE_API_KEY`
+  - `IRIS_SYNC_STORE_ID` (default `BLRJAY`)
+  - `IRIS_SYNC_RUN_AT` (default `06:00`)
+  - `IRIS_SYNC_TZ` (default `Asia/Kolkata`)
+  - `IRIS_SYNC_WORKERS` (default `6`)
+
+Throughput benchmark helper:
+
+```powershell
+python scripts/benchmark_drive_sync.py --drive-folder-url "https://drive.google.com/drive/folders/<folder_id>" --sample-size 300 --workers 8
+```
+
 ## Detector Notes
 
 - Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.

@@ -13,3 +13,36 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     command: ["streamlit", "run", "src/run_dashboard.py", "--server.address=0.0.0.0", "--server.port=8765", "--browser.serverAddress=localhost"]
+
+  iris-sync:
+    build:
+      context: ${IRIS_BUILD_CONTEXT:-..}
+      dockerfile: ${IRIS_DOCKERFILE:-deploy/Dockerfile}
+      args:
+        IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-0}
+    restart: unless-stopped
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - IRIS_SYNC_STORE_ID=${IRIS_SYNC_STORE_ID:-BLRJAY}
+      - IRIS_SYNC_RUN_AT=${IRIS_SYNC_RUN_AT:-06:00}
+      - IRIS_SYNC_TZ=${IRIS_SYNC_TZ:-Asia/Kolkata}
+      - IRIS_SYNC_WORKERS=${IRIS_SYNC_WORKERS:-6}
+    command:
+      [
+        "python",
+        "scripts/drive_delta_sync_scheduler.py",
+        "--db",
+        "/app/data/store_registry.db",
+        "--data-root",
+        "/app/data/stores",
+        "--store-id",
+        "${IRIS_SYNC_STORE_ID:-BLRJAY}",
+        "--run-at",
+        "${IRIS_SYNC_RUN_AT:-06:00}",
+        "--tz",
+        "${IRIS_SYNC_TZ:-Asia/Kolkata}",
+        "--workers",
+        "${IRIS_SYNC_WORKERS:-6}"
+      ]

@@ -17,10 +17,14 @@ It records what changed, where it changed, and why.
 | `src/iris/iris_dashboard.py` | Streamlit UI, navigation, auth flow, operations/access pages, configuration UI. |
 | `src/iris/iris_analysis.py` | Store image analysis pipeline, detector abstraction, metrics, exports, tracking logic. |
 | `src/iris/store_registry.py` | Store/user/role DB logic, source sync adapters (Drive/S3/local), audit state. |
+| `src/iris/drive_delta_sync.py` | Scheduled Google Drive delta-sync engine: first full pull, latest-folder delta pulls, multi-queue downloads, and deletion tombstones. |
 | `src/iris/event_queue.py` | Local event queue abstraction for async processing. |
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
+| `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
+| `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
+| `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
 
 ## Change Entry Template
 Use this template for each new change:
@@ -416,3 +420,23 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Added autonomous daily Drive sync design: first full pull, then latest-date delta sync with multi-queue downloads, deletion tombstones, scheduler runner (6 AM), dockerized sync worker service, and benchmark tooling.
+- Changed Paths:
+  - `src/iris/drive_delta_sync.py`
+  - `src/iris/store_registry.py`
+  - `scripts/drive_delta_sync_scheduler.py`
+  - `scripts/benchmark_drive_sync.py`
+  - `deploy/docker-compose.yml`
+  - `README.md`
+  - `tests/test_drive_delta_sync.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `src/iris/drive_delta_sync.py`
+  - `scripts/drive_delta_sync_scheduler.py`
+  - `scripts/benchmark_drive_sync.py`
+  - `tests/test_drive_delta_sync.py`
+- Infra/Config Impact:
+  - New optional docker service `iris-sync` and env vars `IRIS_SYNC_STORE_ID`, `IRIS_SYNC_RUN_AT`, `IRIS_SYNC_TZ`, `IRIS_SYNC_WORKERS` (requires `GOOGLE_API_KEY`).

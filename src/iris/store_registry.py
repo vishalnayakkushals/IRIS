@@ -2086,7 +2086,10 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
         if payload is None:
             continue
 
-        dest.write_bytes(payload)
+        try:
+            dest.write_bytes(payload)
+        except OSError:
+            continue
         n += 1
         manifest_rows.append(
             {
