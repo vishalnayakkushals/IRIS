@@ -509,3 +509,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Full YOLO Docker builds now explicitly pin `numpy<2` with existing `pyarrow` constraint.
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Improved Pipeline Configuration date parsing to accept compact `YYYYMMDD` inputs (for example `20260317`) by normalizing to ISO before analysis.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None

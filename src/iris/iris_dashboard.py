@@ -3701,7 +3701,12 @@ def main() -> None:
     capture_date_filter: date | None = None
     if capture_date_str:
         try:
-            capture_date_filter = date.fromisoformat(capture_date_str)
+            normalized_capture_date = capture_date_str
+            if len(capture_date_str) == 8 and capture_date_str.isdigit():
+                normalized_capture_date = (
+                    f"{capture_date_str[0:4]}-{capture_date_str[4:6]}-{capture_date_str[6:8]}"
+                )
+            capture_date_filter = date.fromisoformat(normalized_capture_date)
         except ValueError:
             st.error(f"Invalid capture date '{capture_date_str}'. Use YYYY-MM-DD.")
             capture_date_filter = None
