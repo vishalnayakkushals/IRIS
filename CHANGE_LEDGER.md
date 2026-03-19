@@ -532,3 +532,17 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Strengthened runtime robustness for people counting by adding OpenCV HOG detector fallback when YOLO/Torch is unavailable, and by improving gate-event fallback using D07/customer-count deltas when track crossings are sparse.
+  - Pipeline mode selection now auto-applies immediately to prevent stale `Images Per Store` limits (e.g., stuck at 200), adds explicit `opencv_hog` detector option, and suppresses irrelevant TF_FRCNN warnings unless that detector is selected.
+  - Age/Gender toggle now auto-disables when DeepFace runtime is missing to prevent broken-mode runs.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No new required env vars. `opencv-python-headless` fallback is already part of runtime dependencies.

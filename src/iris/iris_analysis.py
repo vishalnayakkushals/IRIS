@@ -410,6 +410,82 @@ class LegacyTfPersonDetector:
             )
 
 
+class OpenCvHogPersonDetector:
+    """CPU-safe fallback detector when YOLO/TensorFlow runtimes are unavailable."""
+
+    def __init__(self, conf_threshold: float = 0.0) -> None:
+        self.conf_threshold = conf_threshold
+        self.model_name = "opencv_hog_default_people"
+        self.device = "cpu"
+        self.hog = cv2.HOGDescriptor()
+        self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        try:
+            frame = cv2.imread(str(image_path))
+            if frame is None:
+                return DetectionResult(
+                    person_count=0,
+                    max_person_conf=0.0,
+                    detection_error="opencv_read_failed",
+                    person_centroids=[],
+                    person_boxes=[],
+                    person_confidences=[],
+                    bag_count=0,
+                )
+            h, w = frame.shape[:2]
+            rects, weights = self.hog.detectMultiScale(
+                frame,
+                winStride=(8, 8),
+                padding=(8, 8),
+                scale=1.05,
+            )
+            person_boxes: list[tuple[float, float, float, float]] = []
+            person_centroids: list[tuple[float, float]] = []
+            person_conf: list[float] = []
+            for i, (x, y, bw, bh) in enumerate(rects):
+                x1 = max(0.0, min(1.0, float(x) / float(max(1, w))))
+                y1 = max(0.0, min(1.0, float(y) / float(max(1, h))))
+                x2 = max(0.0, min(1.0, float(x + bw) / float(max(1, w))))
+                y2 = max(0.0, min(1.0, float(y + bh) / float(max(1, h))))
+                box = (x1, y1, x2, y2)
+                if not _is_reasonable_person_box(box):
+                    continue
+                person_boxes.append(box)
+                person_centroids.append((round((x1 + x2) / 2.0, 4), round((y1 + y2) / 2.0, 4)))
+                score = float(weights[i]) if i < len(weights) else 0.4
+                person_conf.append(round(max(0.0, min(1.0, score)), 4))
+            if not person_boxes:
+                return DetectionResult(
+                    person_count=0,
+                    max_person_conf=0.0,
+                    detection_error="",
+                    person_centroids=[],
+                    person_boxes=[],
+                    person_confidences=[],
+                    bag_count=0,
+                )
+            return DetectionResult(
+                person_count=len(person_boxes),
+                max_person_conf=float(max(person_conf)),
+                detection_error="",
+                person_centroids=person_centroids,
+                person_boxes=person_boxes,
+                person_confidences=person_conf,
+                bag_count=0,
+            )
+        except Exception as exc:
+            return DetectionResult(
+                person_count=0,
+                max_person_conf=0.0,
+                detection_error=f"opencv_hog_error: {exc}",
+                person_centroids=[],
+                person_boxes=[],
+                person_confidences=[],
+                bag_count=0,
+            )
+
+
 def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, use_cache: bool = True) -> tuple[PersonDetector, str]:
     normalized = str(detector_type).strip().lower()
     detector: PersonDetector
@@ -424,6 +500,8 @@ def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, us
             detector = UnavailableDetector(warning)
     elif normalized == "mock":
         detector = MockPersonDetector(conf_threshold=conf_threshold)
+    elif normalized in {"opencv_hog", "hog"}:
+        detector = OpenCvHogPersonDetector(conf_threshold=conf_threshold)
     elif normalized != "yolo":
         warning = f"Unsupported detector_type='{detector_type}', using unavailable detector fallback."
         detector = UnavailableDetector(warning)
@@ -434,8 +512,13 @@ def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, us
                 conf_threshold=conf_threshold,
             )
         except Exception as exc:
-            warning = f"Detector unavailable: {exc}"
-            detector = UnavailableDetector(warning)
+            yolo_warning = f"YOLO detector unavailable: {exc}"
+            try:
+                detector = OpenCvHogPersonDetector(conf_threshold=conf_threshold)
+                warning = f"{yolo_warning}. Fallback active: OpenCV HOG."
+            except Exception as hog_exc:
+                warning = f"{yolo_warning}. OpenCV HOG fallback unavailable: {hog_exc}"
+                detector = UnavailableDetector(warning)
             
     if use_cache and not isinstance(detector, UnavailableDetector):
         cache_dir = Path("data/cache/detections")
@@ -1409,6 +1492,37 @@ def _compute_entry_exit_event_counts(
                         exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + int(inferred_out)
                 prev_left = left
                 prev_right = right
+
+    # Secondary fallback for sparse/unstable tracks:
+    # infer entry/exit from gate camera customer_count deltas over time.
+    if not gate_rows.empty:
+        for (capture_date, camera_id), group in gate_rows.groupby(["capture_date", "camera_id"]):
+            capture_date = str(capture_date).strip()
+            camera_id = str(camera_id).strip()
+            cfg = camera_configs.get(camera_id, {})
+            role = str(cfg.get("camera_role", "INSIDE")).upper()
+            if role not in {"ENTRANCE", "EXIT"}:
+                continue
+            if entry_counts.get(capture_date) or exit_counts.get(capture_date):
+                continue
+            ordered = group[group["timestamp"].notna()].sort_values("timestamp")
+            if ordered.empty:
+                continue
+            prev_count: int | None = None
+            for _, row in ordered.iterrows():
+                ts = pd.Timestamp(row["timestamp"])
+                cur_count = int(pd.to_numeric([row.get("customer_count", 0)], errors="coerce")[0] or 0)
+                if prev_count is None:
+                    prev_count = cur_count
+                    continue
+                delta = cur_count - prev_count
+                if delta > 0:
+                    entry_counts.setdefault(capture_date, {})
+                    entry_counts[capture_date][ts] = int(entry_counts[capture_date].get(ts, 0)) + int(delta)
+                elif delta < 0:
+                    exit_counts.setdefault(capture_date, {})
+                    exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + int(abs(delta))
+                prev_count = cur_count
     return entry_counts, exit_counts
 
 

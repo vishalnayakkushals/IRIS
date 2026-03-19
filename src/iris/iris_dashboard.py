@@ -3524,9 +3524,16 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         key="pipeline_mode",
         help="Full Scan (Dev): full folder scan with age/gender on. Test: smaller quick run. Custom: your saved profile.",
     )
+    last_applied_mode = str(st.session_state.get("pipeline_mode_applied", "")).strip()
+    if selected_mode != last_applied_mode:
+        _apply_pipeline_preset(selected_mode, db_path=db_path)
+        upsert_app_settings(db_path=db_path, settings={"pipeline_last_mode": selected_mode})
+        st.session_state["pipeline_mode_applied"] = selected_mode
+        st.rerun()
     if mode_cols[1].button("Apply Mode", key="pipeline_apply_mode"):
         _apply_pipeline_preset(selected_mode, db_path=db_path)
         upsert_app_settings(db_path=db_path, settings={"pipeline_last_mode": selected_mode})
+        st.session_state["pipeline_mode_applied"] = selected_mode
         st.success(f"Applied mode: {selected_mode}")
         st.rerun()
     if mode_cols[2].button("Save Current as Custom", key="pipeline_save_custom"):
@@ -3544,6 +3551,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         }
         _save_pipeline_custom_settings(db_path=db_path, settings_obj=custom_payload)
         st.session_state["pipeline_mode"] = "Custom"
+        st.session_state["pipeline_mode_applied"] = "Custom"
         st.success("Saved current values as Custom mode.")
 
     store_rows = list_stores(db_path=db_path)
@@ -3620,18 +3628,25 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         tf_frcnn_available = _is_tf_frcnn_available()
         deepface_available = _is_deepface_available()
         allow_mock_detector = os.getenv("IRIS_ALLOW_MOCK_DETECTOR", "0").strip() == "1"
-        detector_options = ["yolo", "tf_frcnn"]
+        detector_options = ["yolo"]
+        if tf_frcnn_available:
+            detector_options.append("tf_frcnn")
+        detector_options.append("opencv_hog")
         if allow_mock_detector:
             detector_options.append("mock")
         if st.session_state.get("ctrl_detector_type") == "mock" and not allow_mock_detector:
             st.session_state["ctrl_detector_type"] = "yolo"
+        if st.session_state.get("ctrl_detector_type") == "tf_frcnn" and not tf_frcnn_available:
+            st.session_state["ctrl_detector_type"] = "yolo" if yolo_available else "opencv_hog"
+        if st.session_state.get("ctrl_detector_type") == "yolo" and not yolo_available:
+            st.session_state["ctrl_detector_type"] = "opencv_hog"
         if st.session_state["ctrl_detector_type"] not in detector_options:
             st.session_state["ctrl_detector_type"] = detector_options[0]
         ctrl_cols_3[0].selectbox(
             "Detector",
             options=detector_options,
             key="ctrl_detector_type",
-            help="YOLO (recommended), TF_FRCNN (legacy TensorFlow). MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
+            help="YOLO (recommended), OpenCV HOG fallback, TF_FRCNN (legacy TensorFlow, shown only when ready). MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
         )
         ctrl_cols_3[1].toggle(
             "Auto-Sync Sources",
@@ -3648,6 +3663,8 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             key="ctrl_enable_age_gender",
             help="Use DeepFace for age/gender likelihood on customer crops.",
         )
+        if bool(st.session_state.get("ctrl_enable_age_gender", False)) and not deepface_available:
+            st.session_state["ctrl_enable_age_gender"] = False
 
         ctrl_cols_4 = st.columns(3)
         ctrl_cols_4[0].selectbox(
@@ -3676,19 +3693,20 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         )
         date_cols[2].markdown("")
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
-        if not yolo_available:
+        selected_detector = str(st.session_state.get("ctrl_detector_type", "yolo"))
+        if selected_detector == "yolo" and not yolo_available:
             st.caption(
-                "YOLO is not installed in this runtime. Enable full build (`IRIS_ENABLE_YOLO=1`) for accurate person detection."
+                "YOLO is not installed in this runtime. Either enable full build (`IRIS_ENABLE_YOLO=1`) or switch to `opencv_hog`."
             )
             if not allow_mock_detector:
                 st.caption("MOCK detector is disabled in production mode (`IRIS_ALLOW_MOCK_DETECTOR=0`).")
-        if not tf_frcnn_available:
+        if selected_detector == "tf_frcnn" and not tf_frcnn_available:
             st.caption(
                 "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
                 "`data/models/frozen_inference_graph.pb` (or `TF_FRCNN_MODEL_PATH`)."
             )
-        if bool(st.session_state.get("ctrl_enable_age_gender", False)) and not deepface_available:
-            st.caption("DeepFace is not installed in this runtime; age/gender columns will remain empty.")
+        if not deepface_available:
+            st.caption("DeepFace runtime not available. Age/Gender is auto-disabled until dependency is installed.")
     # Keep gzip behavior frozen for operational simplicity.
     st.session_state["ctrl_write_gzip_exports"] = True
     st.session_state["ctrl_keep_plain_csv"] = True
