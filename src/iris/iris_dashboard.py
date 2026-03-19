@@ -1020,9 +1020,16 @@ def _valid_link_or_empty(value: object) -> str:
     return text
 
 
+def _safe_text(value: object) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"nan", "none", "null", "nat"}:
+        return ""
+    return text
+
+
 def _event_verification_link(evt: dict[str, object], store_id: str, auth_token: str) -> str:
-    filename = str(evt.get("filename", "") or "").strip()
-    timestamp = str(evt.get("timestamp", "") or "").strip()
+    filename = _safe_text(evt.get("filename", ""))
+    timestamp = _safe_text(evt.get("timestamp", ""))
     if filename:
         return _frame_review_identity_link(
             store_id=store_id,
@@ -1033,12 +1040,36 @@ def _event_verification_link(evt: dict[str, object], store_id: str, auth_token: 
     drive_link = _valid_link_or_empty(evt.get("drive_link", ""))
     if drive_link:
         return drive_link
-    raw_path = str(evt.get("path", "") or "").strip()
+    raw_path = _safe_text(evt.get("path", ""))
     if raw_path:
         p = Path(raw_path)
         if p.exists() and p.is_file():
             return p.as_uri()
     return ""
+
+
+def _resolve_event_image_path(evt: dict[str, object], store_id: str, root_dir: Path) -> Path | None:
+    raw_path = _safe_text(evt.get("path", ""))
+    if raw_path:
+        p = Path(raw_path)
+        if p.exists() and p.is_file():
+            return p
+    rel = _safe_text(evt.get("relative_path", "")).replace("\\", "/")
+    if rel:
+        p = (root_dir / store_id / rel).resolve()
+        if p.exists() and p.is_file():
+            return p
+    source_folder = _safe_text(evt.get("source_folder", "")).replace("\\", "/")
+    filename = _safe_text(evt.get("filename", ""))
+    if filename:
+        if source_folder:
+            p = (root_dir / store_id / source_folder / filename).resolve()
+            if p.exists() and p.is_file():
+                return p
+        p = (root_dir / store_id / filename).resolve()
+        if p.exists() and p.is_file():
+            return p
+    return None
 
 
 def _predicted_label(row: pd.Series) -> str:
@@ -1113,9 +1144,11 @@ def _build_customer_journey_summary(
                 {
                     "timestamp": row.get("timestamp"),
                     "camera_id": str(row.get("camera_id", "")),
-                    "filename": str(row.get("filename", "")),
-                    "path": str(row.get("path", "")),
-                    "drive_link": str(row.get("drive_link", "")),
+                    "filename": _safe_text(row.get("filename", "")),
+                    "path": _safe_text(row.get("path", "")),
+                    "source_folder": _safe_text(row.get("source_folder", "")),
+                    "relative_path": _safe_text(row.get("relative_path", "")),
+                    "drive_link": _safe_text(row.get("drive_link", "")),
                     "track_ids": row.get("track_ids", "[]"),
                     "staff_count": int(row.get("staff_count", 0) or 0),
                     "customer_count": int(row.get("customer_count", 0) or 0),
@@ -1977,7 +2010,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             st.rerun()
 
 
-def _render_customer_journeys(output: AnalysisOutput) -> None:
+def _render_customer_journeys(output: AnalysisOutput, root_dir: Path) -> None:
     st.subheader("Customer Journey Verification")
     if not output.stores:
         st.info("No store analysis loaded.")
@@ -2020,10 +2053,10 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
         first_evt = events_for_customer[0] if events_for_customer else {}
         caption = f"{cid}"
         with face_cols[idx % 5]:
-            raw_path = str(first_evt.get("path", "")).strip()
+            resolved_evt_path = _resolve_event_image_path(first_evt, store_id=sid, root_dir=root_dir)
             frame_link = _event_verification_link(first_evt, store_id=sid, auth_token=auth_token)
-            if raw_path and Path(raw_path).exists():
-                st.image(raw_path, caption=caption, use_container_width=True)
+            if resolved_evt_path is not None:
+                st.image(str(resolved_evt_path), caption=caption, use_container_width=True)
                 if frame_link:
                     st.markdown(f"[Open verification]({frame_link})")
             else:
@@ -2078,11 +2111,11 @@ def _render_customer_journeys(output: AnalysisOutput) -> None:
     for idx, evt in enumerate(customer_events[:20]):
         caption = f"{evt.get('timestamp')} | {evt.get('camera_id')} | {evt.get('filename')}"
         with gallery_cols[idx % 4]:
-            path = str(evt.get("path", "")).strip()
-            frame_link = _event_verification_link(evt, store_id=sid, auth_token=auth_token)
-            preview_uri = _hover_preview_data_uri(Path(path)) if path and Path(path).exists() else ""
-            if path and Path(path).exists():
-                st.image(path, caption=caption, use_container_width=True)
+            resolved_evt_path = _resolve_event_image_path(evt, store_id=sid, root_dir=root_dir)
+            frame_link = _valid_link_or_empty(_event_verification_link(evt, store_id=sid, auth_token=auth_token))
+            preview_uri = _hover_preview_data_uri(resolved_evt_path) if resolved_evt_path is not None else ""
+            if resolved_evt_path is not None:
+                st.image(str(resolved_evt_path), caption=caption, use_container_width=True)
                 if frame_link:
                     st.markdown(f"[Open verification]({frame_link})")
             else:
@@ -3767,7 +3800,7 @@ def main() -> None:
     elif current_page == "Data Health":
         _render_quality_summary(view_output)
     elif current_page == "Customer Journeys":
-        _render_customer_journeys(view_output)
+        _render_customer_journeys(view_output, root_dir=root_dir)
     elif current_page == "Store Mapping":
         _render_store_mapping(
             db_path=db_path,

@@ -397,6 +397,17 @@ Use this template for each new change:
 
 ### 2026-03-18 | Commit pending
 - Summary:
+  - Fixed broken hover verification links by sanitizing `nan` values and resolving preview images from local `path/relative_path/source_folder` fallback logic in customer journey views.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-18 | Commit pending
+- Summary:
   - Fixed Google Drive API sync reliability on restricted networks by adding download fallback (`drive.google.com/uc`) when `alt=media` is blocked, and skipping already-present files to speed repeated syncs.
 - Changed Paths:
   - `src/iris/store_registry.py`
