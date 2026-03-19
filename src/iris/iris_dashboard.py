@@ -716,6 +716,18 @@ def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
     return load_exports(out_dir=out_dir)
 
 
+def _export_summary_mtime(out_dir: Path) -> float:
+    summary_csv = out_dir / "all_stores_summary.csv"
+    summary_gz = out_dir / "all_stores_summary.csv.gz"
+    candidate = summary_csv if summary_csv.exists() else summary_gz
+    if not candidate.exists():
+        return 0.0
+    try:
+        return float(candidate.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
 def _summary_total_images(output: AnalysisOutput) -> int:
     summary = output.all_stores_summary
     if summary is None or summary.empty or "total_images" not in summary.columns:
@@ -3751,6 +3763,7 @@ def main() -> None:
                 false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
             )
             st.session_state["analysis_output"] = output
+            st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
             if st.session_state.get("login_email"):
                 log_user_activity(db_path=db_path, actor_email=st.session_state.get("login_email",""), action_code="ANALYSIS_RUN")
             st.success("Analysis completed and CSV exports updated.")
@@ -3759,6 +3772,15 @@ def main() -> None:
     if output is None:
         output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
         st.session_state["analysis_output"] = output
+        st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
+    else:
+        current_mtime = _export_summary_mtime(out_dir)
+        cached_mtime = float(st.session_state.get("analysis_export_mtime", 0.0) or 0.0)
+        if current_mtime > cached_mtime:
+            output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
+            st.session_state["analysis_output"] = output
+            st.session_state["analysis_export_mtime"] = current_mtime
+            st.info("Loaded latest exports from disk.")
     if output is not None and _summary_total_images(output) == 0:
         source_count = _count_source_images(root_dir=root_dir, store_filter=store_filter)
         if source_count > 0:
@@ -3805,6 +3827,7 @@ def main() -> None:
                         false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
                     )
                     st.session_state["analysis_output"] = output
+                    st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
                     st.success("Auto-recovery completed. Dashboard data refreshed.")
         else:
             st.info(
