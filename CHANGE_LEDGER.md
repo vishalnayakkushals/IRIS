@@ -498,3 +498,14 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Fixed YOLO full-build dependency conflict by forcing `numpy<2` after YOLO install so `pandas/pyarrow` remain ABI-compatible in Docker runtime.
+- Changed Paths:
+  - `deploy/Dockerfile`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Full YOLO Docker builds now explicitly pin `numpy<2` with existing `pyarrow` constraint.

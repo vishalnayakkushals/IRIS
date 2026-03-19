@@ -22,7 +22,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.docker.txt && \
     if [ "$IRIS_ENABLE_YOLO" = "1" ]; then \
       pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
-      pip install "ultralytics>=8.3,<9.0"; \
+      pip install "ultralytics>=8.3,<9.0" && \
+      pip install "numpy<2" "pyarrow>=15.0,<16.0"; \
     fi
 COPY . .
 
