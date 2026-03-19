@@ -3698,6 +3698,11 @@ def main() -> None:
     keep_plain_csv = bool(st.session_state["ctrl_keep_plain_csv"])
     auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
     auto_sync_on_save = bool(st.session_state["ctrl_auto_sync_on_save"])
+    if max_images_per_store > 0:
+        st.info(
+            f"Sampling mode is ON: only first {max_images_per_store} images per store are analyzed. "
+            "Set 'Images Per Store' to 0 in Pipeline Configuration for full-day/full-folder analysis."
+        )
 
     if rerun_clicked:
         with st.spinner("Running analysis..."):
