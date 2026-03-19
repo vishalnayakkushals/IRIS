@@ -87,11 +87,19 @@ class CachedPersonDetector:
         self.detector = detector
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        parts = [detector.__class__.__name__]
+        for attr in ("model_name", "conf_threshold", "device", "reason"):
+            if hasattr(detector, attr):
+                try:
+                    parts.append(f"{attr}={getattr(detector, attr)}")
+                except Exception:
+                    continue
+        self.detector_signature = "|".join(parts)
 
     def _get_cache_path(self, image_path: Path) -> Path:
         try:
             stats = image_path.stat()
-            content = f"{image_path.name}_{stats.st_size}_{stats.st_mtime}".encode()
+            content = f"{self.detector_signature}_{image_path.name}_{stats.st_size}_{stats.st_mtime}".encode()
             hash_val = hashlib.md5(content).hexdigest()
             return self.cache_dir / f"{hash_val}.json"
         except Exception:
