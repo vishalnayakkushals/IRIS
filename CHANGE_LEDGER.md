@@ -440,3 +440,17 @@ Use this template for each new change:
   - `tests/test_drive_delta_sync.py`
 - Infra/Config Impact:
   - New optional docker service `iris-sync` and env vars `IRIS_SYNC_STORE_ID`, `IRIS_SYNC_RUN_AT`, `IRIS_SYNC_TZ`, `IRIS_SYNC_WORKERS` (requires `GOOGLE_API_KEY`).
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Implemented strict gate session engine support for entry/exit tracking (D07 fallback), prevented non-gate ID creation in strict mode, added session validity/staff flags, and switched business KPIs to valid CLOSED sessions when strict contract is active.
+  - Added centroid-side crossing fallback when track IDs are unstable, plus regression tests for strict mode and session-based KPIs.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None

@@ -16,6 +16,7 @@ from iris.iris_analysis import (
     analyze_store,
     build_detector,
     build_camera_hotspots,
+    build_store_day_customer_sessions,
     export_analysis,
     export_store_day_artifacts,
     load_exports,
@@ -332,7 +333,8 @@ def test_footfall_and_loss_of_sale_alert_from_entrance_line(tmp_path: Path) -> N
         session_gap_sec=400,
     )
     row = result.summary_row.iloc[0]
-    assert int(row["footfall"]) >= 1
+    # Session-based KPI: entry-only crossing without a closed exit does not count as footfall.
+    assert int(row["footfall"]) == 0
     assert int(row["loss_of_sale_alerts"]) >= 0
 
 
@@ -376,12 +378,14 @@ def test_store_day_customer_ids_are_date_scoped(tmp_path: Path) -> None:
     d2 = store / "2025-03-13"
     _write_image(d1 / "09-00-00_D02-1.jpg")
     _write_image(d1 / "09-00-10_D02-2.jpg")
+    _write_image(d1 / "09-00-20_D02-3.jpg")
     _write_image(d2 / "09-01-00_D02-1.jpg")
-    detector = FixedDetector(
+    detector = CrossingDetector(
         {
-            "09-00-00_D02-1.jpg": 1,
-            "09-00-10_D02-2.jpg": 1,
-            "09-01-00_D02-1.jpg": 1,
+            "09-00-00_D02-1.jpg": [(0.40, 0.5)],
+            "09-00-10_D02-2.jpg": [(0.60, 0.5)],
+            "09-00-20_D02-3.jpg": [(0.40, 0.5)],
+            "09-01-00_D02-1.jpg": [(0.40, 0.5)],
         }
     )
     result = analyze_store(
@@ -427,3 +431,68 @@ def test_export_store_day_artifacts_creates_required_files(tmp_path: Path) -> No
     assert "store_BLRJAY_2025-03-12_customer_sessions.csv" in names
     assert "store_BLRJAY_2025-03-12_location_hotspots.csv" in names
     assert "store_BLRJAY_2025-03-12_daily_proof.csv" in names
+
+
+def test_strict_gate_mode_does_not_create_ids_from_non_entry_cameras() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:00"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D03",
+                "customer_count": 3,
+                "person_count": 3,
+                "staff_count": 0,
+                "location_name": "D03",
+                "floor_name": "Ground",
+            }
+        ]
+    )
+    image_out, sessions = build_store_day_customer_sessions(
+        image_insights=df,
+        store_id="BLRJAY",
+        camera_configs={
+            "D07": {
+                "camera_role": "ENTRANCE",
+                "entry_line_x": 0.5,
+                "entry_direction": "OUTSIDE_TO_INSIDE",
+            }
+        },
+    )
+    assert image_out.iloc[0]["store_day_customer_ids"] == "[]"
+    assert sessions.empty
+
+
+def test_summary_kpis_use_only_valid_closed_sessions(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    _write_image(store / "09-00-00_D07-1.jpg")
+    _write_image(store / "09-00-10_D07-2.jpg")
+    _write_image(store / "09-00-20_D12-1.jpg")
+    _write_image(store / "09-00-30_D07-3.jpg")
+
+    detector = CrossingDetector(
+        {
+            "09-00-00_D07-1.jpg": [(0.40, 0.5)],
+            "09-00-10_D07-2.jpg": [(0.60, 0.5)],
+            "09-00-20_D12-1.jpg": [(0.60, 0.5)],
+            "09-00-30_D07-3.jpg": [(0.40, 0.5)],
+        }
+    )
+    result = analyze_store(
+        store_id="BLRJAY",
+        store_dir=store,
+        detector=detector,
+        camera_configs={
+            "D07": {
+                "camera_role": "ENTRANCE",
+                "entry_line_x": 0.5,
+                "entry_direction": "OUTSIDE_TO_INSIDE",
+            }
+        },
+        session_gap_sec=120,
+    )
+    row = result.summary_row.iloc[0]
+    assert int(row["footfall"]) == 1
+    assert int(row["estimated_visits"]) == 1
+    assert int(row["daily_walkins"]) == 1
+    assert float(row["avg_dwell_sec"]) >= 2.0

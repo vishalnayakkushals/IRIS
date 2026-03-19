@@ -858,16 +858,21 @@ def _false_positive_signature_map(db_path: Path) -> dict[str, list[dict[str, obj
 
 
 def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataFrame) -> dict[str, object]:
-    entries = int(len(customer_sessions_df)) if not customer_sessions_df.empty else 0
+    scoped_sessions = customer_sessions_df.copy() if not customer_sessions_df.empty else customer_sessions_df
+    if not customer_sessions_df.empty and "is_valid_session" in customer_sessions_df.columns:
+        scoped_sessions = customer_sessions_df[
+            pd.to_numeric(customer_sessions_df["is_valid_session"], errors="coerce").fillna(0).astype(int) > 0
+        ].copy()
+    entries = int(len(scoped_sessions)) if scoped_sessions is not None and not scoped_sessions.empty else 0
     closed_exits = 0
     converted = 0
-    if not customer_sessions_df.empty:
-        if "exit_ts" in customer_sessions_df.columns:
+    if scoped_sessions is not None and not scoped_sessions.empty:
+        if "exit_ts" in scoped_sessions.columns:
             closed_exits = int(
-                customer_sessions_df["exit_ts"].fillna("").astype(str).str.strip().ne("").sum()
+                scoped_sessions["exit_ts"].fillna("").astype(str).str.strip().ne("").sum()
             )
-        if "converted_proxy" in customer_sessions_df.columns:
-            converted = int(pd.to_numeric(customer_sessions_df["converted_proxy"], errors="coerce").fillna(0).sum())
+        if "converted_proxy" in scoped_sessions.columns:
+            converted = int(pd.to_numeric(scoped_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
 
     per_customer_gender: dict[str, str] = {}
     per_customer_age: dict[str, str] = {}

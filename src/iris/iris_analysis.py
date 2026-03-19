@@ -1332,7 +1332,8 @@ def _compute_entry_exit_event_counts(
                 }
             )
 
-    for (capture_date, _camera_id, _track_id), events in track_events.items():
+    day_cam_with_crossings: set[tuple[str, str]] = set()
+    for (capture_date, camera_id, _track_id), events in track_events.items():
         ordered = sorted(events, key=lambda x: pd.Timestamp(x["ts"]))
         for a, b in zip(ordered, ordered[1:]):
             side_a = _line_side(float(a["cx"]), float(a["line_x"]))
@@ -1346,9 +1347,60 @@ def _compute_entry_exit_event_counts(
             if crossed_in:
                 entry_counts.setdefault(capture_date, {})
                 entry_counts[capture_date][ts] = int(entry_counts[capture_date].get(ts, 0)) + 1
+                day_cam_with_crossings.add((capture_date, camera_id))
             if crossed_out:
                 exit_counts.setdefault(capture_date, {})
                 exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + 1
+                day_cam_with_crossings.add((capture_date, camera_id))
+
+    # Fallback: if track IDs are unstable, infer crossing via side-count deltas between gate frames.
+    gate_rows = rows[rows["camera_id"].astype(str).map(lambda v: str(v).strip() in camera_configs)].copy()
+    if not gate_rows.empty:
+        for (capture_date, camera_id), group in gate_rows.groupby(["capture_date", "camera_id"]):
+            capture_date = str(capture_date).strip() or str(pd.Timestamp(group["timestamp"].min()).date())
+            camera_id = str(camera_id).strip()
+            cfg = camera_configs.get(camera_id, {})
+            role = str(cfg.get("camera_role", "INSIDE")).upper()
+            if role not in {"ENTRANCE", "EXIT"}:
+                continue
+            if (capture_date, camera_id) in day_cam_with_crossings:
+                continue
+            line_x = float(cfg.get("entry_line_x", 0.5))
+            direction = str(cfg.get("entry_direction", "OUTSIDE_TO_INSIDE")).upper()
+            ordered = group[group["timestamp"].notna()].sort_values("timestamp")
+            if ordered.empty:
+                continue
+            prev_left = None
+            prev_right = None
+            for _, row in ordered.iterrows():
+                ts = pd.Timestamp(row["timestamp"])
+                cents_raw = _safe_json_list(row.get("person_centroids", "[]"))
+                left = 0
+                right = 0
+                for c in cents_raw:
+                    try:
+                        cx = float(c[0])  # type: ignore[index]
+                    except Exception:
+                        continue
+                    if cx < line_x:
+                        left += 1
+                    else:
+                        right += 1
+                if prev_left is not None and prev_right is not None:
+                    if direction == "OUTSIDE_TO_INSIDE":
+                        inferred_in = max(0, right - prev_right)
+                        inferred_out = max(0, left - prev_left)
+                    else:
+                        inferred_in = max(0, left - prev_left)
+                        inferred_out = max(0, right - prev_right)
+                    if inferred_in > 0:
+                        entry_counts.setdefault(capture_date, {})
+                        entry_counts[capture_date][ts] = int(entry_counts[capture_date].get(ts, 0)) + int(inferred_in)
+                    if inferred_out > 0:
+                        exit_counts.setdefault(capture_date, {})
+                        exit_counts[capture_date][ts] = int(exit_counts[capture_date].get(ts, 0)) + int(inferred_out)
+                prev_left = left
+                prev_right = right
     return entry_counts, exit_counts
 
 
@@ -1470,6 +1522,29 @@ def build_store_day_customer_sessions(
         image_insights=df,
         camera_configs=camera_configs,
     )
+    gate_camera_ids = {
+        str(cid).strip().upper()
+        for cid, cfg in (camera_configs or {}).items()
+        if str((cfg or {}).get("camera_role", "INSIDE")).upper() in {"ENTRANCE", "EXIT"}
+    }
+    if not gate_camera_ids:
+        # Store-default gate fallback for deployments that use D07 as door camera.
+        has_d07 = bool((df["camera_id"].astype(str).str.upper() == "D07").any())
+        if has_d07:
+            gate_camera_ids = {"D07"}
+            camera_configs.setdefault(
+                "D07",
+                {
+                    "camera_role": "ENTRANCE",
+                    "entry_line_x": 0.5,
+                    "entry_direction": "OUTSIDE_TO_INSIDE",
+                },
+            )
+            entry_counts, exit_counts = _compute_entry_exit_event_counts(
+                image_insights=df,
+                camera_configs=camera_configs,
+            )
+    strict_gate_mode = bool(entry_counts or exit_counts or gate_camera_ids)
 
     billing_cameras = {
         str(cid)
@@ -1487,7 +1562,35 @@ def build_store_day_customer_sessions(
         state["exit_ts"] = close_ts
         state["close_reason"] = reason
         entry_ts = pd.Timestamp(state["entry_ts"])
-        dwell = max(1.0, float((close_ts - entry_ts).total_seconds()) + 1.0)
+        duration_sec = max(1.0, float((close_ts - entry_ts).total_seconds()) + 1.0)
+        cameras_seen = sorted(state.get("cameras_seen", set()))
+        floors_seen = sorted(state.get("floors_seen", set()))
+        locations_seen = sorted(state.get("locations_seen", set()))
+        frames_seen = int(state.get("frames_seen", 0) or 0)
+        movement_score = int(state.get("movement_score", 0) or 0)
+        is_staff_session = bool(
+            duration_sec >= 7200.0
+            and (
+                str(reason).strip().lower() != "exit_crossing"
+                or float(state.get("staff_ratio_max", 0.0) or 0.0) >= 0.5
+            )
+        )
+        invalid_reason = ""
+        is_valid_session = True
+        if strict_gate_mode:
+            if reason != "exit_crossing":
+                is_valid_session = False
+                invalid_reason = "no_exit_crossing"
+            elif duration_sec < 2.0:
+                is_valid_session = False
+                invalid_reason = "duration_lt_2s"
+            elif movement_score <= 0 and frames_seen <= 1 and len(cameras_seen) <= 1:
+                is_valid_session = False
+                invalid_reason = "no_movement"
+        if is_staff_session:
+            is_valid_session = False
+            invalid_reason = "staff_like"
+
         sessions_out.append(
             {
                 "store_id": store_id,
@@ -1495,12 +1598,18 @@ def build_store_day_customer_sessions(
                 "store_day_customer_id": sid,
                 "entry_ts": entry_ts,
                 "exit_ts": close_ts,
-                "dwell_sec": round(dwell, 2),
+                "dwell_sec": round(duration_sec, 2),
                 "close_reason": reason,
                 "converted_proxy": int(bool(state.get("converted_proxy", False))),
-                "cameras_seen": ",".join(sorted(state.get("cameras_seen", set()))),
-                "locations_seen": ",".join(sorted(state.get("locations_seen", set()))),
-                "floors_seen": ",".join(sorted(state.get("floors_seen", set()))),
+                "cameras_seen": ",".join(cameras_seen),
+                "locations_seen": ",".join(locations_seen),
+                "floors_seen": ",".join(floors_seen),
+                "frames_seen": frames_seen,
+                "movement_score": movement_score,
+                "staff_ratio_max": round(float(state.get("staff_ratio_max", 0.0) or 0.0), 4),
+                "is_staff_session": int(is_staff_session),
+                "is_valid_session": int(bool(is_valid_session)),
+                "invalid_reason": invalid_reason,
             }
         )
 
@@ -1536,6 +1645,9 @@ def build_store_day_customer_sessions(
                     "cameras_seen": set(),
                     "locations_seen": set(),
                     "floors_seen": set(),
+                    "frames_seen": 0,
+                    "movement_score": 0,
+                    "staff_ratio_max": 0.0,
                 }
                 active_ids.append(sid)
 
@@ -1546,23 +1658,27 @@ def build_store_day_customer_sessions(
                     max(pd.to_numeric(df.loc[ts_idx, "customer_count"], errors="coerce").fillna(0).astype(int).tolist())
                 )
             open_ids = [sid for sid in active_ids if not bool(session_state[sid].get("closed"))]
-            while len(open_ids) < observed_count:
-                sid = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
-                seq += 1
-                session_state[sid] = {
-                    "capture_date": day,
-                    "entry_ts": ts,
-                    "last_seen": ts,
-                    "exit_ts": ts,
-                    "closed": False,
-                    "close_reason": "",
-                    "converted_proxy": False,
-                    "cameras_seen": set(),
-                    "locations_seen": set(),
-                    "floors_seen": set(),
-                }
-                active_ids.append(sid)
-                open_ids.append(sid)
+            if not strict_gate_mode:
+                while len(open_ids) < observed_count:
+                    sid = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
+                    seq += 1
+                    session_state[sid] = {
+                        "capture_date": day,
+                        "entry_ts": ts,
+                        "last_seen": ts,
+                        "exit_ts": ts,
+                        "closed": False,
+                        "close_reason": "",
+                        "converted_proxy": False,
+                        "cameras_seen": set(),
+                        "locations_seen": set(),
+                        "floors_seen": set(),
+                        "frames_seen": 0,
+                        "movement_score": 0,
+                        "staff_ratio_max": 0.0,
+                    }
+                    active_ids.append(sid)
+                    open_ids.append(sid)
 
             open_ids = sorted(
                 [sid for sid in open_ids if not bool(session_state[sid].get("closed"))],
@@ -1582,12 +1698,19 @@ def build_store_day_customer_sessions(
                 camera_id = str(df.at[idx, "camera_id"])
                 location_name = str(df.at[idx, "location_name"]) if "location_name" in df.columns else camera_id
                 floor_name = str(df.at[idx, "floor_name"]) if "floor_name" in df.columns else "Ground"
+                row_staff = int(pd.to_numeric([df.at[idx, "staff_count"]], errors="coerce")[0] or 0)
+                row_people = int(pd.to_numeric([df.at[idx, "person_count"]], errors="coerce")[0] or 0)
+                row_staff_ratio = (float(row_staff) / float(max(1, row_people))) if row_people > 0 else 0.0
                 for sid in row_ids:
                     state = session_state[sid]
                     state["last_seen"] = ts
                     state["cameras_seen"].add(camera_id)
                     state["locations_seen"].add(location_name if location_name.strip() else camera_id)
                     state["floors_seen"].add(floor_name if floor_name.strip() else "Ground")
+                    state["frames_seen"] = int(state.get("frames_seen", 0) or 0) + 1
+                    if len(state["cameras_seen"]) > 1:
+                        state["movement_score"] = int(state.get("movement_score", 0) or 0) + 1
+                    state["staff_ratio_max"] = max(float(state.get("staff_ratio_max", 0.0) or 0.0), row_staff_ratio)
                     if camera_id in billing_cameras:
                         state["converted_proxy"] = True
 
@@ -1623,11 +1746,84 @@ def build_store_day_customer_sessions(
                 "cameras_seen",
                 "locations_seen",
                 "floors_seen",
+                "frames_seen",
+                "movement_score",
+                "staff_ratio_max",
+                "is_staff_session",
+                "is_valid_session",
+                "invalid_reason",
             ]
         )
     else:
         sessions_df = sessions_df.sort_values(["capture_date", "entry_ts"]).reset_index(drop=True)
     return df, sessions_df
+
+
+def _valid_closed_customer_sessions(customer_sessions: pd.DataFrame) -> pd.DataFrame:
+    if customer_sessions.empty:
+        return customer_sessions
+    out = customer_sessions.copy()
+    if "exit_ts" in out.columns:
+        out = out[out["exit_ts"].fillna("").astype(str).str.strip().ne("")]
+    if "is_valid_session" in out.columns:
+        out = out[pd.to_numeric(out["is_valid_session"], errors="coerce").fillna(0).astype(int) > 0]
+    elif "close_reason" in out.columns:
+        out = out[out["close_reason"].fillna("").astype(str).str.strip().eq("exit_crossing")]
+    return out
+
+
+def _apply_session_metrics_to_summary(
+    summary_row: pd.DataFrame,
+    customer_sessions: pd.DataFrame,
+    bounce_threshold_sec: int,
+) -> pd.DataFrame:
+    if summary_row.empty:
+        return summary_row
+    if customer_sessions.empty:
+        summary_row["daily_walkins"] = 0
+        summary_row["daily_conversions"] = 0
+        summary_row["daily_conversion_rate"] = 0.0
+        return summary_row
+    close_reason_series = customer_sessions.get("close_reason", pd.Series([], dtype=str)).astype(str)
+    invalid_reason_series = customer_sessions.get("invalid_reason", pd.Series([], dtype=str)).astype(str)
+    strict_contract_detected = bool(
+        close_reason_series.eq("exit_crossing").any()
+        or invalid_reason_series.eq("no_exit_crossing").any()
+    )
+    if not strict_contract_detected:
+        legacy_walkins = int(len(customer_sessions))
+        legacy_conversions = int(
+            pd.to_numeric(customer_sessions.get("converted_proxy", pd.Series([], dtype=float)), errors="coerce").fillna(0).sum()
+        )
+        summary_row["daily_walkins"] = legacy_walkins
+        summary_row["daily_conversions"] = legacy_conversions
+        summary_row["daily_conversion_rate"] = (
+            round(float(legacy_conversions) / float(max(1, legacy_walkins)), 4) if legacy_walkins > 0 else 0.0
+        )
+        return summary_row
+    valid_closed = _valid_closed_customer_sessions(customer_sessions)
+    visits = int(len(valid_closed))
+    dwell_series = pd.to_numeric(
+        valid_closed.get("dwell_sec", pd.Series([], dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    avg_dwell = round(float(dwell_series.mean()), 2) if visits > 0 else 0.0
+    bounce = int((dwell_series < float(max(1, bounce_threshold_sec))).sum()) if visits > 0 else 0
+    bounce_rate = round(float(bounce) / float(visits), 4) if visits > 0 else 0.0
+    conversions = int(
+        pd.to_numeric(
+            valid_closed.get("converted_proxy", pd.Series([], dtype=float)),
+            errors="coerce",
+        ).fillna(0).sum()
+    )
+    summary_row["footfall"] = visits
+    summary_row["estimated_visits"] = visits
+    summary_row["avg_dwell_sec"] = avg_dwell
+    summary_row["bounce_rate"] = bounce_rate
+    summary_row["daily_walkins"] = visits
+    summary_row["daily_conversions"] = conversions
+    summary_row["daily_conversion_rate"] = round(float(conversions) / float(max(1, visits)), 4) if visits > 0 else 0.0
+    return summary_row
 
 
 def build_location_hotspots(image_insights: pd.DataFrame, store_id: str) -> pd.DataFrame:
@@ -2553,22 +2749,11 @@ def analyze_store(
     )
     summary_row["footfall"] = int(footfall)
     summary_row["loss_of_sale_alerts"] = int(len(alerts_df))
-    if not customer_sessions.empty:
-        summary_row["daily_walkins"] = int(len(customer_sessions))
-        summary_row["daily_conversions"] = int(pd.to_numeric(customer_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
-        summary_row["daily_conversion_rate"] = float(
-            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
-        )
-    elif not daily_report.empty:
-        summary_row["daily_walkins"] = int(daily_report["actual_customers"].sum())
-        summary_row["daily_conversions"] = int(daily_report["actual_conversions"].sum())
-        summary_row["daily_conversion_rate"] = float(
-            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
-        )
-    else:
-        summary_row["daily_walkins"] = 0
-        summary_row["daily_conversions"] = 0
-        summary_row["daily_conversion_rate"] = 0.0
+    summary_row = _apply_session_metrics_to_summary(
+        summary_row=summary_row,
+        customer_sessions=customer_sessions,
+        bounce_threshold_sec=bounce_threshold_sec,
+    )
 
     return StoreAnalysisResult(
         image_insights=image_insights,
@@ -2776,22 +2961,11 @@ def analyze_store_streaming(
     )
     summary_row["footfall"] = int(footfall)
     summary_row["loss_of_sale_alerts"] = int(len(alerts_df))
-    if not customer_sessions.empty:
-        summary_row["daily_walkins"] = int(len(customer_sessions))
-        summary_row["daily_conversions"] = int(pd.to_numeric(customer_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
-        summary_row["daily_conversion_rate"] = float(
-            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
-        )
-    elif not daily_report.empty:
-        summary_row["daily_walkins"] = int(daily_report["actual_customers"].sum())
-        summary_row["daily_conversions"] = int(daily_report["actual_conversions"].sum())
-        summary_row["daily_conversion_rate"] = float(
-            summary_row["daily_conversions"].iloc[0] / max(1, summary_row["daily_walkins"].iloc[0])
-        )
-    else:
-        summary_row["daily_walkins"] = 0
-        summary_row["daily_conversions"] = 0
-        summary_row["daily_conversion_rate"] = 0.0
+    summary_row = _apply_session_metrics_to_summary(
+        summary_row=summary_row,
+        customer_sessions=customer_sessions,
+        bounce_threshold_sec=bounce_threshold_sec,
+    )
 
     return StoreAnalysisResult(
         image_insights=image_insights,
