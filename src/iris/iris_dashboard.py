@@ -3863,10 +3863,31 @@ def main() -> None:
     auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
     auto_sync_on_save = bool(st.session_state["ctrl_auto_sync_on_save"])
     if max_images_per_store > 0:
-        st.info(
-            f"Sampling mode is ON: only first {max_images_per_store} images per store are analyzed. "
-            "Set 'Images Per Store' to 0 in Pipeline Configuration for full-day/full-folder analysis."
+        info_cols = st.columns([5, 1.6, 1.8])
+        info_cols[0].info(
+            f"Sampling mode is ON: only first {max_images_per_store} images per store are analyzed."
         )
+        if info_cols[1].button("Disable Sampling Now", key="disable_sampling_now_btn"):
+            st.session_state["ctrl_max_images_per_store"] = 0
+            st.session_state["pipeline_mode"] = "Full Scan (Dev)"
+            st.session_state["pipeline_mode_applied"] = "Full Scan (Dev)"
+            upsert_app_settings(
+                db_path=db_path,
+                settings={"pipeline_last_mode": "Full Scan (Dev)"},
+            )
+            st.success("Sampling disabled. Full scan enabled.")
+            st.rerun()
+        if info_cols[2].button("Disable + Re-run", key="disable_sampling_rerun_btn", type="primary"):
+            st.session_state["ctrl_max_images_per_store"] = 0
+            st.session_state["pipeline_mode"] = "Full Scan (Dev)"
+            st.session_state["pipeline_mode_applied"] = "Full Scan (Dev)"
+            st.session_state["force_rerun_analysis"] = True
+            upsert_app_settings(
+                db_path=db_path,
+                settings={"pipeline_last_mode": "Full Scan (Dev)"},
+            )
+            st.success("Sampling disabled. Re-running full scan now.")
+            st.rerun()
 
     if rerun_clicked:
         with st.spinner("Running analysis..."):

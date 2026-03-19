@@ -562,3 +562,15 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Made sampling-mode disable one-click from dashboard banner: added Disable Sampling Now and Disable + Re-run actions so users can switch to full scan without navigating to Pipeline Configuration.
+- Changed Paths:
+  - src/iris/iris_dashboard.py`r
+  - CHANGE_LEDGER.md`r
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
