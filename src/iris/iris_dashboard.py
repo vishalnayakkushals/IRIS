@@ -716,6 +716,32 @@ def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
     return load_exports(out_dir=out_dir)
 
 
+def _summary_total_images(output: AnalysisOutput) -> int:
+    summary = output.all_stores_summary
+    if summary is None or summary.empty or "total_images" not in summary.columns:
+        return 0
+    return int(pd.to_numeric(summary["total_images"], errors="coerce").fillna(0).sum())
+
+
+def _count_source_images(root_dir: Path, store_filter: str = "", sample_limit: int = 500000) -> int:
+    if not root_dir.exists():
+        return 0
+    base = root_dir
+    if store_filter.strip():
+        candidate = root_dir / store_filter.strip()
+        if candidate.exists():
+            base = candidate
+    count = 0
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            count += 1
+            if count >= sample_limit:
+                break
+    return count
+
+
 def _safe_json_list(value: object) -> list[object]:
     if isinstance(value, list):
         return value
@@ -3728,6 +3754,58 @@ def main() -> None:
     if output is None:
         output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
         st.session_state["analysis_output"] = output
+    if output is not None and _summary_total_images(output) == 0:
+        source_count = _count_source_images(root_dir=root_dir, store_filter=store_filter)
+        if source_count > 0:
+            st.warning(
+                "Exports are empty/stale while source images exist. "
+                f"Found ~{source_count} source images in `{root_dir}`."
+            )
+            if not bool(st.session_state.get("empty_export_auto_recovered", False)):
+                st.session_state["empty_export_auto_recovered"] = True
+                with st.spinner("Regenerating analysis from source images..."):
+                    cfg_map_obj = camera_config_map(db_path=db_path)
+                    cfg_map = {
+                        sid: {
+                            cid: {
+                                "camera_role": cfg.camera_role,
+                                "location_name": cfg.location_name,
+                                "floor_name": getattr(cfg, "floor_name", ""),
+                                "entry_line_x": cfg.entry_line_x,
+                                "entry_direction": cfg.entry_direction,
+                            }
+                            for cid, cfg in cams.items()
+                        }
+                        for sid, cams in cfg_map_obj.items()
+                    }
+                    output = _run_analysis(
+                        root_dir=root_dir,
+                        out_dir=out_dir,
+                        employee_assets_root=employee_assets_root,
+                        conf_threshold=conf_threshold,
+                        detector_type=detector_type,
+                        time_bucket_minutes=time_bucket_minutes,
+                        bounce_threshold_sec=int(bounce_threshold_sec),
+                        session_gap_sec=int(session_gap_sec),
+                        write_gzip_exports=write_gzip_exports,
+                        keep_plain_csv=keep_plain_csv,
+                        camera_configs_by_store=cfg_map,
+                        max_images_per_store=int(max_images_per_store),
+                        store_filter=store_filter,
+                        capture_date_filter=capture_date_filter,
+                        session_timeout_sec=int(session_timeout_sec),
+                        enable_age_gender=enable_age_gender,
+                        export_pilot_store_id=store_filter,
+                        export_pilot_date=capture_date_filter.isoformat() if capture_date_filter else "",
+                        false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
+                    )
+                    st.session_state["analysis_output"] = output
+                    st.success("Auto-recovery completed. Dashboard data refreshed.")
+        else:
+            st.info(
+                "No source images found for the current root path. "
+                f"Current root: `{root_dir}`. Sync source first, then regenerate analysis."
+            )
 
     view_output = output
     user_scope = user_store_scope(db_path=db_path, email=active_email) if active_email else {"restricted": True, "store_ids": []}
