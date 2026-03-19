@@ -134,6 +134,35 @@ LEGACY_PAGE_ALIAS = {
     "QA Timeline": "Frame Review",
 }
 
+PIPELINE_PRESET_DEFAULT = "Full Scan (Dev)"
+PIPELINE_PRESETS: dict[str, dict[str, object]] = {
+    "Full Scan (Dev)": {
+        "ctrl_max_images_per_store": 0,
+        "ctrl_enable_age_gender": True,
+        "ctrl_auto_sync_linked_drives": True,
+        "ctrl_auto_sync_on_save": False,
+        "ctrl_detector_type": "yolo",
+        "ctrl_conf_threshold": 0.25,
+        "ctrl_bounce_threshold_sec": 120,
+        "ctrl_session_gap_sec": 30,
+        "ctrl_session_timeout_sec": 180,
+        "ctrl_time_bucket_minutes": 1,
+    },
+    "Test": {
+        "ctrl_max_images_per_store": 50,
+        "ctrl_enable_age_gender": False,
+        "ctrl_auto_sync_linked_drives": False,
+        "ctrl_auto_sync_on_save": False,
+        "ctrl_detector_type": "yolo",
+        "ctrl_conf_threshold": 0.25,
+        "ctrl_bounce_threshold_sec": 120,
+        "ctrl_session_gap_sec": 30,
+        "ctrl_session_timeout_sec": 180,
+        "ctrl_time_bucket_minutes": 5,
+    },
+    "Custom": {},
+}
+
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
     page: (module, section)
     for module, sections in NAV_TREE.items()
@@ -3426,13 +3455,56 @@ def _render_setup_help() -> None:
     )
 
 
-def _render_pipeline_configuration_controls() -> bool:
+def _pipeline_custom_settings_from_db(db_path: Path) -> dict[str, object]:
+    settings = get_app_settings(db_path)
+    raw = str(settings.get("pipeline_custom_settings_json", "")).strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _save_pipeline_custom_settings(db_path: Path, settings_obj: dict[str, object]) -> None:
+    upsert_app_settings(
+        db_path=db_path,
+        settings={
+            "pipeline_custom_settings_json": json.dumps(settings_obj, separators=(",", ":")),
+            "pipeline_last_mode": "Custom",
+        },
+    )
+
+
+def _apply_pipeline_preset(mode: str, db_path: Path) -> None:
+    preset = PIPELINE_PRESETS.get(mode, {})
+    if mode == "Custom":
+        preset = _pipeline_custom_settings_from_db(db_path)
+    if not isinstance(preset, dict):
+        return
+    for key, value in preset.items():
+        st.session_state[key] = value
+
+
+def _confidence_help_text(conf: float) -> str:
+    pct = int(round(conf * 100))
+    if conf < 0.20:
+        return f"{pct}%: High recall, more false positives."
+    if conf <= 0.35:
+        return f"{pct}%: Balanced (recommended baseline)."
+    if conf <= 0.55:
+        return f"{pct}%: High precision, may miss distant people."
+    return f"{pct}%: Very strict; use only for clean close-range views."
+
+
+def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     st.subheader("Pipeline Configuration")
-    st.caption("Run analysis from this page only. These settings persist across pages.")
+    st.caption("Simple controls for run mode, source scope, and analysis behavior.")
     bounce_options = [30, 60, 90, 120, 180, 240, 300]
     session_options = [10, 20, 30, 45, 60, 90, 120]
     timeout_options = [60, 120, 180, 240, 300, 600]
-    image_options = [10, 20, 50, 100, 0]
+    image_options = [0, 20, 50, 100, 200]
     if st.session_state.get("ctrl_bounce_threshold_sec") not in bounce_options:
         st.session_state["ctrl_bounce_threshold_sec"] = 120
     if st.session_state.get("ctrl_session_gap_sec") not in session_options:
@@ -3440,34 +3512,81 @@ def _render_pipeline_configuration_controls() -> bool:
     if st.session_state.get("ctrl_session_timeout_sec") not in timeout_options:
         st.session_state["ctrl_session_timeout_sec"] = 180
     if st.session_state.get("ctrl_max_images_per_store") not in image_options:
-        st.session_state["ctrl_max_images_per_store"] = 20
+        st.session_state["ctrl_max_images_per_store"] = 0
+    if "pipeline_mode" not in st.session_state:
+        last_mode = str(get_app_settings(db_path).get("pipeline_last_mode", PIPELINE_PRESET_DEFAULT)).strip()
+        st.session_state["pipeline_mode"] = last_mode if last_mode in PIPELINE_PRESETS else PIPELINE_PRESET_DEFAULT
+
+    mode_cols = st.columns([2, 1, 1])
+    selected_mode = mode_cols[0].selectbox(
+        "Run Mode",
+        options=list(PIPELINE_PRESETS.keys()),
+        key="pipeline_mode",
+        help="Full Scan (Dev): full folder scan with age/gender on. Test: smaller quick run. Custom: your saved profile.",
+    )
+    if mode_cols[1].button("Apply Mode", key="pipeline_apply_mode"):
+        _apply_pipeline_preset(selected_mode, db_path=db_path)
+        upsert_app_settings(db_path=db_path, settings={"pipeline_last_mode": selected_mode})
+        st.success(f"Applied mode: {selected_mode}")
+        st.rerun()
+    if mode_cols[2].button("Save Current as Custom", key="pipeline_save_custom"):
+        custom_payload = {
+            "ctrl_max_images_per_store": int(st.session_state.get("ctrl_max_images_per_store", 0)),
+            "ctrl_enable_age_gender": bool(st.session_state.get("ctrl_enable_age_gender", True)),
+            "ctrl_auto_sync_linked_drives": bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)),
+            "ctrl_auto_sync_on_save": bool(st.session_state.get("ctrl_auto_sync_on_save", False)),
+            "ctrl_detector_type": str(st.session_state.get("ctrl_detector_type", "yolo")),
+            "ctrl_conf_threshold": float(st.session_state.get("ctrl_conf_threshold", 0.25)),
+            "ctrl_bounce_threshold_sec": int(st.session_state.get("ctrl_bounce_threshold_sec", 120)),
+            "ctrl_session_gap_sec": int(st.session_state.get("ctrl_session_gap_sec", 30)),
+            "ctrl_session_timeout_sec": int(st.session_state.get("ctrl_session_timeout_sec", 180)),
+            "ctrl_time_bucket_minutes": int(st.session_state.get("ctrl_time_bucket_minutes", 1)),
+        }
+        _save_pipeline_custom_settings(db_path=db_path, settings_obj=custom_payload)
+        st.session_state["pipeline_mode"] = "Custom"
+        st.success("Saved current values as Custom mode.")
+
+    store_rows = list_stores(db_path=db_path)
+    store_ids = sorted({str(row.store_id).strip() for row in store_rows if str(row.store_id).strip()})
+    if "ctrl_store_filter_select" not in st.session_state:
+        st.session_state["ctrl_store_filter_select"] = "(All Stores)"
+    if st.session_state["ctrl_store_filter_select"] not in ["(All Stores)", *store_ids]:
+        st.session_state["ctrl_store_filter_select"] = "(All Stores)"
+
     with st.form("analysis_controls_form", clear_on_submit=False):
-        ctrl_cols_1 = st.columns(2)
+        ctrl_cols_1 = st.columns(3)
         ctrl_cols_1[0].text_input(
             "Root Directory",
             key="ctrl_root_str",
-            help="Folder containing store folders and date subfolders.",
+            help="Folder containing store folders and date subfolders. In Docker this is usually /app/data/stores.",
         )
         ctrl_cols_1[1].text_input(
             "Export Directory",
             key="ctrl_out_str",
             help="Location where analysis CSV exports are written.",
         )
+        current_root = str(st.session_state.get("ctrl_root_str", ""))
+        current_out = str(st.session_state.get("ctrl_out_str", ""))
+        storage_hint = "Cloud/Container volume" if current_root.startswith("/app/") else "Local path"
+        ctrl_cols_1[2].markdown(
+            f"**Storage Mode**  \n`{storage_hint}`  \nRoot: `{current_root}`  \nExport: `{current_out}`"
+        )
 
-        ctrl_cols_2 = st.columns(5)
+        ctrl_cols_2 = st.columns(3)
         ctrl_cols_2[0].slider(
             "Detection Confidence",
             min_value=0.05,
             max_value=0.9,
-            step=0.05,
+            step=0.01,
             key="ctrl_conf_threshold",
-            help="Minimum confidence for counting detections.",
+            help="Lower catches more people but can increase false detections. 0.25 is the current recommended baseline.",
         )
+        ctrl_cols_2[0].caption(_confidence_help_text(float(st.session_state.get("ctrl_conf_threshold", 0.25))))
         ctrl_cols_2[1].selectbox(
-            "Time Bucket (Minutes)",
-            options=[1, 5, 15],
-            key="ctrl_time_bucket_minutes",
-            help="Bucket size used in time-trend charts.",
+            "Images Per Store",
+            options=image_options,
+            key="ctrl_max_images_per_store",
+            help="0 means full scan.",
         )
         ctrl_cols_2[2].selectbox(
             "Bounce Threshold (Seconds)",
@@ -3475,20 +3594,28 @@ def _render_pipeline_configuration_controls() -> bool:
             key="ctrl_bounce_threshold_sec",
             help="Visits below this dwell threshold are treated as bounce.",
         )
-        ctrl_cols_2[3].selectbox(
+
+        ctrl_cols_2b = st.columns(3)
+        ctrl_cols_2b[0].selectbox(
             "Session Gap (Seconds)",
             options=session_options,
             key="ctrl_session_gap_sec",
             help="Gap threshold to split sessions.",
         )
-        ctrl_cols_2[4].selectbox(
-            "Images Per Store",
-            options=image_options,
-            key="ctrl_max_images_per_store",
-            help="Use 0 to process all images.",
+        ctrl_cols_2b[1].selectbox(
+            "Session Timeout (Seconds)",
+            options=timeout_options,
+            key="ctrl_session_timeout_sec",
+            help="Fallback closure timeout for store-day customer IDs.",
+        )
+        ctrl_cols_2b[2].selectbox(
+            "Time Bucket (Minutes)",
+            options=[1, 5, 15],
+            key="ctrl_time_bucket_minutes",
+            help="Chart bucket size only (reporting view).",
         )
 
-        ctrl_cols_3 = st.columns(5)
+        ctrl_cols_3 = st.columns(4)
         yolo_available = _is_yolo_available()
         tf_frcnn_available = _is_tf_frcnn_available()
         deepface_available = _is_deepface_available()
@@ -3506,59 +3633,48 @@ def _render_pipeline_configuration_controls() -> bool:
             key="ctrl_detector_type",
             help="YOLO (recommended), TF_FRCNN (legacy TensorFlow). MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
         )
-        ctrl_cols_3[1].selectbox(
-            "Write Gzip CSV",
-            options=["Yes", "No"],
-            index=0 if bool(st.session_state.get("ctrl_write_gzip_exports", True)) else 1,
-            key="cfg_write_gzip_select",
-            help="Write compressed `.csv.gz` exports.",
-        )
-        ctrl_cols_3[2].selectbox(
-            "Keep Plain CSV",
-            options=["Yes", "No"],
-            index=0 if bool(st.session_state.get("ctrl_keep_plain_csv", True)) else 1,
-            key="cfg_keep_plain_select",
-            help="Keep normal `.csv` files along with gzip exports.",
-        )
-        ctrl_cols_3[3].selectbox(
+        ctrl_cols_3[1].toggle(
             "Auto-Sync Sources",
-            options=["Yes", "No"],
-            index=0 if bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)) else 1,
-            key="cfg_auto_sync_drives_select",
-            help="Sync mapped source URLs (Drive/S3/local) before analysis.",
+            key="ctrl_auto_sync_linked_drives",
+            help="Sync mapped source URLs before each analysis run.",
         )
-        ctrl_cols_3[4].selectbox(
+        ctrl_cols_3[2].toggle(
             "Auto-Sync On Save",
-            options=["Yes", "No"],
-            index=0 if bool(st.session_state.get("ctrl_auto_sync_on_save", False)) else 1,
-            key="cfg_auto_sync_on_save_select",
-            help="Sync a store right after saving store mapping.",
+            key="ctrl_auto_sync_on_save",
+            help="Sync selected store immediately after store mapping save.",
+        )
+        ctrl_cols_3[3].toggle(
+            "Enable Age/Gender",
+            key="ctrl_enable_age_gender",
+            help="Use DeepFace for age/gender likelihood on customer crops.",
         )
 
-        ctrl_cols_4 = st.columns(4)
-        ctrl_cols_4[0].text_input(
-            "Store Filter (Optional)",
-            key="ctrl_store_filter",
-            help="Set store ID (e.g., BLRJAY) for pilot full-date runs.",
+        ctrl_cols_4 = st.columns(3)
+        ctrl_cols_4[0].selectbox(
+            "Store Filter",
+            options=["(All Stores)", *store_ids],
+            key="ctrl_store_filter_select",
+            help="Choose one store or all stores.",
         )
         ctrl_cols_4[1].text_input(
             "Capture Date (YYYY-MM-DD)",
             key="ctrl_capture_date",
-            help="Optional day filter. Example: 2025-03-12.",
+            help="Optional day filter. Accepts YYYY-MM-DD or YYYYMMDD.",
         )
-        ctrl_cols_4[2].selectbox(
-            "Session Timeout (Seconds)",
-            options=timeout_options,
-            key="ctrl_session_timeout_sec",
-            help="Fallback closure timeout for store-day customer IDs.",
+        ctrl_cols_4[2].toggle(
+            "Use Calendar Date",
+            key="ctrl_use_capture_date_picker",
+            help="Turn on to apply the date selected in calendar.",
         )
-        ctrl_cols_4[3].selectbox(
-            "Enable Age/Gender",
-            options=["No", "Yes"],
-            index=1 if bool(st.session_state.get("ctrl_enable_age_gender", False)) else 0,
-            key="cfg_enable_age_gender_select",
-            help="Use DeepFace for age/gender likelihood on customer crops.",
+        date_cols = st.columns([1, 3, 1])
+        date_cols[0].markdown("")
+        date_cols[1].date_input(
+            "Capture Date Picker",
+            value=date.today(),
+            key="ctrl_capture_date_picker",
+            help="Optional calendar selection. If selected, this value is used.",
         )
+        date_cols[2].markdown("")
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
         if not yolo_available:
             st.caption(
@@ -3571,14 +3687,17 @@ def _render_pipeline_configuration_controls() -> bool:
                 "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
                 "`data/models/frozen_inference_graph.pb` (or `TF_FRCNN_MODEL_PATH`)."
             )
-        if st.session_state.get("cfg_enable_age_gender_select", "No") == "Yes" and not deepface_available:
+        if bool(st.session_state.get("ctrl_enable_age_gender", False)) and not deepface_available:
             st.caption("DeepFace is not installed in this runtime; age/gender columns will remain empty.")
+    # Keep gzip behavior frozen for operational simplicity.
+    st.session_state["ctrl_write_gzip_exports"] = True
+    st.session_state["ctrl_keep_plain_csv"] = True
+    selected_store = str(st.session_state.get("ctrl_store_filter_select", "(All Stores)")).strip()
+    st.session_state["ctrl_store_filter"] = "" if selected_store == "(All Stores)" else selected_store
+    picked_date = st.session_state.get("ctrl_capture_date_picker")
+    if bool(st.session_state.get("ctrl_use_capture_date_picker", False)) and isinstance(picked_date, date):
+        st.session_state["ctrl_capture_date"] = picked_date.isoformat()
 
-    st.session_state["ctrl_write_gzip_exports"] = st.session_state.get("cfg_write_gzip_select", "Yes") == "Yes"
-    st.session_state["ctrl_keep_plain_csv"] = st.session_state.get("cfg_keep_plain_select", "Yes") == "Yes"
-    st.session_state["ctrl_auto_sync_linked_drives"] = st.session_state.get("cfg_auto_sync_drives_select", "Yes") == "Yes"
-    st.session_state["ctrl_auto_sync_on_save"] = st.session_state.get("cfg_auto_sync_on_save_select", "No") == "Yes"
-    st.session_state["ctrl_enable_age_gender"] = st.session_state.get("cfg_enable_age_gender_select", "No") == "Yes"
     return bool(rerun_clicked)
 
 def main() -> None:
@@ -3632,7 +3751,7 @@ def main() -> None:
     if "ctrl_session_timeout_sec" not in st.session_state:
         st.session_state["ctrl_session_timeout_sec"] = 180
     if "ctrl_max_images_per_store" not in st.session_state:
-        st.session_state["ctrl_max_images_per_store"] = 20
+        st.session_state["ctrl_max_images_per_store"] = 0
     if "ctrl_detector_type" not in st.session_state:
         st.session_state["ctrl_detector_type"] = "yolo"
     if "ctrl_store_filter" not in st.session_state:
@@ -3640,7 +3759,7 @@ def main() -> None:
     if "ctrl_capture_date" not in st.session_state:
         st.session_state["ctrl_capture_date"] = ""
     if "ctrl_enable_age_gender" not in st.session_state:
-        st.session_state["ctrl_enable_age_gender"] = False
+        st.session_state["ctrl_enable_age_gender"] = True
     if "ctrl_write_gzip_exports" not in st.session_state:
         st.session_state["ctrl_write_gzip_exports"] = True
     if "ctrl_keep_plain_csv" not in st.session_state:
@@ -3683,7 +3802,7 @@ def main() -> None:
 
     rerun_clicked = False
     if current_page == "Pipeline Configuration":
-        rerun_clicked = _render_pipeline_configuration_controls()
+        rerun_clicked = _render_pipeline_configuration_controls(db_path=db_path)
     if bool(st.session_state.pop("force_rerun_analysis", False)):
         rerun_clicked = True
 

@@ -520,3 +520,15 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-19 | Commit pending
+- Summary:
+  - Simplified Pipeline Configuration UX: added run mode presets (`Full Scan (Dev)`, `Test`, `Custom`), save-current-as-custom profile, store filter dropdown, date text + calendar controls, grouped toggles for on/off settings, confidence guidance text, and frozen gzip export behavior.
+  - Updated defaults to full-scan dev behavior (`Images Per Store=0`, `Enable Age/Gender=True`) and wired preset page to persistent app settings.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
