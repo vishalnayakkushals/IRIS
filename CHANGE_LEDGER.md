@@ -25,6 +25,7 @@ It records what changed, where it changed, and why.
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
+| `SECURITY_CLEANUP_CHECKLIST.md` | Sign-off checklist to remove temporary keys/tokens and development artifacts. |
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
@@ -603,4 +604,15 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Added `cryptography` dependency to runtime and Docker requirements.
   - `iris-sync` now runs under compose profile `sync` (start with `docker compose --profile sync up -d iris-sync`).
+
+### 2026-03-20 | Commit pending
+- Summary:
+  - Added a project sign-off security checklist covering key deletion, token rotation, and docker/cache cleanup.
+- Changed Paths:
+  - `SECURITY_CLEANUP_CHECKLIST.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `SECURITY_CLEANUP_CHECKLIST.md`
+- Infra/Config Impact:
+  - None
 
