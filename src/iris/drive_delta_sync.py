@@ -69,8 +69,20 @@ def _list_drive_date_subfolders(parent_folder_id: str, api_key: str) -> list[tup
         }
         if token:
             params["pageToken"] = token
-        resp = requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
-        resp.raise_for_status()
+        resp = None
+        last_exc: Exception | None = None
+        for attempt in range(1, 6):
+            try:
+                resp = requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
+                resp.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt >= 5:
+                    raise
+                time.sleep(min(8.0, 1.25 * attempt))
+        if resp is None:
+            raise RuntimeError(f"Failed listing Drive subfolders: {last_exc}")
         payload = resp.json()
         for item in payload.get("files", []):
             name = str(item.get("name", "")).strip()

@@ -627,3 +627,15 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-20 | Commit pending
+- Summary:
+  - Hardened Google Drive sync networking by adding retry/backoff for Drive list and file download requests to recover from transient `ChunkedEncodingError` and incomplete reads.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `src/iris/drive_delta_sync.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+

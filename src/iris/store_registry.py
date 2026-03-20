@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -1982,6 +1983,27 @@ def ensure_store_snapshot_dir(data_root: Path, store_id: str) -> Path:
     return target
 
 
+def _requests_get_with_retry(
+    url: str,
+    *,
+    params: dict[str, str],
+    timeout: int = 30,
+    max_attempts: int = 5,
+) -> requests.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= max_attempts:
+                raise
+            time.sleep(min(8.0, 1.25 * attempt))
+    raise RuntimeError(f"HTTP GET retry failed for {url}: {last_exc}")
+
+
 def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[str, str]]:
     files: list[dict[str, str]] = []
     stack: list[tuple[str, list[str]]] = [(folder_id, [])]
@@ -1998,8 +2020,11 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
                 "key":api_key,
             }
             if token: params["pageToken"]=token
-            resp=requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
-            resp.raise_for_status()
+            resp = _requests_get_with_retry(
+                "https://www.googleapis.com/drive/v3/files",
+                params=params,
+                timeout=30,
+            )
             try:
                 payload=resp.json()
             except (JSONDecodeError, ValueError) as exc:
@@ -2049,10 +2074,11 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
 
         if not media_blocked:
             try:
-                resp = requests.get(
+                resp = _requests_get_with_retry(
                     f"https://www.googleapis.com/drive/v3/files/{file_id}",
                     params={"alt": "media", "key": api_key},
                     timeout=30,
+                    max_attempts=4,
                 )
                 headers = getattr(resp, "headers", {}) or {}
                 ctype = (headers.get("content-type") or "").lower()
@@ -2069,10 +2095,11 @@ def _drive_api_download_files(file_items: list[dict[str, str]], target_dir: Path
 
         if payload is None:
             try:
-                fallback = requests.get(
+                fallback = _requests_get_with_retry(
                     "https://drive.google.com/uc",
                     params={"id": file_id, "export": "download"},
                     timeout=30,
+                    max_attempts=4,
                 )
                 fallback_headers = getattr(fallback, "headers", {}) or {}
                 fallback_type = (fallback_headers.get("content-type") or "").lower()
