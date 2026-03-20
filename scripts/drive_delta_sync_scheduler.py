@@ -55,6 +55,10 @@ def run_once(args: argparse.Namespace) -> int:
     if not api_key:
         print("ERROR: GOOGLE_API_KEY is required for Drive API sync (env var or encrypted data/secrets store)")
         return 2
+    print(
+        f"Starting sync: store={args.store_id} workers={int(args.workers)} data_root={args.data_root}",
+        flush=True,
+    )
     result = run_delta_sync_for_store(
         db_path=args.db,
         data_root=args.data_root,
@@ -63,7 +67,7 @@ def run_once(args: argparse.Namespace) -> int:
         workers=int(args.workers),
         remove_local_deleted_files=bool(args.remove_local_deleted_files),
     )
-    print(result.message)
+    print(result.message, flush=True)
     return 0 if result.mode != "error" else 1
 
 
@@ -75,15 +79,16 @@ def main() -> None:
         raise SystemExit(run_once(args))
 
     print(
-        f"Scheduler started: store={args.store_id} run_at={args.run_at} tz={args.tz} workers={args.workers}"
+        f"Scheduler started: store={args.store_id} run_at={args.run_at} tz={args.tz} workers={args.workers}",
+        flush=True,
     )
     while True:
         sleep_sec = sleep_seconds_until_next_run(args.run_at, args.tz)
-        print(f"Next sync in {sleep_sec} seconds")
+        print(f"Next sync in {sleep_sec} seconds", flush=True)
         time.sleep(sleep_sec)
         code = run_once(args)
         if code != 0:
-            print("Sync cycle failed; retrying next schedule window.")
+            print("Sync cycle failed; retrying next schedule window.", flush=True)
 
 
 if __name__ == "__main__":

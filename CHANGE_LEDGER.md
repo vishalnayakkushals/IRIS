@@ -616,3 +616,14 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-20 | Commit pending
+- Summary:
+  - Added immediate progress logging (`flush=True`) to drive delta scheduler so long first-run syncs show visible start/completion state in log files and terminal output.
+- Changed Paths:
+  - `scripts/drive_delta_sync_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
