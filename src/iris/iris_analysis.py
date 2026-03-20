@@ -2740,6 +2740,11 @@ def analyze_store(
     false_positive_model: Optional[Any] = None,
     filename_prefixes: list[str] | None = None,
 ) -> StoreAnalysisResult:
+    if enable_age_gender:
+        # DeepFace model loading/downloading is not process-safe in this pipeline.
+        # Force single-process execution for stable runs.
+        use_parallel = False
+        use_streaming = False
     normalized_prefixes = [
         str(p).strip() for p in (filename_prefixes or []) if str(p).strip()
     ]
