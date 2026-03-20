@@ -18,10 +18,13 @@ It records what changed, where it changed, and why.
 | `src/iris/iris_analysis.py` | Store image analysis pipeline, detector abstraction, metrics, exports, tracking logic. |
 | `src/iris/store_registry.py` | Store/user/role DB logic, source sync adapters (Drive/S3/local), audit state. |
 | `src/iris/drive_delta_sync.py` | Scheduled Google Drive delta-sync engine: first full pull, latest-folder delta pulls, multi-queue downloads, and deletion tombstones. |
+| `src/iris/secret_store.py` | Encrypted local secret storage for API keys (Fernet-based key save/load/delete). |
 | `src/iris/event_queue.py` | Local event queue abstraction for async processing. |
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
+| `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
+| `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
@@ -573,4 +576,31 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-20 | Commit 3510842
+- Summary:
+  - Enforced live/full-scan defaults across dashboard + CLI (sampling off by default), removed TF_FRCNN pipeline surfacing, and added clearer run guidance.
+  - Optimized Docker runtime footprint by introducing `.dockerignore`, consolidating compose services to one shared image, and making sync service optional via profile.
+  - Added encrypted Google API key persistence (`data/secrets`) and wired scheduler to auto-use stored key when env var is absent.
+  - Reduced age/gender runtime overhead by limiting DeepFace frame analysis to entry/gate cameras (`D07` fallback or mapped ENTRY/EXIT roles).
+- Changed Paths:
+  - `.dockerignore`
+  - `deploy/Dockerfile`
+  - `deploy/docker-compose.yml`
+  - `deploy/requirements.docker.txt`
+  - `requirements.txt`
+  - `scripts/analyze_stores.py`
+  - `scripts/drive_delta_sync_scheduler.py`
+  - `scripts/store_google_api_key.py`
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/secret_store.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `.dockerignore`
+  - `scripts/store_google_api_key.py`
+  - `src/iris/secret_store.py`
+- Infra/Config Impact:
+  - Added `cryptography` dependency to runtime and Docker requirements.
+  - `iris-sync` now runs under compose profile `sync` (start with `docker compose --profile sync up -d iris-sync`).
 
