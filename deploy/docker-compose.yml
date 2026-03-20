@@ -1,10 +1,12 @@
 services:
   iris:
+    image: iris-app:latest
     build:
       context: ${IRIS_BUILD_CONTEXT:-..}
       dockerfile: ${IRIS_DOCKERFILE:-deploy/Dockerfile}
       args:
-        IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-0}
+        IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-1}
+        IRIS_ENABLE_DEEPFACE: ${IRIS_ENABLE_DEEPFACE:-1}
     ports:
       - "8765:8765"
     restart: unless-stopped
@@ -15,11 +17,8 @@ services:
     command: ["streamlit", "run", "src/run_dashboard.py", "--server.address=0.0.0.0", "--server.port=8765", "--browser.serverAddress=localhost"]
 
   iris-sync:
-    build:
-      context: ${IRIS_BUILD_CONTEXT:-..}
-      dockerfile: ${IRIS_DOCKERFILE:-deploy/Dockerfile}
-      args:
-        IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-0}
+    image: iris-app:latest
+    profiles: ["sync"]
     restart: unless-stopped
     volumes:
       - ${IRIS_DATA_DIR:-../data}:/app/data

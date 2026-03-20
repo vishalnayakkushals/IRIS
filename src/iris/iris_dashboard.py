@@ -149,7 +149,7 @@ PIPELINE_PRESETS: dict[str, dict[str, object]] = {
         "ctrl_time_bucket_minutes": 1,
     },
     "Test": {
-        "ctrl_max_images_per_store": 50,
+        "ctrl_max_images_per_store": 0,
         "ctrl_enable_age_gender": False,
         "ctrl_auto_sync_linked_drives": False,
         "ctrl_auto_sync_on_save": False,
@@ -3514,15 +3514,13 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     bounce_options = [30, 60, 90, 120, 180, 240, 300]
     session_options = [10, 20, 30, 45, 60, 90, 120]
     timeout_options = [60, 120, 180, 240, 300, 600]
-    image_options = [0, 20, 50, 100, 200]
     if st.session_state.get("ctrl_bounce_threshold_sec") not in bounce_options:
         st.session_state["ctrl_bounce_threshold_sec"] = 120
     if st.session_state.get("ctrl_session_gap_sec") not in session_options:
         st.session_state["ctrl_session_gap_sec"] = 30
     if st.session_state.get("ctrl_session_timeout_sec") not in timeout_options:
         st.session_state["ctrl_session_timeout_sec"] = 180
-    if st.session_state.get("ctrl_max_images_per_store") not in image_options:
-        st.session_state["ctrl_max_images_per_store"] = 0
+    st.session_state["ctrl_max_images_per_store"] = 0
     if "pipeline_mode" not in st.session_state:
         last_mode = str(get_app_settings(db_path).get("pipeline_last_mode", PIPELINE_PRESET_DEFAULT)).strip()
         st.session_state["pipeline_mode"] = last_mode if last_mode in PIPELINE_PRESETS else PIPELINE_PRESET_DEFAULT
@@ -3548,7 +3546,6 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         st.rerun()
     if mode_cols[2].button("Save Current as Custom", key="pipeline_save_custom"):
         custom_payload = {
-            "ctrl_max_images_per_store": int(st.session_state.get("ctrl_max_images_per_store", 0)),
             "ctrl_enable_age_gender": bool(st.session_state.get("ctrl_enable_age_gender", True)),
             "ctrl_auto_sync_linked_drives": bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)),
             "ctrl_auto_sync_on_save": bool(st.session_state.get("ctrl_auto_sync_on_save", False)),
@@ -3600,12 +3597,8 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             help="Lower catches more people but can increase false detections. 0.25 is the current recommended baseline.",
         )
         ctrl_cols_2[0].caption(_confidence_help_text(float(st.session_state.get("ctrl_conf_threshold", 0.25))))
-        ctrl_cols_2[1].selectbox(
-            "Images Per Store",
-            options=image_options,
-            key="ctrl_max_images_per_store",
-            help="0 means full scan.",
-        )
+        ctrl_cols_2[1].markdown("**Scan Mode**  \n`Live (Full Folder)`")
+        st.session_state["ctrl_max_images_per_store"] = 0
         ctrl_cols_2[2].selectbox(
             "Bounce Threshold (Seconds)",
             options=bounce_options,
@@ -3635,19 +3628,14 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
 
         ctrl_cols_3 = st.columns(4)
         yolo_available = _is_yolo_available()
-        tf_frcnn_available = _is_tf_frcnn_available()
         deepface_available = _is_deepface_available()
         allow_mock_detector = os.getenv("IRIS_ALLOW_MOCK_DETECTOR", "0").strip() == "1"
         detector_options = ["yolo"]
-        if tf_frcnn_available:
-            detector_options.append("tf_frcnn")
         detector_options.append("opencv_hog")
         if allow_mock_detector:
             detector_options.append("mock")
         if st.session_state.get("ctrl_detector_type") == "mock" and not allow_mock_detector:
             st.session_state["ctrl_detector_type"] = "yolo"
-        if st.session_state.get("ctrl_detector_type") == "tf_frcnn" and not tf_frcnn_available:
-            st.session_state["ctrl_detector_type"] = "yolo" if yolo_available else "opencv_hog"
         if st.session_state.get("ctrl_detector_type") == "yolo" and not yolo_available:
             st.session_state["ctrl_detector_type"] = "opencv_hog"
         if st.session_state["ctrl_detector_type"] not in detector_options:
@@ -3656,7 +3644,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             "Detector",
             options=detector_options,
             key="ctrl_detector_type",
-            help="YOLO (recommended), OpenCV HOG fallback, TF_FRCNN (legacy TensorFlow, shown only when ready). MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
+            help="YOLO (recommended) or OpenCV HOG fallback. MOCK is hidden unless IRIS_ALLOW_MOCK_DETECTOR=1.",
         )
         ctrl_cols_3[1].toggle(
             "Auto-Sync Sources",
@@ -3703,6 +3691,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         )
         date_cols[2].markdown("")
         rerun_clicked = st.form_submit_button("Regenerate Analysis + CSV", type="primary")
+        st.caption("Keep this tab open while analysis runs. Navigating during run can interrupt current execution.")
         selected_detector = str(st.session_state.get("ctrl_detector_type", "yolo"))
         if selected_detector == "yolo" and not yolo_available:
             st.caption(
@@ -3710,11 +3699,6 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             )
             if not allow_mock_detector:
                 st.caption("MOCK detector is disabled in production mode (`IRIS_ALLOW_MOCK_DETECTOR=0`).")
-        if selected_detector == "tf_frcnn" and not tf_frcnn_available:
-            st.caption(
-                "TF_FRCNN not ready. Requires TensorFlow and a frozen graph at "
-                "`data/models/frozen_inference_graph.pb` (or `TF_FRCNN_MODEL_PATH`)."
-            )
         if not deepface_available:
             st.caption("DeepFace runtime not available. Age/Gender is auto-disabled until dependency is installed.")
     # Keep gzip behavior frozen for operational simplicity.
@@ -3841,7 +3825,8 @@ def main() -> None:
     bounce_threshold_sec = int(st.session_state["ctrl_bounce_threshold_sec"])
     session_gap_sec = int(st.session_state["ctrl_session_gap_sec"])
     session_timeout_sec = int(st.session_state["ctrl_session_timeout_sec"])
-    max_images_per_store = int(st.session_state["ctrl_max_images_per_store"])
+    st.session_state["ctrl_max_images_per_store"] = 0
+    max_images_per_store = 0
     detector_type = str(st.session_state["ctrl_detector_type"])
     store_filter = str(st.session_state.get("ctrl_store_filter", "")).strip()
     capture_date_str = str(st.session_state.get("ctrl_capture_date", "")).strip()
@@ -3862,32 +3847,7 @@ def main() -> None:
     keep_plain_csv = bool(st.session_state["ctrl_keep_plain_csv"])
     auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
     auto_sync_on_save = bool(st.session_state["ctrl_auto_sync_on_save"])
-    if max_images_per_store > 0:
-        info_cols = st.columns([5, 1.6, 1.8])
-        info_cols[0].info(
-            f"Sampling mode is ON: only first {max_images_per_store} images per store are analyzed."
-        )
-        if info_cols[1].button("Disable Sampling Now", key="disable_sampling_now_btn"):
-            st.session_state["ctrl_max_images_per_store"] = 0
-            st.session_state["pipeline_mode"] = "Full Scan (Dev)"
-            st.session_state["pipeline_mode_applied"] = "Full Scan (Dev)"
-            upsert_app_settings(
-                db_path=db_path,
-                settings={"pipeline_last_mode": "Full Scan (Dev)"},
-            )
-            st.success("Sampling disabled. Full scan enabled.")
-            st.rerun()
-        if info_cols[2].button("Disable + Re-run", key="disable_sampling_rerun_btn", type="primary"):
-            st.session_state["ctrl_max_images_per_store"] = 0
-            st.session_state["pipeline_mode"] = "Full Scan (Dev)"
-            st.session_state["pipeline_mode_applied"] = "Full Scan (Dev)"
-            st.session_state["force_rerun_analysis"] = True
-            upsert_app_settings(
-                db_path=db_path,
-                settings={"pipeline_last_mode": "Full Scan (Dev)"},
-            )
-            st.success("Sampling disabled. Re-running full scan now.")
-            st.rerun()
+    st.caption("Live mode: full-folder scan is always enabled.")
 
     if rerun_clicked:
         with st.spinner("Running analysis..."):

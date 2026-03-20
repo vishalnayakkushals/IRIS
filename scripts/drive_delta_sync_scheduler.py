@@ -11,6 +11,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from iris.drive_delta_sync import run_delta_sync_for_store, sleep_seconds_until_next_run
+from iris.secret_store import load_google_api_key, save_google_api_key
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,9 +45,15 @@ def _validate_time(run_at: str) -> str:
 
 
 def run_once(args: argparse.Namespace) -> int:
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    env_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if env_key:
+        try:
+            save_google_api_key(env_key, data_dir=args.data_root.parent)
+        except Exception:
+            pass
+    api_key = env_key or load_google_api_key(data_dir=args.data_root.parent)
     if not api_key:
-        print("ERROR: GOOGLE_API_KEY is required for Drive API sync")
+        print("ERROR: GOOGLE_API_KEY is required for Drive API sync (env var or encrypted data/secrets store)")
         return 2
     result = run_delta_sync_for_store(
         db_path=args.db,

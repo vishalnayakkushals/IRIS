@@ -62,8 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-images-per-store",
         type=int,
-        default=20,
-        help="Sample limit per store for faster first-pass runs. Use 0 to process all images.",
+        default=0,
+        help="Optional sample limit per store. Default 0 processes all images.",
     )
     parser.add_argument(
         "--store-id",

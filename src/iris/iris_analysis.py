@@ -2667,11 +2667,17 @@ def _analyze_single_image(
     )
     customer_count = max(0, int(detection.person_count) - int(staff_count))
     
+    camera_role = str(cfg.get("camera_role", "")).strip().upper()
+    age_gender_camera = (
+        parsed.camera_id.strip().upper() == "D07"
+        or camera_role in {"ENTRY", "EXIT", "ENTRY_EXIT", "ENTRANCE", "GATE"}
+    )
+
     gender_likelihood = "{}"
     age_bucket_counts = "{}"
     age_confidence = 0.0
     age_gender_error = ""
-    if enable_age_gender and is_valid and detection.person_boxes:
+    if enable_age_gender and age_gender_camera and is_valid and detection.person_boxes:
         customer_boxes: list[tuple[float, float, float, float]] = []
         for idx, box in enumerate(detection.person_boxes):
             is_staff = bool(staff_flags[idx]) if idx < len(staff_flags) else False

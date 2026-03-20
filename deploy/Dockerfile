@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 ARG IRIS_ENABLE_YOLO=0
+ARG IRIS_ENABLE_DEEPFACE=0
 COPY deploy/requirements.docker.txt ./requirements.docker.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
@@ -23,6 +24,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "$IRIS_ENABLE_YOLO" = "1" ]; then \
       pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
       pip install "ultralytics>=8.3,<9.0" && \
+      pip install "numpy<2" "pyarrow>=15.0,<16.0"; \
+    fi && \
+    if [ "$IRIS_ENABLE_DEEPFACE" = "1" ]; then \
+      pip install "tensorflow-cpu>=2.16,<2.20" "deepface>=0.0.93,<1.0" "tf-keras>=2.16,<2.20" && \
       pip install "numpy<2" "pyarrow>=15.0,<16.0"; \
     fi
 COPY . .
