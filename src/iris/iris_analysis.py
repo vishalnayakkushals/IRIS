@@ -9,6 +9,7 @@ import json
 import os
 import re
 import colorsys
+import pickle
 from typing import Any, Protocol, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
@@ -937,6 +938,17 @@ def _safe_json_list(value: object) -> list[object]:
         except Exception:
             return []
     return []
+
+
+def _matches_filename_filters(filename: str, filters: list[str] | None) -> bool:
+    normalized = [str(f).strip() for f in (filters or []) if str(f).strip()]
+    if not normalized:
+        return True
+    name = str(filename)
+    for token in normalized:
+        if name.startswith(token) or token in name:
+            return True
+    return False
 
 
 def _coerce_box(value: object) -> tuple[float, float, float, float] | None:
@@ -2760,6 +2772,14 @@ def analyze_store(
     false_positive_model: Optional[Any] = None,
     filename_prefixes: list[str] | None = None,
 ) -> StoreAnalysisResult:
+    if use_parallel and use_streaming:
+        # Fallback detectors like OpenCV HOG are not picklable under multiprocessing.
+        # Downgrade to linear execution instead of failing.
+        try:
+            pickle.dumps(detector)
+        except Exception:
+            use_parallel = False
+            use_streaming = False
     if enable_age_gender:
         # DeepFace model loading/downloading is not process-safe in this pipeline.
         # Force single-process execution for stable runs.
@@ -2794,9 +2814,7 @@ def analyze_store(
     processed_images = 0
 
     for image_path in image_paths:
-        if normalized_prefixes and not any(
-            image_path.name.startswith(pref) for pref in normalized_prefixes
-        ):
+        if not _matches_filename_filters(image_path.name, normalized_prefixes):
             continue
         if capture_date_filter is not None:
              image_day, _, _ = _infer_image_context(
@@ -3042,7 +3060,7 @@ def analyze_store_streaming(
     # Filter targets
     targets = []
     for ip in image_paths:
-        if filename_prefixes and not any(ip.name.startswith(pref) for pref in filename_prefixes):
+        if not _matches_filename_filters(ip.name, filename_prefixes):
             continue
         if capture_date_filter is not None:
              image_day, _, _ = _infer_image_context(

@@ -200,6 +200,23 @@ def test_entrance_pipeline_ignores_side_outside_passers(tmp_path: Path) -> None:
     assert str(row.get("event_label", "")) in {"OUTSIDE_PASSER", "INVALID"}
 
 
+def test_filename_filter_allows_substring_for_camera_id(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    d07 = store / "09-57-27_D07-1.jpg"
+    d03 = store / "09-57-27_D03-1.jpg"
+    _write_image(d07)
+    _write_image(d03)
+    detector = FixedDetector({d07.name: 1, d03.name: 1})
+    result = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        filename_prefixes=["D07-"],
+    )
+    assert len(result.image_insights) == 1
+    assert str(result.image_insights.iloc[0]["camera_id"]) == "D07"
+
+
 def test_feedback_signature_suppresses_learned_banner_false_positive(tmp_path: Path) -> None:
     store = tmp_path / "store_a"
     img = store / "09-57-27_D03-1.jpg"
