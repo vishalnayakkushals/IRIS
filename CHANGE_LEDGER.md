@@ -238,7 +238,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional camera config keys supported for entrance cameras: `inside_store_zone`, `center_entry_zone`, `left_outside_ignore_zone`, `right_outside_ignore_zone`, `poster_static_zone`.
 
-### 2026-03-21 | Commit pending
+### 2026-03-21 | Commit f0cf9b4
 - Summary:
   - Fixed camera filter behavior so D07-only runs can use substring tokens (example: `D07-`) instead of strict filename prefix only.
   - Added safe fallback from parallel streaming to linear execution when detector objects are not multiprocessing-picklable (prevents OpenCV HOG pickle crash and allows full scans to complete).
