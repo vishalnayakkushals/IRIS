@@ -20,6 +20,7 @@ It records what changed, where it changed, and why.
 | `src/iris/drive_delta_sync.py` | Scheduled Google Drive delta-sync engine: first full pull, latest-folder delta pulls, multi-queue downloads, and deletion tombstones. |
 | `src/iris/secret_store.py` | Encrypted local secret storage for API keys (Fernet-based key save/load/delete). |
 | `src/iris/event_queue.py` | Local event queue abstraction for async processing. |
+| `src/iris/entrance_pipeline.py` | Deterministic entrance-camera classifier (zone logic, poster/staff/passers filtering, per-track audit JSON). |
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
@@ -222,6 +223,20 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-20 | Commit pending
+- Summary:
+  - Added a production-safe entrance-camera classification layer with deterministic priority rules (`poster -> side-passer -> staff -> customer -> pending`), zone polygons, and auditable per-track JSON output.
+  - Fixed track ID ordering to preserve 1:1 mapping with detection boxes/centroids for reliable trajectory decisions.
+- Changed Paths:
+  - `src/iris/entrance_pipeline.py`
+  - `src/iris/iris_analysis.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `src/iris/entrance_pipeline.py`
+- Infra/Config Impact:
+  - Optional camera config keys supported for entrance cameras: `inside_store_zone`, `center_entry_zone`, `left_outside_ignore_zone`, `right_outside_ignore_zone`, `poster_static_zone`.
 
 ### 2026-03-16 | Commit 6ca9066
 - Summary:

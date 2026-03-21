@@ -4,7 +4,7 @@ from datetime import date
 import json
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 import pandas as pd
 
 from iris.iris_analysis import (
@@ -55,6 +55,26 @@ class BoxDetector(PersonDetector):
 def _write_image(path: Path, color: tuple[int, int, int] = (120, 90, 60)) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (12, 12), color=color).save(path)
+
+
+def _write_colored_people_frame(
+    path: Path,
+    boxes_with_colors: list[tuple[tuple[float, float, float, float], tuple[int, int, int], tuple[int, int, int]]],
+    canvas_size: tuple[int, int] = (480, 320),
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = canvas_size
+    image = Image.new("RGB", canvas_size, color=(210, 210, 210))
+    draw = ImageDraw.Draw(image)
+    for box, upper_rgb, lower_rgb in boxes_with_colors:
+        x1 = int(box[0] * width)
+        y1 = int(box[1] * height)
+        x2 = int(box[2] * width)
+        y2 = int(box[3] * height)
+        split = y1 + int((y2 - y1) * 0.52)
+        draw.rectangle([x1, y1, x2, split], fill=upper_rgb)
+        draw.rectangle([x1, split, x2, y2], fill=lower_rgb)
+    image.save(path)
 
 
 def test_parse_filename_extracts_time_camera_frame() -> None:
@@ -126,6 +146,58 @@ def test_staff_is_counted_separately_from_customer(tmp_path: Path) -> None:
     assert int(row["person_count"]) == 1
     assert int(row["staff_count"]) == 1
     assert int(row["customer_count"]) == 0
+
+
+def test_entrance_pipeline_marks_red_shirt_black_pants_as_staff_and_red_dress_as_customer(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    img = store / "09-57-27_D07-1.jpg"
+    staff_box = (0.12, 0.15, 0.28, 0.92)
+    dress_box = (0.42, 0.16, 0.58, 0.92)
+    _write_colored_people_frame(
+        img,
+        boxes_with_colors=[
+            (staff_box, (220, 35, 35), (20, 20, 20)),
+            (dress_box, (220, 35, 35), (220, 35, 35)),
+        ],
+    )
+    detector = BoxDetector({img.name: [staff_box, dress_box]})
+    result = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        camera_configs={"D07": {"camera_role": "ENTRANCE"}},
+    )
+    row = result.image_insights.iloc[0]
+    assert int(row["staff_count"]) == 1
+    assert int(row["customer_count"]) == 1
+    audit = json.loads(str(row.get("track_audit_json", "[]")))
+    assert len(audit) == 2
+    labels = {(item.get("is_staff"), item.get("is_customer"), str(item.get("clothing_type"))) for item in audit}
+    assert (True, False, "shirt_and_pants") in labels
+    assert (False, True, "dress") in labels
+
+
+def test_entrance_pipeline_ignores_side_outside_passers(tmp_path: Path) -> None:
+    store = tmp_path / "store_a"
+    img = store / "09-57-27_D07-1.jpg"
+    side_box = (0.02, 0.10, 0.15, 0.70)
+    _write_colored_people_frame(
+        img,
+        boxes_with_colors=[(side_box, (120, 120, 120), (120, 120, 120))],
+    )
+    detector = BoxDetector({img.name: [side_box]})
+    result = analyze_store(
+        store_id="store_a",
+        store_dir=store,
+        detector=detector,
+        camera_configs={"D07": {"camera_role": "ENTRANCE"}},
+    )
+    row = result.image_insights.iloc[0]
+    assert int(row["person_count"]) == 0
+    assert int(row["customer_count"]) == 0
+    assert int(row["staff_count"]) == 0
+    assert bool(row["relevant"]) is False
+    assert str(row.get("event_label", "")) in {"OUTSIDE_PASSER", "INVALID"}
 
 
 def test_feedback_signature_suppresses_learned_banner_false_positive(tmp_path: Path) -> None:

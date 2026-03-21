@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 import hashlib
 
 from PIL import Image
+from iris.entrance_pipeline import enrich_entrance_camera_classification
 
 
 FILE_PATTERN = re.compile(
@@ -2242,7 +2243,8 @@ def assign_single_camera_tracks(
             for tid in list(active.keys()):
                 if (ts - active[tid][0]).total_seconds() > session_gap_sec:
                     del active[tid]
-            df.at[idx, "track_ids"] = json.dumps(sorted(set(current_ids)))
+            # Keep 1:1 order alignment with per-frame centroids/boxes.
+            df.at[idx, "track_ids"] = json.dumps(current_ids)
     return df
 
 
@@ -2627,6 +2629,12 @@ def _analyze_single_image(
             "age_gender_error": "",
             "floor_name": "",
             "location_name": "",
+            "upper_colors": "[]",
+            "lower_colors": "[]",
+            "clothing_types": "[]",
+            "ignore_reasons": "[]",
+            "box_labels": "[]",
+            "track_audit_json": "[]",
             "reject_reason": "bad_filename",
             "detection_error": "",
             "relative_path": rel_path,
@@ -2718,6 +2726,12 @@ def _analyze_single_image(
         "age_gender_error": age_gender_error,
         "floor_name": floor_name,
         "location_name": location_name,
+        "upper_colors": "[]",
+        "lower_colors": "[]",
+        "clothing_types": "[]",
+        "ignore_reasons": "[]",
+        "box_labels": "[]",
+        "track_audit_json": "[]",
         "reject_reason": reject_reason,
         "detection_error": detection.detection_error,
         "relative_path": rel_path,
@@ -2872,6 +2886,12 @@ def analyze_store(
                 "age_gender_error",
                 "floor_name",
                 "location_name",
+                "upper_colors",
+                "lower_colors",
+                "clothing_types",
+                "ignore_reasons",
+                "box_labels",
+                "track_audit_json",
                 "reject_reason",
                 "detection_error",
                 "relative_path",
@@ -2906,6 +2926,10 @@ def analyze_store(
         )
         image_insights.loc[mask, "relevant"] = False
     image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
+    image_insights = enrich_entrance_camera_classification(
+        image_insights=image_insights,
+        camera_configs=camera_configs,
+    )
     image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
     image_insights, daily_report = build_daily_customer_report(
         image_insights=image_insights,
@@ -2917,6 +2941,12 @@ def analyze_store(
         "track_ids": "[]",
         "person_centroids": "[]",
         "person_boxes": "[]",
+        "upper_colors": "[]",
+        "lower_colors": "[]",
+        "clothing_types": "[]",
+        "ignore_reasons": "[]",
+        "box_labels": "[]",
+        "track_audit_json": "[]",
     }.items():
         if col not in image_insights.columns:
             image_insights[col] = default_val
@@ -3075,7 +3105,9 @@ def analyze_store_streaming(
                 "relevant", "person_centroids", "person_boxes", "person_confidences", "staff_flags",
                 "staff_scores", "staff_count", "customer_count", "bag_count",
                 "gender_likelihood", "age_bucket_counts", "age_confidence",
-                "age_gender_error", "floor_name", "location_name", "reject_reason",
+                "age_gender_error", "floor_name", "location_name", "upper_colors",
+                "lower_colors", "clothing_types", "ignore_reasons", "box_labels",
+                "track_audit_json", "reject_reason",
                 "detection_error", "relative_path", "drive_link", "path",
             ]
         )
@@ -3117,6 +3149,10 @@ def analyze_store_streaming(
         image_insights.loc[mask, "relevant"] = False
         
     image_insights = assign_single_camera_tracks(image_insights=image_insights, session_gap_sec=session_gap_sec)
+    image_insights = enrich_entrance_camera_classification(
+        image_insights=image_insights,
+        camera_configs=camera_configs,
+    )
     image_insights = stitch_multi_camera_visits(image_insights=image_insights, max_delta_sec=max(1, int(session_gap_sec // 2)))
     image_insights, daily_report = build_daily_customer_report(
         image_insights=image_insights,
@@ -3129,6 +3165,12 @@ def analyze_store_streaming(
         "person_centroids": "[]",
         "person_boxes": "[]",
         "person_confidences": "[]",
+        "upper_colors": "[]",
+        "lower_colors": "[]",
+        "clothing_types": "[]",
+        "ignore_reasons": "[]",
+        "box_labels": "[]",
+        "track_audit_json": "[]",
     }.items():
         if col not in image_insights.columns:
             image_insights[col] = default_val
