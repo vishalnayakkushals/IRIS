@@ -224,7 +224,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-20 | Commit pending
+### 2026-03-20 | Commit 2d2050f
 - Summary:
   - Added a production-safe entrance-camera classification layer with deterministic priority rules (`poster -> side-passer -> staff -> customer -> pending`), zone polygons, and auditable per-track JSON output.
   - Fixed track ID ordering to preserve 1:1 mapping with detection boxes/centroids for reliable trajectory decisions.
