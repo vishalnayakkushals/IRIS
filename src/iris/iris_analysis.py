@@ -2378,12 +2378,41 @@ def _apply_session_metrics_to_summary(
 ) -> pd.DataFrame:
     if summary_row.empty:
         return summary_row
+    summary_row = summary_row.copy()
     if customer_sessions.empty:
         summary_row["daily_walkins"] = 0
         summary_row["daily_conversions"] = 0
         summary_row["daily_bounced"] = 0
         summary_row["daily_conversion_rate"] = np.nan
         summary_row["bounce_rate"] = np.nan
+        return summary_row
+
+    # Track-based strict D07 engine adds richer identifiers and lifecycle fields.
+    strict_gate_contract_detected = bool(
+        ("status" in customer_sessions.columns)
+        or ("session_id" in customer_sessions.columns)
+        or ("track_id_local" in customer_sessions.columns)
+    )
+    validated_session_contract_detected = bool(
+        ("store_day_customer_id" in customer_sessions.columns)
+        or ("is_valid_session" in customer_sessions.columns)
+        or ("session_class" in customer_sessions.columns)
+    )
+    generic_validated_contract = bool(
+        validated_session_contract_detected and ("close_reason" not in customer_sessions.columns)
+    )
+    if not strict_gate_contract_detected and not generic_validated_contract:
+        legacy_walkins = int(len(customer_sessions))
+        legacy_conversions = int(
+            pd.to_numeric(customer_sessions.get("converted_proxy", pd.Series([], dtype=float)), errors="coerce").fillna(0).sum()
+        )
+        legacy_bounced = int(max(0, legacy_walkins - legacy_conversions))
+        summary_row["daily_walkins"] = legacy_walkins
+        summary_row["daily_conversions"] = legacy_conversions
+        summary_row["daily_bounced"] = legacy_bounced
+        summary_row["daily_conversion_rate"] = (
+            round(float(legacy_conversions) / float(max(1, legacy_walkins)), 4) if legacy_walkins > 0 else 0.0
+        )
         return summary_row
 
     valid_entries = customer_sessions.copy()
@@ -2417,8 +2446,22 @@ def _apply_session_metrics_to_summary(
     bounce_rate = round(float(bounced) / float(total_entries), 4) if total_entries > 0 else np.nan
     conversion_rate = round(float(conversions) / float(total_entries), 4) if total_entries > 0 else np.nan
 
-    summary_row["footfall"] = total_entries
-    summary_row["estimated_visits"] = total_entries
+    if strict_gate_contract_detected:
+        # Strict gate-mode keeps footfall/estimated-visits tied to explicit exit crossing closures.
+        closed_visits = int(
+            valid_entries.get("close_reason", pd.Series([], dtype=str))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .eq("exit_crossing")
+            .sum()
+        )
+        summary_row["footfall"] = closed_visits
+        summary_row["estimated_visits"] = closed_visits
+    elif generic_validated_contract:
+        summary_row["estimated_visits"] = total_entries
+
     summary_row["avg_dwell_sec"] = avg_dwell
     summary_row["bounce_rate"] = bounce_rate
     summary_row["daily_walkins"] = total_entries
@@ -3912,7 +3955,28 @@ def export_analysis(
         if write_gzip_exports:
             df.to_csv(path.with_suffix(path.suffix + ".gz"), index=False, compression="gzip")
 
-    _write(output.all_stores_summary, out_dir / "all_stores_summary.csv")
+    summary_export = output.all_stores_summary.copy()
+    summary_columns = [
+        "store_id",
+        "total_images",
+        "valid_images",
+        "relevant_images",
+        "total_people",
+        "estimated_visits",
+        "avg_dwell_sec",
+        "bounce_rate",
+        "footfall",
+        "loss_of_sale_alerts",
+        "top_camera_hotspot",
+        "peak_time_bucket",
+        "daily_walkins",
+        "daily_conversions",
+        "daily_conversion_rate",
+    ]
+    for col in summary_columns:
+        if col not in summary_export.columns:
+            summary_export[col] = "" if col in {"store_id", "top_camera_hotspot", "peak_time_bucket"} else np.nan
+    _write(summary_export[summary_columns], out_dir / "all_stores_summary.csv")
     for store_id, store_result in output.stores.items():
         image_path = out_dir / f"store_{store_id}_image_insights.csv"
         hotspot_path = out_dir / f"store_{store_id}_camera_hotspots.csv"

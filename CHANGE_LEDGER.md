@@ -49,6 +49,18 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-23 | Commit <pending>
+- Summary:
+  - Fixed validated-visit KPI denominator logic and zero-denominator handling so conversion/bounce are entry-based with explicit no-data state.
+  - Restored export schema stability by keeping `daily_bounced` internal and excluding it from `all_stores_summary.csv`.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-12 | Commit ff4d140
 - Summary:
   - Fixed top branding header so uploaded organization logo and app name reliably render.
