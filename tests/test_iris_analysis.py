@@ -11,6 +11,7 @@ from iris.iris_analysis import (
     AnalysisOutput,
     DetectionResult,
     PersonDetector,
+    _apply_session_metrics_to_summary,
     _ahash_from_crop,
     analyze_root,
     analyze_store,
@@ -753,3 +754,67 @@ def test_d07_outside_passer_does_not_open_customer_session() -> None:
     assert str(session_row.get("invalid_reason", "")) == "no_valid_entry"
     assert str(session_row.get("store_day_customer_id", "")).strip() == ""
     assert all(str(v).strip() == "[]" for v in image_out["store_day_customer_ids"].tolist())
+
+
+def test_session_metrics_show_nan_rates_when_no_valid_entries() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "store_id": "BLRJAY",
+                "estimated_visits": 0,
+                "bounce_rate": 0.0,
+                "daily_walkins": 0,
+                "daily_conversions": 0,
+                "daily_conversion_rate": 0.0,
+            }
+        ]
+    )
+    sessions = pd.DataFrame(columns=["store_day_customer_id", "session_class", "is_valid_session", "converted_proxy", "dwell_sec"])
+    out = _apply_session_metrics_to_summary(summary_row=summary, customer_sessions=sessions, bounce_threshold_sec=120)
+    row = out.iloc[0]
+    assert pd.isna(pd.to_numeric([row["bounce_rate"]], errors="coerce")[0])
+    assert pd.isna(pd.to_numeric([row["daily_conversion_rate"]], errors="coerce")[0])
+    assert int(row["daily_walkins"]) == 0
+    assert int(row["daily_conversions"]) == 0
+    assert int(row["daily_bounced"]) == 0
+
+
+def test_session_metrics_use_entries_denominator_for_conversion_and_bounce() -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "store_id": "BLRJAY",
+                "estimated_visits": 0,
+                "bounce_rate": 0.0,
+                "daily_walkins": 0,
+                "daily_conversions": 0,
+                "daily_conversion_rate": 0.0,
+            }
+        ]
+    )
+    sessions = pd.DataFrame(
+        [
+            {
+                "store_day_customer_id": "C_BLRJAY_20260312_0000001",
+                "session_class": "CUSTOMER",
+                "is_valid_session": 1,
+                "converted_proxy": 1,
+                "dwell_sec": 120,
+            },
+            {
+                "store_day_customer_id": "C_BLRJAY_20260312_0000002",
+                "session_class": "CUSTOMER",
+                "is_valid_session": 1,
+                "converted_proxy": 0,
+                "dwell_sec": 45,
+            },
+        ]
+    )
+    out = _apply_session_metrics_to_summary(summary_row=summary, customer_sessions=sessions, bounce_threshold_sec=120)
+    row = out.iloc[0]
+    assert int(row["estimated_visits"]) == 2
+    assert int(row["daily_walkins"]) == 2
+    assert int(row["daily_conversions"]) == 1
+    assert int(row["daily_bounced"]) == 1
+    assert float(row["daily_conversion_rate"]) == 0.5
+    assert float(row["bounce_rate"]) == 0.5

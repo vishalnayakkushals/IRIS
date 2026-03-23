@@ -11,6 +11,7 @@ import re
 from urllib.parse import quote
 
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -937,13 +938,22 @@ def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataF
     entries = int(len(scoped_sessions)) if scoped_sessions is not None and not scoped_sessions.empty else 0
     closed_exits = 0
     converted = 0
+    bounced = 0
     if scoped_sessions is not None and not scoped_sessions.empty:
-        if "exit_ts" in scoped_sessions.columns:
+        if "close_reason" in scoped_sessions.columns:
             closed_exits = int(
-                scoped_sessions["exit_ts"].fillna("").astype(str).str.strip().ne("").sum()
+                scoped_sessions["close_reason"].fillna("").astype(str).str.strip().str.lower().eq("exit_crossing").sum()
             )
+        elif "status" in scoped_sessions.columns:
+            closed_exits = int(
+                scoped_sessions["status"].fillna("").astype(str).str.strip().str.upper().eq("EXITED").sum()
+            )
+        elif "exit_ts" in scoped_sessions.columns:
+            closed_exits = int(scoped_sessions["exit_ts"].fillna("").astype(str).str.strip().ne("").sum())
         if "converted_proxy" in scoped_sessions.columns:
             converted = int(pd.to_numeric(scoped_sessions["converted_proxy"], errors="coerce").fillna(0).sum())
+        converted = max(0, min(entries, converted))
+        bounced = max(0, entries - converted)
 
     per_customer_gender: dict[str, str] = {}
     per_customer_age: dict[str, str] = {}
@@ -979,7 +989,9 @@ def _business_kpi_summary(image_df: pd.DataFrame, customer_sessions_df: pd.DataF
         "entries": entries,
         "closed_exits": closed_exits,
         "converted": converted,
-        "conversion_rate": (float(converted) / float(entries)) if entries > 0 else 0.0,
+        "bounced": bounced,
+        "conversion_rate": (float(converted) / float(entries)) if entries > 0 else None,
+        "bounce_rate": (float(bounced) / float(entries)) if entries > 0 else None,
         "gender_counts": {"male": male, "female": female, "unknown": unknown},
         "age_bucket_counts": age_counts,
     }
@@ -1037,6 +1049,556 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     out["location_name"] = out["location_name"].fillna("").astype(str)
     out.loc[out["location_name"].str.strip() == "", "location_name"] = out["camera_id"].astype(str)
     return out
+
+
+def _top_gender_label(gender_payload: object) -> str:
+    scores = _safe_json_dict(gender_payload)
+    if not scores:
+        return "unknown"
+    key = str(max(scores, key=scores.get)).strip().lower()
+    if key.startswith("m"):
+        return "male"
+    if key.startswith("f"):
+        return "female"
+    return "unknown"
+
+
+def _normalize_validation_role(raw: object) -> str:
+    text = str(raw or "").strip().upper()
+    if not text:
+        return "UNKNOWN"
+    if "STAFF" in text:
+        return "STAFF"
+    if "OUTSIDE" in text:
+        return "OUTSIDE_PASSER"
+    if "STATIC" in text:
+        return "STATIC_OBJECT"
+    if "ENTRY_CANDIDATE" in text:
+        return "ENTRY_CANDIDATE"
+    if "ACTIVE" in text or "EXITED" in text or "CUSTOMER" in text:
+        return "CUSTOMER"
+    if "INVALID" in text:
+        return "INVALID"
+    return text
+
+
+def _validation_preferred_link(
+    row: pd.Series,
+    store_id: str,
+    root_dir: Path,
+    auth_token: str,
+) -> str:
+    drive_link = str(row.get("drive_link", "") or "").strip()
+    if drive_link.startswith("http://") or drive_link.startswith("https://"):
+        return drive_link
+    return _row_image_hyperlink(row=row, store_id=store_id, root_dir=root_dir, auth_token=auth_token)
+
+
+def _render_validation_console(
+    *,
+    image_df: pd.DataFrame,
+    customer_sessions_df: pd.DataFrame,
+    selected_store: str,
+    root_dir: Path,
+    auth_token: str,
+) -> None:
+    st.markdown("**Validation Console (D07)**")
+    st.caption("Table-first validation for manual verification. Use filters first, then verify proof links.")
+
+    frame_rows = image_df.copy()
+    if frame_rows.empty:
+        st.info("No image rows available for validation yet. Run analysis to generate frame-level outputs.")
+        return
+
+    frame_rows["capture_date"] = frame_rows["capture_date"].fillna("").astype(str)
+    frame_rows["camera_id"] = frame_rows["camera_id"].fillna("UNKNOWN").astype(str)
+    frame_rows["event_label"] = frame_rows["event_label"].fillna("").astype(str)
+
+    session_rows = customer_sessions_df.copy() if customer_sessions_df is not None else pd.DataFrame()
+    if not session_rows.empty:
+        for col in ["entry_time", "entry_ts", "last_seen_time", "exit_time", "exit_ts"]:
+            if col in session_rows.columns:
+                session_rows[col] = pd.to_datetime(session_rows[col], errors="coerce")
+        session_rows["capture_date"] = session_rows.get("capture_date", "").fillna("").astype(str)
+    else:
+        session_rows = pd.DataFrame()
+
+    track_to_person: dict[tuple[str, str, int], str] = {}
+    unique_records: dict[str, dict[str, object]] = {}
+
+    if not session_rows.empty:
+        for _, srow in session_rows.iterrows():
+            capture_date = str(srow.get("capture_date", "")).strip()
+            person_id = (
+                str(srow.get("session_id", "")).strip()
+                or str(srow.get("store_day_customer_id", "")).strip()
+                or str(srow.get("track_id_local", "")).strip()
+            )
+            if not person_id:
+                person_id = f"SESSION_{len(unique_records) + 1:06d}"
+            role = _normalize_validation_role(
+                str(srow.get("session_class", "")).strip() or str(srow.get("status", "")).strip()
+            )
+            gender = str(srow.get("gender", "")).strip().lower() or "unknown"
+            entry_time = pd.to_datetime(
+                srow.get("entry_time", srow.get("entry_ts", pd.NaT)),
+                errors="coerce",
+            )
+            exit_time = pd.to_datetime(
+                srow.get("exit_time", srow.get("exit_ts", pd.NaT)),
+                errors="coerce",
+            )
+            dwell_seconds = float(pd.to_numeric([srow.get("dwell_seconds", srow.get("dwell_sec", 0.0))], errors="coerce")[0] or 0.0)
+            invalid_reason = str(srow.get("invalid_reason", "")).strip()
+            converted_proxy = int(pd.to_numeric([srow.get("converted_proxy", 0)], errors="coerce")[0] or 0)
+            close_reason = str(srow.get("close_reason", "")).strip().lower()
+            bounced = int(role == "CUSTOMER" and (close_reason != "exit_crossing" or invalid_reason != ""))
+            cameras_seen = str(srow.get("cameras_seen", "")).strip()
+            best_path = (
+                str(srow.get("entry_snapshot_path", "")).strip()
+                or str(srow.get("entry_image_path", "")).strip()
+                or str(srow.get("exit_snapshot_path", "")).strip()
+                or str(srow.get("exit_image_path", "")).strip()
+            )
+            unique_records[person_id] = {
+                "Person ID": person_id,
+                "Role": role,
+                "Gender": gender,
+                "Entry Time": entry_time,
+                "Exit Time": exit_time,
+                "Dwell Time (sec)": round(max(0.0, dwell_seconds), 2),
+                "Best Proof Link": "",
+                "All Proof Links": "",
+                "Best Proof Path": best_path,
+                "All Proof Paths": best_path,
+                "Capture Date": capture_date,
+                "Cameras": cameras_seen,
+                "Converted": converted_proxy,
+                "Bounced": bounced,
+                "Rejection Reason": invalid_reason,
+            }
+
+            track_local = str(srow.get("track_id_local", "")).strip()
+            if ":" in track_local and capture_date:
+                cam, tid_str = track_local.split(":", 1)
+                try:
+                    tid_val = int(float(tid_str))
+                except Exception:
+                    tid_val = None
+                if tid_val is not None:
+                    track_to_person[(capture_date, str(cam).strip().upper(), int(tid_val))] = person_id
+
+    appearance_rows: list[dict[str, object]] = []
+    for _, row in frame_rows[frame_rows["timestamp"].notna()].iterrows():
+        ts = pd.Timestamp(row["timestamp"])
+        day = str(row.get("capture_date", "")).strip() or ts.date().isoformat()
+        cam = str(row.get("camera_id", "")).strip().upper()
+        role_fallback = _normalize_validation_role(row.get("event_label", ""))
+        gender_fallback = _top_gender_label(row.get("gender_likelihood", "{}"))
+        proof_link = _validation_preferred_link(
+            row=row,
+            store_id=selected_store,
+            root_dir=root_dir,
+            auth_token=auth_token,
+        )
+        resolved = _resolve_row_image_path(row=row, store_id=selected_store, root_dir=root_dir)
+        proof_path = str(resolved) if resolved is not None else str(row.get("path", "")).strip()
+
+        track_ids: list[int] = []
+        for item in _safe_json_list(row.get("track_ids", "[]")):
+            try:
+                track_ids.append(int(item))
+            except Exception:
+                continue
+
+        if track_ids:
+            for tid in track_ids:
+                person_id = track_to_person.get((day, cam, int(tid)), "")
+                if not person_id:
+                    person_id = f"T_{day.replace('-', '')}_{cam}_{int(tid)}"
+                unique = unique_records.get(person_id)
+                if unique is None:
+                    unique = {
+                        "Person ID": person_id,
+                        "Role": role_fallback,
+                        "Gender": gender_fallback,
+                        "Entry Time": ts,
+                        "Exit Time": ts,
+                        "Dwell Time (sec)": 1.0,
+                        "Best Proof Link": "",
+                        "All Proof Links": "",
+                        "Best Proof Path": proof_path,
+                        "All Proof Paths": proof_path,
+                        "Capture Date": day,
+                        "Cameras": cam,
+                        "Converted": 0,
+                        "Bounced": 0,
+                        "Rejection Reason": "",
+                    }
+                    unique_records[person_id] = unique
+                else:
+                    role_existing = str(unique.get("Role", "UNKNOWN"))
+                    if role_existing in {"UNKNOWN", "ENTRY_CANDIDATE", "INVALID"} and role_fallback not in {"UNKNOWN"}:
+                        unique["Role"] = role_fallback
+                    if str(unique.get("Gender", "unknown")).strip().lower() in {"", "unknown"} and gender_fallback != "unknown":
+                        unique["Gender"] = gender_fallback
+                    et = pd.to_datetime(unique.get("Entry Time", pd.NaT), errors="coerce")
+                    xt = pd.to_datetime(unique.get("Exit Time", pd.NaT), errors="coerce")
+                    unique["Entry Time"] = ts if pd.isna(et) else min(et, ts)
+                    unique["Exit Time"] = ts if pd.isna(xt) else max(xt, ts)
+                    unique["Capture Date"] = str(unique.get("Capture Date", "")).strip() or day
+                    cams = {c.strip() for c in str(unique.get("Cameras", "")).split(",") if c.strip()}
+                    cams.add(cam)
+                    unique["Cameras"] = ",".join(sorted(cams))
+
+                appearance_rows.append(
+                    {
+                        "Person ID": person_id,
+                        "Date": day,
+                        "Camera": cam,
+                        "Timestamp": ts,
+                        "Role": str(unique_records[person_id].get("Role", role_fallback)),
+                        "Gender": str(unique_records[person_id].get("Gender", gender_fallback)),
+                        "Proof Link": proof_link,
+                        "Proof Path": proof_path,
+                    }
+                )
+        else:
+            person_ids = [str(v).strip() for v in _safe_json_list(row.get("store_day_customer_ids", "[]")) if str(v).strip()]
+            for person_id in person_ids:
+                appearance_rows.append(
+                    {
+                        "Person ID": person_id,
+                        "Date": day,
+                        "Camera": cam,
+                        "Timestamp": ts,
+                        "Role": role_fallback,
+                        "Gender": gender_fallback,
+                        "Proof Link": proof_link,
+                        "Proof Path": proof_path,
+                    }
+                )
+
+    appearances_df = pd.DataFrame(appearance_rows)
+    if appearances_df.empty:
+        st.info(
+            "Validation data is empty after current run. "
+            "Check detector output and rerun analysis for this store/date."
+        )
+        return
+
+    # Merge proof links and seen counts back into unique records.
+    for person_id, grp in appearances_df.groupby("Person ID"):
+        links = [str(v).strip() for v in grp["Proof Link"].dropna().astype(str).tolist() if str(v).strip()]
+        paths = [str(v).strip() for v in grp["Proof Path"].dropna().astype(str).tolist() if str(v).strip()]
+        unique = unique_records.get(person_id)
+        if unique is None:
+            first_ts = pd.Timestamp(grp["Timestamp"].min())
+            last_ts = pd.Timestamp(grp["Timestamp"].max())
+            unique = {
+                "Person ID": person_id,
+                "Role": str(grp["Role"].iloc[0]),
+                "Gender": str(grp["Gender"].iloc[0]),
+                "Entry Time": first_ts,
+                "Exit Time": last_ts,
+                "Dwell Time (sec)": max(1.0, float((last_ts - first_ts).total_seconds()) + 1.0),
+                "Best Proof Link": links[0] if links else "",
+                "All Proof Links": " | ".join(sorted(set(links))[:8]),
+                "Best Proof Path": paths[0] if paths else "",
+                "All Proof Paths": " | ".join(sorted(set(paths))[:8]),
+                "Capture Date": str(grp["Date"].iloc[0]),
+                "Cameras": ",".join(sorted(set(grp["Camera"].astype(str).tolist()))),
+                "Converted": 0,
+                "Bounced": 0,
+                "Rejection Reason": "",
+            }
+            unique_records[person_id] = unique
+        else:
+            if links and not str(unique.get("Best Proof Link", "")).strip():
+                unique["Best Proof Link"] = links[0]
+            if paths and not str(unique.get("Best Proof Path", "")).strip():
+                unique["Best Proof Path"] = paths[0]
+            existing_links = [x.strip() for x in str(unique.get("All Proof Links", "")).split("|") if x.strip()]
+            existing_paths = [x.strip() for x in str(unique.get("All Proof Paths", "")).split("|") if x.strip()]
+            merged_links = sorted(set(existing_links + links))
+            merged_paths = sorted(set(existing_paths + paths))
+            unique["All Proof Links"] = " | ".join(merged_links[:8])
+            unique["All Proof Paths"] = " | ".join(merged_paths[:8])
+
+    unique_df = pd.DataFrame(unique_records.values())
+    if unique_df.empty:
+        st.info("No unique person/session records available after filter preparation.")
+        return
+    unique_df["Entry Time"] = pd.to_datetime(unique_df["Entry Time"], errors="coerce")
+    unique_df["Exit Time"] = pd.to_datetime(unique_df["Exit Time"], errors="coerce")
+    missing_dwell = pd.to_numeric(unique_df["Dwell Time (sec)"], errors="coerce").fillna(0.0) <= 0.0
+    unique_df.loc[missing_dwell, "Dwell Time (sec)"] = (
+        unique_df.loc[missing_dwell, "Exit Time"] - unique_df.loc[missing_dwell, "Entry Time"]
+    ).dt.total_seconds().fillna(0.0).clip(lower=1.0)
+
+    # Filters
+    filter_cols = st.columns(5)
+    filter_cols[0].selectbox(
+        "Store",
+        options=[selected_store],
+        index=0,
+        key=f"val_store_{selected_store}",
+        disabled=True,
+    )
+    date_options = ["(All)"] + sorted([d for d in appearances_df["Date"].dropna().astype(str).unique().tolist() if d.strip()])
+    selected_date = filter_cols[1].selectbox(
+        "Date",
+        options=date_options,
+        index=0,
+        key=f"val_date_{selected_store}",
+    )
+    camera_options = sorted([c for c in appearances_df["Camera"].dropna().astype(str).unique().tolist() if c.strip()])
+    selected_cameras = filter_cols[2].multiselect(
+        "Camera",
+        options=camera_options,
+        default=camera_options,
+        key=f"val_cam_{selected_store}",
+    )
+    role_options = sorted(
+        {
+            str(v).strip()
+            for v in pd.concat([appearances_df["Role"], unique_df["Role"]], ignore_index=True).astype(str).tolist()
+            if str(v).strip()
+        }
+    )
+    selected_roles = filter_cols[3].multiselect(
+        "Role",
+        options=role_options,
+        default=role_options,
+        key=f"val_role_{selected_store}",
+    )
+    person_query = filter_cols[4].text_input(
+        "Person ID search",
+        value="",
+        key=f"val_person_{selected_store}",
+        placeholder="type id fragment",
+    ).strip().lower()
+
+    appearances_filtered = appearances_df.copy()
+    if selected_date != "(All)":
+        appearances_filtered = appearances_filtered[appearances_filtered["Date"] == selected_date]
+    if selected_cameras:
+        appearances_filtered = appearances_filtered[appearances_filtered["Camera"].isin(selected_cameras)]
+    if selected_roles:
+        appearances_filtered = appearances_filtered[appearances_filtered["Role"].isin(selected_roles)]
+    if person_query:
+        appearances_filtered = appearances_filtered[
+            appearances_filtered["Person ID"].astype(str).str.lower().str.contains(person_query, na=False)
+        ]
+
+    unique_filtered = unique_df.copy()
+    if selected_date != "(All)":
+        unique_filtered = unique_filtered[
+            unique_filtered["Capture Date"].astype(str).str.strip().eq(selected_date)
+            | unique_filtered["Entry Time"].dt.date.astype(str).eq(selected_date)
+        ]
+    if selected_cameras:
+        unique_filtered = unique_filtered[
+            unique_filtered["Cameras"].astype(str).map(
+                lambda text: bool({c.strip() for c in str(text).split(",") if c.strip()} & set(selected_cameras))
+            )
+        ]
+    if selected_roles:
+        unique_filtered = unique_filtered[unique_filtered["Role"].isin(selected_roles)]
+    if person_query:
+        unique_filtered = unique_filtered[
+            unique_filtered["Person ID"].astype(str).str.lower().str.contains(person_query, na=False)
+        ]
+
+    # Top summary
+    summary_df = pd.DataFrame(
+        [
+            {
+                "Store Name": selected_store,
+                "Total Person Appearances": int(len(appearances_filtered)),
+                "Count of Unique Persons": int(unique_filtered["Person ID"].nunique()),
+                "Staff": int(unique_filtered["Role"].astype(str).str.upper().eq("STAFF").sum()),
+                "Converted": int(pd.to_numeric(unique_filtered["Converted"], errors="coerce").fillna(0).astype(int).sum()),
+                "Bounced": int(pd.to_numeric(unique_filtered["Bounced"], errors="coerce").fillna(0).astype(int).sum()),
+            }
+        ]
+    )
+    st.markdown("**Top Summary**")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    tab_overview, tab_all, tab_unique, tab_rejected = st.tabs(
+        ["Overview", "All Appearances", "Unique Persons", "Rejected Cases"]
+    )
+    with tab_overview:
+        st.caption("Validation-first view. Tables below are filtered by Store/Date/Camera/Role/Person ID.")
+        if appearances_filtered.empty or unique_filtered.empty:
+            st.info("No rows match current filters. Widen filters to view validation records.")
+        else:
+            st.write(
+                f"Showing `{len(appearances_filtered)}` appearances across "
+                f"`{int(unique_filtered['Person ID'].nunique())}` unique persons."
+            )
+
+    with tab_all:
+        if appearances_filtered.empty:
+            st.info("No appearance rows for selected filters.")
+        else:
+            all_agg = (
+                appearances_filtered.groupby("Person ID", as_index=False)
+                .agg(
+                    seen_count=("Timestamp", "count"),
+                    role=("Role", lambda s: str(s.mode().iloc[0]) if not s.mode().empty else str(s.iloc[0])),
+                    gender=("Gender", lambda s: str(s.mode().iloc[0]) if not s.mode().empty else str(s.iloc[0])),
+                    first_seen=("Timestamp", "min"),
+                    last_seen=("Timestamp", "max"),
+                    proof_links=("Proof Link", lambda s: next((x for x in s.astype(str).tolist() if str(x).strip()), "")),
+                )
+                .sort_values(["seen_count", "first_seen"], ascending=[False, True])
+            )
+            all_view = all_agg.rename(
+                columns={
+                    "Person ID": "Person ID",
+                    "seen_count": "Seen Count",
+                    "role": "Role",
+                    "gender": "Gender",
+                    "first_seen": "First Seen",
+                    "last_seen": "Last Seen",
+                    "proof_links": "Proof Links",
+                }
+            )
+            st.dataframe(
+                all_view[["Person ID", "Seen Count", "Role", "Gender", "First Seen", "Last Seen", "Proof Links"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Proof Links": st.column_config.LinkColumn(
+                        "Proof Links",
+                        help="Open proof image (Google Drive when available) in a new tab.",
+                        display_text="Open",
+                    ),
+                },
+            )
+
+    with tab_unique:
+        if unique_filtered.empty:
+            st.info("No unique person/session rows for selected filters.")
+        else:
+            uniq_view = unique_filtered.copy()
+            uniq_view = uniq_view.sort_values("Entry Time", na_position="last")
+            st.dataframe(
+                uniq_view[
+                    [
+                        "Person ID",
+                        "Role",
+                        "Gender",
+                        "Entry Time",
+                        "Exit Time",
+                        "Dwell Time (sec)",
+                        "Best Proof Link",
+                        "All Proof Links",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Best Proof Link": st.column_config.LinkColumn(
+                        "Best Proof Link",
+                        help="Open best available Google Drive proof link in new tab.",
+                        display_text="Open",
+                    ),
+                },
+            )
+            st.caption("Hover thumbnail preview in tables is limited in Streamlit; use preview selector below.")
+
+            preview_candidates = uniq_view[
+                uniq_view["Best Proof Path"].astype(str).str.strip().ne("")
+            ]["Person ID"].astype(str).tolist()
+            if preview_candidates:
+                preview_pid = st.selectbox(
+                    "Proof Preview Person ID",
+                    options=preview_candidates,
+                    index=0,
+                    key=f"val_preview_{selected_store}",
+                )
+                prow = uniq_view[uniq_view["Person ID"].astype(str) == str(preview_pid)].iloc[0]
+                preview_path = str(prow.get("Best Proof Path", "") or "").strip()
+                if preview_path and Path(preview_path).exists():
+                    st.image(preview_path, caption=f"Preview: {preview_pid}", use_container_width=True)
+                else:
+                    st.info("Preview image path is unavailable for selected person.")
+
+    with tab_rejected:
+        rejected_roles = {"STAFF", "OUTSIDE_PASSER", "STATIC_OBJECT", "INVALID", "ENTRY_CANDIDATE"}
+        rejected_people = unique_filtered[unique_filtered["Role"].astype(str).str.upper().isin(rejected_roles)].copy()
+        if rejected_people.empty:
+            st.info("No rejected-person rows for selected filters.")
+        else:
+            rejected_people["rejection_category"] = rejected_people["Role"].astype(str).str.upper()
+            st.dataframe(
+                rejected_people[
+                    [
+                        "Person ID",
+                        "rejection_category",
+                        "Role",
+                        "Entry Time",
+                        "Exit Time",
+                        "Rejection Reason",
+                        "Best Proof Link",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Best Proof Link": st.column_config.LinkColumn(
+                        "Best Proof Link",
+                        help="Open rejection proof in new tab.",
+                        display_text="Open",
+                    ),
+                },
+            )
+
+        invalid_frames = frame_rows[
+            (frame_rows["reject_reason"].fillna("").astype(str).str.strip().ne(""))
+            | (frame_rows["detection_error"].fillna("").astype(str).str.strip().ne(""))
+            | (~frame_rows["is_valid"])
+        ].copy()
+        if selected_date != "(All)":
+            invalid_frames = invalid_frames[invalid_frames["capture_date"].astype(str).eq(selected_date)]
+        if selected_cameras:
+            invalid_frames = invalid_frames[invalid_frames["camera_id"].astype(str).isin(selected_cameras)]
+        if not invalid_frames.empty:
+            invalid_frames["Proof Link"] = invalid_frames.apply(
+                lambda r: _validation_preferred_link(
+                    row=r,
+                    store_id=selected_store,
+                    root_dir=root_dir,
+                    auth_token=auth_token,
+                ),
+                axis=1,
+            )
+            invalid_frames["rejection reason"] = invalid_frames.apply(
+                lambda r: str(r.get("reject_reason", "") or "").strip()
+                or str(r.get("detection_error", "") or "").strip()
+                or "invalid_frame",
+                axis=1,
+            )
+            st.markdown("**Invalid Frames**")
+            st.dataframe(
+                invalid_frames[
+                    ["filename", "camera_id", "timestamp", "rejection reason", "Proof Link"]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Proof Link": st.column_config.LinkColumn(
+                        "Proof Link",
+                        help="Open invalid frame proof in new tab.",
+                        display_text="Open",
+                    ),
+                },
+            )
+        else:
+            st.info("No invalid-frame rows for selected filters.")
 
 
 def _resolve_row_image_path(row: pd.Series, store_id: str, root_dir: Path) -> Path | None:
@@ -1323,9 +1885,12 @@ def _render_overview(output: AnalysisOutput) -> None:
     metric_cols[2].metric("Relevant Images", f"{int(df['relevant_images'].sum())}")
     metric_cols[3].metric("Detected People", f"{int(df['total_people'].sum())}")
     if "estimated_visits" in df.columns:
+        total_visits = int(pd.to_numeric(df["estimated_visits"], errors="coerce").fillna(0).sum())
+        avg_bounce = pd.to_numeric(df.get("bounce_rate", pd.Series([], dtype=float)), errors="coerce").mean()
+        bounce_text = f"{float(avg_bounce):.2%}" if total_visits > 0 and not pd.isna(avg_bounce) else "N/A"
         st.caption(
-            f"Estimated Visits: {int(df['estimated_visits'].sum())} | "
-            f"Avg Bounce Rate: {df['bounce_rate'].mean():.2%}"
+            f"Estimated Visits: {total_visits} | "
+            f"Avg Bounce Rate: {bounce_text}"
         )
 
 
@@ -1349,14 +1914,22 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     row = output.all_stores_summary[
         output.all_stores_summary["store_id"] == selected_store
     ].iloc[0]
+    estimated_visits = int(pd.to_numeric([row.get("estimated_visits", 0)], errors="coerce")[0] or 0)
+    bounce_rate_raw = pd.to_numeric([row.get("bounce_rate", np.nan)], errors="coerce")[0]
+    bounce_rate_text = "N/A" if estimated_visits <= 0 or pd.isna(bounce_rate_raw) else f"{float(bounce_rate_raw):.2%}"
+    daily_walkins = int(pd.to_numeric([row.get("daily_walkins", 0)], errors="coerce")[0] or 0)
+    daily_conversions = int(pd.to_numeric([row.get("daily_conversions", 0)], errors="coerce")[0] or 0)
+    daily_conversion_raw = pd.to_numeric([row.get("daily_conversion_rate", np.nan)], errors="coerce")[0]
+    daily_conversion_text = "N/A" if daily_walkins <= 0 or pd.isna(daily_conversion_raw) else f"{float(daily_conversion_raw):.2%}"
+
     cols = st.columns(9)
     cols[0].metric("Total Images", int(row["total_images"]))
     cols[1].metric("Valid Images", int(row["valid_images"]))
     cols[2].metric("Relevant Images", int(row["relevant_images"]))
     cols[3].metric("Total People", int(row["total_people"]))
-    cols[4].metric("Estimated Visits", int(row.get("estimated_visits", 0)))
+    cols[4].metric("Estimated Visits", estimated_visits)
     cols[5].metric("Avg Dwell (sec)", float(row.get("avg_dwell_sec", 0.0)))
-    cols[6].metric("Bounce Rate", f"{float(row.get('bounce_rate', 0.0)):.2%}")
+    cols[6].metric("Bounce Rate", bounce_rate_text)
     cols[7].metric("Footfall", int(row.get("footfall", 0)))
     cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
     auth_token = str(st.session_state.get("session_token", "")).strip()
@@ -1370,17 +1943,45 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         unsafe_allow_html=True,
     )
     cols2 = st.columns(3)
-    cols2[0].metric("Daily Walk-ins (Actual)", int(row.get("daily_walkins", 0)))
-    cols2[1].metric("Daily Conversions", int(row.get("daily_conversions", 0)))
-    cols2[2].metric("Daily Conversion Rate", f"{float(row.get('daily_conversion_rate', 0.0)):.2%}")
+    cols2[0].metric("Daily Walk-ins (Actual)", daily_walkins)
+    cols2[1].metric("Daily Conversions", daily_conversions)
+    cols2[2].metric("Daily Conversion Rate", daily_conversion_text)
+    if estimated_visits <= 0:
+        st.info("No validated visits yet. Raw detections are available, but session-validated visit metrics are N/A.")
 
     business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
     st.markdown("**Customer Business Summary**")
-    kpi_cols = st.columns(4)
+    business_conversion = business_kpi.get("conversion_rate")
+    business_bounce = business_kpi.get("bounce_rate")
+    business_conversion_text = (
+        f"{float(business_conversion):.2%}"
+        if business_conversion is not None and not pd.isna(business_conversion)
+        else "N/A"
+    )
+    business_bounce_text = (
+        f"{float(business_bounce):.2%}"
+        if business_bounce is not None and not pd.isna(business_bounce)
+        else "N/A"
+    )
+    kpi_cols = st.columns(6)
     kpi_cols[0].metric("Total Entries", int(business_kpi["entries"]))
     kpi_cols[1].metric("Closed Exits", int(business_kpi["closed_exits"]))
     kpi_cols[2].metric("Converted", int(business_kpi["converted"]))
-    kpi_cols[3].metric("Conversion Rate", f"{float(business_kpi['conversion_rate']):.2%}")
+    kpi_cols[3].metric("Bounced", int(business_kpi.get("bounced", 0)))
+    kpi_cols[4].metric("Conversion Rate", business_conversion_text)
+    kpi_cols[5].metric("Bounce Rate", business_bounce_text)
+    st.caption(
+        "Raw detections come from person detection. "
+        "Business metrics come from validated customer entries/sessions."
+    )
+
+    _render_validation_console(
+        image_df=image_df,
+        customer_sessions_df=customer_sessions_df,
+        selected_store=selected_store,
+        root_dir=root_dir,
+        auth_token=auth_token,
+    )
 
     gender_counts = business_kpi["gender_counts"] if isinstance(business_kpi.get("gender_counts"), dict) else {}
     gender_cols = st.columns(3)
@@ -1547,92 +2148,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         )
         st.plotly_chart(loc_chart, use_container_width=True)
         st.dataframe(location_hotspot_df, use_container_width=True, hide_index=True)
-
-    if not customer_sessions_df.empty:
-        st.markdown("**Session Validation Table**")
-        cs = customer_sessions_df.copy()
-        for time_col in ["entry_time", "last_seen_time", "exit_time", "entry_ts", "exit_ts"]:
-            if time_col in cs.columns:
-                cs[time_col] = pd.to_datetime(cs[time_col], errors="coerce")
-
-        def _best_col(*candidates: str) -> str:
-            for candidate in candidates:
-                if candidate in cs.columns:
-                    return candidate
-            return ""
-
-        session_id_col = _best_col("session_id", "store_day_customer_id")
-        entry_time_col = _best_col("entry_time", "entry_ts")
-        exit_time_col = _best_col("exit_time", "exit_ts")
-        dwell_col = _best_col("dwell_seconds", "dwell_sec")
-        label_col = "session_class" if "session_class" in cs.columns else ""
-        rejected_col = "invalid_reason" if "invalid_reason" in cs.columns else ""
-        gender_col = "gender" if "gender" in cs.columns else ""
-
-        if session_id_col:
-            cs["Session ID"] = cs[session_id_col].fillna("").astype(str)
-        else:
-            cs["Session ID"] = ""
-        cs["Entry time"] = cs[entry_time_col] if entry_time_col else pd.NaT
-        cs["Exit time"] = cs[exit_time_col] if exit_time_col else pd.NaT
-        cs["Dwell time (sec)"] = pd.to_numeric(cs[dwell_col], errors="coerce").fillna(0.0) if dwell_col else 0.0
-        if label_col:
-            cs["Staff/Customer label"] = cs[label_col].fillna("").astype(str)
-        else:
-            cs["Staff/Customer label"] = ""
-        cs["Gender"] = cs[gender_col].fillna("").astype(str) if gender_col else "unknown"
-        cs["Rejected reason"] = cs[rejected_col].fillna("").astype(str) if rejected_col else ""
-        cs["Entry thumbnail"] = cs["entry_image_path"].fillna("").astype(str) if "entry_image_path" in cs.columns else ""
-        cs["Exit thumbnail"] = cs["exit_image_path"].fillna("").astype(str) if "exit_image_path" in cs.columns else ""
-
-        session_view_cols = [
-            "Session ID",
-            "Entry thumbnail",
-            "Exit thumbnail",
-            "Entry time",
-            "Exit time",
-            "Dwell time (sec)",
-            "Gender",
-            "Staff/Customer label",
-            "Rejected reason",
-        ]
-        st.dataframe(cs[session_view_cols], use_container_width=True, hide_index=True)
-
-        valid_preview = [sid for sid in cs["Session ID"].astype(str).tolist() if sid.strip()]
-        if valid_preview:
-            selected_sid = st.selectbox(
-                "Preview Session Thumbnails",
-                options=valid_preview,
-                index=0,
-                key=f"session_preview_{selected_store}",
-            )
-            selected_row = cs[cs["Session ID"].astype(str) == str(selected_sid)].iloc[0]
-            preview_cols = st.columns(2)
-            entry_path = str(selected_row.get("Entry thumbnail", "") or "").strip()
-            exit_path = str(selected_row.get("Exit thumbnail", "") or "").strip()
-            with preview_cols[0]:
-                st.caption("Entry thumbnail")
-                if entry_path and Path(entry_path).exists():
-                    st.image(entry_path, use_container_width=True)
-                else:
-                    st.info("Entry thumbnail not available.")
-            with preview_cols[1]:
-                st.caption("Exit thumbnail")
-                if exit_path and Path(exit_path).exists():
-                    st.image(exit_path, use_container_width=True)
-                else:
-                    st.info("Exit thumbnail not available.")
-
-        if dwell_col:
-            st.caption(
-                "Average dwell (session-based): "
-                f"{float(pd.to_numeric(cs['Dwell time (sec)'], errors='coerce').fillna(0).mean()):.2f} sec"
-            )
-    else:
-        st.info(
-            "No session records found for this store/date. "
-            "If frames exist, check entry/exit ROI config, tracker continuity, and session filters."
-        )
 
     relevant_df = image_df[image_df["relevant"]].copy()
     if "camera_id" not in relevant_df.columns:

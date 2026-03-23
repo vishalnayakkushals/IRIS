@@ -1794,7 +1794,6 @@ def _build_track_based_strict_sessions(
     staff_threshold = float(os.getenv("IRIS_STAFF_SCORE_THRESHOLD", "0.92") or 0.92)
     staff_threshold = max(0.4, min(1.4, staff_threshold))
 
-    track_to_customer_session: dict[tuple[str, str, int], str] = {}
     track_customer_windows: dict[tuple[str, str, int], tuple[str, pd.Timestamp, pd.Timestamp]] = {}
     track_to_status: dict[tuple[str, str, int], str] = {}
     sessions_out: list[dict[str, Any]] = []
@@ -1871,7 +1870,6 @@ def _build_track_based_strict_sessions(
             if entry_valid:
                 session_id = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
                 seq += 1
-                track_to_customer_session[key] = session_id
             else:
                 session_id = f"REJ_{store_id}_{day.replace('-', '')}_{camera_id}_{abs(int(track_id))}"
 
@@ -1894,7 +1892,7 @@ def _build_track_based_strict_sessions(
             elif crossed_out_ts is None:
                 status = "ACTIVE_CUSTOMER"
                 session_class = "CUSTOMER"
-                invalid_reason = "no_exit_crossing"
+                invalid_reason = ""
             else:
                 status = "EXITED"
                 session_class = "CUSTOMER"
@@ -1943,7 +1941,7 @@ def _build_track_based_strict_sessions(
                     "session_class": session_class,
                     "staff_flag": int(is_staff),
                     "is_staff_session": int(is_staff),
-                    "is_valid_session": int(bool(entry_valid and crossed_out_ts is not None)),
+                    "is_valid_session": int(bool(entry_valid)),
                     "invalid_reason": invalid_reason,
                     "converted_proxy": 0,
                     "cameras_seen": ",".join(cameras_seen),
@@ -2383,47 +2381,50 @@ def _apply_session_metrics_to_summary(
     if customer_sessions.empty:
         summary_row["daily_walkins"] = 0
         summary_row["daily_conversions"] = 0
-        summary_row["daily_conversion_rate"] = 0.0
+        summary_row["daily_bounced"] = 0
+        summary_row["daily_conversion_rate"] = np.nan
+        summary_row["bounce_rate"] = np.nan
         return summary_row
-    close_reason_series = customer_sessions.get("close_reason", pd.Series([], dtype=str)).astype(str)
-    invalid_reason_series = customer_sessions.get("invalid_reason", pd.Series([], dtype=str)).astype(str)
-    strict_contract_detected = bool(
-        close_reason_series.eq("exit_crossing").any()
-        or invalid_reason_series.eq("no_exit_crossing").any()
-    )
-    if not strict_contract_detected:
-        legacy_walkins = int(len(customer_sessions))
-        legacy_conversions = int(
-            pd.to_numeric(customer_sessions.get("converted_proxy", pd.Series([], dtype=float)), errors="coerce").fillna(0).sum()
-        )
-        summary_row["daily_walkins"] = legacy_walkins
-        summary_row["daily_conversions"] = legacy_conversions
-        summary_row["daily_conversion_rate"] = (
-            round(float(legacy_conversions) / float(max(1, legacy_walkins)), 4) if legacy_walkins > 0 else 0.0
-        )
-        return summary_row
-    valid_closed = _valid_closed_customer_sessions(customer_sessions)
-    visits = int(len(valid_closed))
-    dwell_series = pd.to_numeric(
-        valid_closed.get("dwell_sec", pd.Series([], dtype=float)),
-        errors="coerce",
-    ).fillna(0.0)
-    avg_dwell = round(float(dwell_series.mean()), 2) if visits > 0 else 0.0
-    bounce = int((dwell_series < float(max(1, bounce_threshold_sec))).sum()) if visits > 0 else 0
-    bounce_rate = round(float(bounce) / float(visits), 4) if visits > 0 else 0.0
+
+    valid_entries = customer_sessions.copy()
+    if "session_class" in valid_entries.columns:
+        valid_entries = valid_entries[
+            valid_entries["session_class"].fillna("").astype(str).str.upper().eq("CUSTOMER")
+        ].copy()
+    if "store_day_customer_id" in valid_entries.columns:
+        valid_entries = valid_entries[
+            valid_entries["store_day_customer_id"].fillna("").astype(str).str.strip().ne("")
+        ].copy()
+    if "is_valid_session" in valid_entries.columns:
+        valid_entries = valid_entries[
+            pd.to_numeric(valid_entries["is_valid_session"], errors="coerce").fillna(0).astype(int) > 0
+        ].copy()
+
+    total_entries = int(len(valid_entries))
     conversions = int(
         pd.to_numeric(
-            valid_closed.get("converted_proxy", pd.Series([], dtype=float)),
+            valid_entries.get("converted_proxy", pd.Series([], dtype=float)),
             errors="coerce",
         ).fillna(0).sum()
     )
-    summary_row["footfall"] = visits
-    summary_row["estimated_visits"] = visits
+    conversions = max(0, min(total_entries, conversions))
+    bounced = int(max(0, total_entries - conversions))
+    dwell_series = pd.to_numeric(
+        valid_entries.get("dwell_sec", pd.Series([], dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    avg_dwell = round(float(dwell_series.mean()), 2) if total_entries > 0 else 0.0
+    bounce_rate = round(float(bounced) / float(total_entries), 4) if total_entries > 0 else np.nan
+    conversion_rate = round(float(conversions) / float(total_entries), 4) if total_entries > 0 else np.nan
+
+    summary_row["footfall"] = total_entries
+    summary_row["estimated_visits"] = total_entries
     summary_row["avg_dwell_sec"] = avg_dwell
     summary_row["bounce_rate"] = bounce_rate
-    summary_row["daily_walkins"] = visits
+    summary_row["daily_walkins"] = total_entries
     summary_row["daily_conversions"] = conversions
-    summary_row["daily_conversion_rate"] = round(float(conversions) / float(max(1, visits)), 4) if visits > 0 else 0.0
+    summary_row["daily_bounced"] = bounced
+    summary_row["daily_conversion_rate"] = conversion_rate
     return summary_row
 
 

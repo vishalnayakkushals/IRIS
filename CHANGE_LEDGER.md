@@ -683,3 +683,32 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional runtime tuning env vars supported: `IRIS_TRACKER_TYPE`, `IRIS_REID_WEIGHT`, `IRIS_REID_DISTANCE_THRESHOLD`, `IRIS_TRACK_MATCH_COST`, `IRIS_STAFF_SCORE_THRESHOLD`.
 
+### 2026-03-23 | Commit pending
+- Summary:
+  - Added a validation-first D07 console in Store Drill-down with table-first workflow: top summary table, all-appearances table, unique-persons table, and rejected-cases tab.
+  - Added manual verification filters (store/date/camera/role/person-id search), drive-link-first proof navigation, and preview selector for quick proof-image inspection.
+  - Preserved existing dashboard analytics sections while making validation tables primary for manual audit flow.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-23 | Commit pending
+- Summary:
+  - Fixed visit KPI denominator handling so conversion and bounce rates are based on validated entries, and both rates show `N/A` when there are no validated visits.
+  - Updated strict D07 session validity so an entry-crossing customer session is treated as a validated visit even when it closes by timeout (not only exit crossing).
+  - Updated Store Drill-down business summary to explicitly separate raw detections from validated visit metrics and avoid misleading `0.00%` when denominator is zero.
+  - Added regression tests for zero-denominator (`NaN`) KPI behavior and entry-denominator conversion/bounce formulas.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
