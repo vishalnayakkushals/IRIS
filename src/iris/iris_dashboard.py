@@ -1549,18 +1549,90 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.dataframe(location_hotspot_df, use_container_width=True, hide_index=True)
 
     if not customer_sessions_df.empty:
-        st.markdown("**Customer Sessions (Store-Day IDs)**")
+        st.markdown("**Session Validation Table**")
         cs = customer_sessions_df.copy()
-        if "entry_ts" in cs.columns:
-            cs["entry_ts"] = pd.to_datetime(cs["entry_ts"], errors="coerce")
-        if "exit_ts" in cs.columns:
-            cs["exit_ts"] = pd.to_datetime(cs["exit_ts"], errors="coerce")
-        st.dataframe(cs, use_container_width=True, hide_index=True)
-        if "dwell_sec" in cs.columns:
+        for time_col in ["entry_time", "last_seen_time", "exit_time", "entry_ts", "exit_ts"]:
+            if time_col in cs.columns:
+                cs[time_col] = pd.to_datetime(cs[time_col], errors="coerce")
+
+        def _best_col(*candidates: str) -> str:
+            for candidate in candidates:
+                if candidate in cs.columns:
+                    return candidate
+            return ""
+
+        session_id_col = _best_col("session_id", "store_day_customer_id")
+        entry_time_col = _best_col("entry_time", "entry_ts")
+        exit_time_col = _best_col("exit_time", "exit_ts")
+        dwell_col = _best_col("dwell_seconds", "dwell_sec")
+        label_col = "session_class" if "session_class" in cs.columns else ""
+        rejected_col = "invalid_reason" if "invalid_reason" in cs.columns else ""
+        gender_col = "gender" if "gender" in cs.columns else ""
+
+        if session_id_col:
+            cs["Session ID"] = cs[session_id_col].fillna("").astype(str)
+        else:
+            cs["Session ID"] = ""
+        cs["Entry time"] = cs[entry_time_col] if entry_time_col else pd.NaT
+        cs["Exit time"] = cs[exit_time_col] if exit_time_col else pd.NaT
+        cs["Dwell time (sec)"] = pd.to_numeric(cs[dwell_col], errors="coerce").fillna(0.0) if dwell_col else 0.0
+        if label_col:
+            cs["Staff/Customer label"] = cs[label_col].fillna("").astype(str)
+        else:
+            cs["Staff/Customer label"] = ""
+        cs["Gender"] = cs[gender_col].fillna("").astype(str) if gender_col else "unknown"
+        cs["Rejected reason"] = cs[rejected_col].fillna("").astype(str) if rejected_col else ""
+        cs["Entry thumbnail"] = cs["entry_image_path"].fillna("").astype(str) if "entry_image_path" in cs.columns else ""
+        cs["Exit thumbnail"] = cs["exit_image_path"].fillna("").astype(str) if "exit_image_path" in cs.columns else ""
+
+        session_view_cols = [
+            "Session ID",
+            "Entry thumbnail",
+            "Exit thumbnail",
+            "Entry time",
+            "Exit time",
+            "Dwell time (sec)",
+            "Gender",
+            "Staff/Customer label",
+            "Rejected reason",
+        ]
+        st.dataframe(cs[session_view_cols], use_container_width=True, hide_index=True)
+
+        valid_preview = [sid for sid in cs["Session ID"].astype(str).tolist() if sid.strip()]
+        if valid_preview:
+            selected_sid = st.selectbox(
+                "Preview Session Thumbnails",
+                options=valid_preview,
+                index=0,
+                key=f"session_preview_{selected_store}",
+            )
+            selected_row = cs[cs["Session ID"].astype(str) == str(selected_sid)].iloc[0]
+            preview_cols = st.columns(2)
+            entry_path = str(selected_row.get("Entry thumbnail", "") or "").strip()
+            exit_path = str(selected_row.get("Exit thumbnail", "") or "").strip()
+            with preview_cols[0]:
+                st.caption("Entry thumbnail")
+                if entry_path and Path(entry_path).exists():
+                    st.image(entry_path, use_container_width=True)
+                else:
+                    st.info("Entry thumbnail not available.")
+            with preview_cols[1]:
+                st.caption("Exit thumbnail")
+                if exit_path and Path(exit_path).exists():
+                    st.image(exit_path, use_container_width=True)
+                else:
+                    st.info("Exit thumbnail not available.")
+
+        if dwell_col:
             st.caption(
                 "Average dwell (session-based): "
-                f"{float(pd.to_numeric(cs['dwell_sec'], errors='coerce').fillna(0).mean()):.2f} sec"
+                f"{float(pd.to_numeric(cs['Dwell time (sec)'], errors='coerce').fillna(0).mean()):.2f} sec"
             )
+    else:
+        st.info(
+            "No session records found for this store/date. "
+            "If frames exist, check entry/exit ROI config, tracker continuity, and session filters."
+        )
 
     relevant_df = image_df[image_df["relevant"]].copy()
     if "camera_id" not in relevant_df.columns:

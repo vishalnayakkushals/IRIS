@@ -667,3 +667,19 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-23 | Commit pending
+- Summary:
+  - Upgraded single-camera tracking to configurable `botsort`/`bytetrack`/`centroid` modes and added lightweight appearance embeddings for stronger D07 identity persistence.
+  - Reworked strict gate-mode sessions into track-lifecycle state machine with explicit statuses (`ENTRY_CANDIDATE`, `ACTIVE_CUSTOMER`, `EXITED`, `STAFF`, `OUTSIDE_PASSER`, `INVALID_STATIC_OBJECT`) and richer session fields for dashboard validation.
+  - Updated store drill-down session UI to show validation-first columns (session id, entry/exit times, dwell, label, rejected reason) plus entry/exit thumbnail preview and clear empty-state guidance.
+  - Added D07 regression tests for exited customer sessions, static-object rejection, and outside-passer suppression.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Optional runtime tuning env vars supported: `IRIS_TRACKER_TYPE`, `IRIS_REID_WEIGHT`, `IRIS_REID_DISTANCE_THRESHOLD`, `IRIS_TRACK_MATCH_COST`, `IRIS_STAFF_SCORE_THRESHOLD`.
+

@@ -615,5 +615,141 @@ def test_d07_session_has_entry_exit_images_and_customer_class(tmp_path: Path) ->
     assert not result.customer_sessions.empty
     sess = result.customer_sessions.iloc[0]
     assert str(sess.get("session_class", "")) == "CUSTOMER"
+    assert str(sess.get("status", "")) == "EXITED"
+    assert str(sess.get("track_id_local", "")).startswith("D07:")
+    assert int(sess.get("is_valid_session", 0)) == 1
+    assert str(sess.get("session_id", "")).startswith("C_BLRJAY_")
     assert str(sess.get("entry_image", "")).strip() != ""
     assert str(sess.get("exit_image", "")).strip() != ""
+    row_map = result.image_insights.set_index("filename")
+    assert str(row_map.loc["09-00-00_D07-1.jpg", "store_day_customer_ids"]).strip() == "[]"
+
+
+def test_d07_static_track_is_rejected_as_static_object() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:00"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([11]),
+                "person_centroids": json.dumps([(0.24, 0.52)]),
+                "person_boxes": json.dumps([(0.20, 0.20, 0.30, 0.84)]),
+                "person_confidences": json.dumps([0.95]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps(["poster_or_flat_static"]),
+                "box_labels": json.dumps(["ignore"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-00_D07-1.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:08"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([11]),
+                "person_centroids": json.dumps([(0.24, 0.52)]),
+                "person_boxes": json.dumps([(0.20, 0.20, 0.30, 0.84)]),
+                "person_confidences": json.dumps([0.94]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps(["poster_or_flat_static"]),
+                "box_labels": json.dumps(["ignore"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-08_D07-2.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+        ]
+    )
+    image_out, sessions = build_store_day_customer_sessions(
+        image_insights=df,
+        store_id="BLRJAY",
+        camera_configs={"D07": {"camera_role": "ENTRANCE", "entry_line_x": 0.5, "entry_direction": "OUTSIDE_TO_INSIDE"}},
+    )
+    assert not sessions.empty
+    session_row = sessions.iloc[0]
+    assert str(session_row.get("status", "")) == "INVALID_STATIC_OBJECT"
+    assert str(session_row.get("session_class", "")) == "STATIC_OBJECT"
+    assert str(session_row.get("invalid_reason", "")) == "static_object"
+    assert str(session_row.get("store_day_customer_id", "")).strip() == ""
+    assert all(str(v).strip() == "[]" for v in image_out["store_day_customer_ids"].tolist())
+
+
+def test_d07_outside_passer_does_not_open_customer_session() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:00"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([9]),
+                "person_centroids": json.dumps([(0.21, 0.48)]),
+                "person_boxes": json.dumps([(0.16, 0.18, 0.26, 0.80)]),
+                "person_confidences": json.dumps([0.92]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps([""]),
+                "box_labels": json.dumps(["pending"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-00_D07-1.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:05"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([9]),
+                "person_centroids": json.dumps([(0.26, 0.49)]),
+                "person_boxes": json.dumps([(0.21, 0.18, 0.31, 0.80)]),
+                "person_confidences": json.dumps([0.91]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps([""]),
+                "box_labels": json.dumps(["pending"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-05_D07-2.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+        ]
+    )
+    image_out, sessions = build_store_day_customer_sessions(
+        image_insights=df,
+        store_id="BLRJAY",
+        camera_configs={"D07": {"camera_role": "ENTRANCE", "entry_line_x": 0.5, "entry_direction": "OUTSIDE_TO_INSIDE"}},
+    )
+    assert not sessions.empty
+    session_row = sessions.iloc[0]
+    assert str(session_row.get("status", "")) == "OUTSIDE_PASSER"
+    assert str(session_row.get("session_class", "")) == "OUTSIDE_PASSER"
+    assert str(session_row.get("invalid_reason", "")) == "no_valid_entry"
+    assert str(session_row.get("store_day_customer_id", "")).strip() == ""
+    assert all(str(v).strip() == "[]" for v in image_out["store_day_customer_ids"].tolist())

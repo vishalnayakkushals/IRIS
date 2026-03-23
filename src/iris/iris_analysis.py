@@ -1627,6 +1627,406 @@ def _analyze_age_gender_deepface(
     return json.dumps(likelihood), json.dumps(age_buckets), confidence, ""
 
 
+def _customer_session_columns() -> list[str]:
+    return [
+        "store_id",
+        "capture_date",
+        "session_id",
+        "store_day_customer_id",
+        "track_id_local",
+        "entry_time",
+        "last_seen_time",
+        "exit_time",
+        "entry_ts",
+        "exit_ts",
+        "dwell_seconds",
+        "dwell_sec",
+        "status",
+        "close_reason",
+        "session_class",
+        "staff_flag",
+        "is_staff_session",
+        "is_valid_session",
+        "invalid_reason",
+        "converted_proxy",
+        "cameras_seen",
+        "locations_seen",
+        "floors_seen",
+        "entry_image",
+        "entry_image_path",
+        "entry_snapshot_path",
+        "exit_image",
+        "exit_image_path",
+        "exit_snapshot_path",
+        "frames_seen",
+        "movement_score",
+        "staff_ratio_max",
+        "staff_score",
+        "confidence",
+        "gender",
+        "notes",
+    ]
+
+
+def _dominant_gender_from_observations(observations: list[dict[str, Any]]) -> str:
+    score_m = 0.0
+    score_f = 0.0
+    for obs in observations:
+        raw = obs.get("gender_likelihood", "{}")
+        payload: dict[str, Any] = {}
+        if isinstance(raw, dict):
+            payload = raw
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if text:
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                except Exception:
+                    payload = {}
+        if not payload:
+            continue
+        for k, v in payload.items():
+            key = str(k).strip().lower()
+            try:
+                fv = float(v)
+            except Exception:
+                fv = 0.0
+            if key.startswith("m"):
+                score_m += fv
+            elif key.startswith("f"):
+                score_f += fv
+    if score_m <= 0.0 and score_f <= 0.0:
+        return "unknown"
+    return "male" if score_m >= score_f else "female"
+
+
+def _build_track_based_strict_sessions(
+    image_insights: pd.DataFrame,
+    store_id: str,
+    gate_camera_ids: set[str],
+    camera_configs: dict[str, dict[str, object]],
+    session_timeout_sec: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = image_insights.copy()
+    if "store_day_customer_ids" not in df.columns:
+        df["store_day_customer_ids"] = "[]"
+    if "customer_session_ids" not in df.columns:
+        df["customer_session_ids"] = "[]"
+    if "event_label" not in df.columns:
+        df["event_label"] = "INVALID"
+
+    gate_ids_upper = {str(v).strip().upper() for v in gate_camera_ids}
+    if not gate_ids_upper:
+        return df, pd.DataFrame(columns=_customer_session_columns())
+
+    rows = df[df["timestamp"].notna()].copy().sort_values("timestamp")
+    track_events: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+
+    for row_idx, row in rows.iterrows():
+        camera_id = str(row.get("camera_id", "")).strip().upper()
+        if camera_id not in gate_ids_upper:
+            continue
+        ts = pd.Timestamp(row["timestamp"])
+        capture_date = str(row.get("capture_date", "")).strip()
+        if not capture_date:
+            capture_date = ts.date().isoformat()
+        track_ids = [int(v) for v in _safe_json_list(row.get("track_ids", "[]")) if str(v).strip()]
+        centroids = _parse_centroid_list(row.get("person_centroids", "[]"))
+        boxes = _parse_box_list(row.get("person_boxes", "[]"))
+        det_n = max(len(track_ids), len(centroids), len(boxes))
+        if det_n <= 0:
+            continue
+        while len(centroids) < det_n:
+            if len(centroids) < len(boxes):
+                centroids.append(_box_centroid(boxes[len(centroids)]))
+            else:
+                centroids.append((0.5, 0.5))
+        while len(boxes) < det_n:
+            boxes.append(_fallback_box_from_centroid(centroids[len(boxes)]))
+        while len(track_ids) < det_n:
+            synthetic_tid = -((int(row_idx) + 1) * 1000 + len(track_ids))
+            track_ids.append(synthetic_tid)
+        staff_flags = _parse_bool_list(row.get("staff_flags", "[]"), expected=det_n)
+        staff_scores = _parse_float_list(row.get("staff_scores", "[]"), expected=det_n)
+        confs = _parse_float_list(row.get("person_confidences", "[]"), expected=det_n)
+        ignore_reasons = [str(v).strip().lower() for v in _safe_json_list(row.get("ignore_reasons", "[]"))]
+        if len(ignore_reasons) < det_n:
+            ignore_reasons.extend([""] * (det_n - len(ignore_reasons)))
+        box_labels = [str(v).strip().lower() for v in _safe_json_list(row.get("box_labels", "[]"))]
+        if len(box_labels) < det_n:
+            box_labels.extend([""] * (det_n - len(box_labels)))
+        location_name = str(row.get("location_name", "")).strip() or camera_id
+        floor_name = str(row.get("floor_name", "")).strip() or "Ground"
+        image_name = str(row.get("filename", "")).strip()
+        image_path = str(row.get("path", "")).strip()
+        for det_i in range(det_n):
+            tid = int(track_ids[det_i])
+            cx, cy = centroids[det_i]
+            event_key = (capture_date, camera_id, tid)
+            track_events.setdefault(event_key, []).append(
+                {
+                    "row_idx": int(row_idx),
+                    "timestamp": ts,
+                    "camera_id": camera_id,
+                    "cx": float(cx),
+                    "cy": float(cy),
+                    "bbox": boxes[det_i],
+                    "staff_flag": bool(staff_flags[det_i]),
+                    "staff_score": float(staff_scores[det_i]),
+                    "confidence": float(confs[det_i]),
+                    "ignore_reason": str(ignore_reasons[det_i]),
+                    "box_label": str(box_labels[det_i]),
+                    "image_name": image_name,
+                    "image_path": image_path,
+                    "location_name": location_name,
+                    "floor_name": floor_name,
+                    "gender_likelihood": row.get("gender_likelihood", "{}"),
+                }
+            )
+
+    if not track_events:
+        df["store_day_customer_ids"] = "[]"
+        df["customer_session_ids"] = "[]"
+        return df, pd.DataFrame(columns=_customer_session_columns())
+
+    staff_threshold = float(os.getenv("IRIS_STAFF_SCORE_THRESHOLD", "0.92") or 0.92)
+    staff_threshold = max(0.4, min(1.4, staff_threshold))
+
+    track_to_customer_session: dict[tuple[str, str, int], str] = {}
+    track_customer_windows: dict[tuple[str, str, int], tuple[str, pd.Timestamp, pd.Timestamp]] = {}
+    track_to_status: dict[tuple[str, str, int], str] = {}
+    sessions_out: list[dict[str, Any]] = []
+
+    day_keys: dict[str, list[tuple[str, str, int]]] = {}
+    for key in track_events:
+        day_keys.setdefault(key[0], []).append(key)
+
+    for capture_date in sorted(day_keys.keys()):
+        seq = 1
+        ordered_keys = sorted(
+            day_keys[capture_date],
+            key=lambda key: (pd.Timestamp(track_events[key][0]["timestamp"]), key[1], key[2]),
+        )
+        for key in ordered_keys:
+            day, camera_id, track_id = key
+            obs = sorted(track_events[key], key=lambda x: pd.Timestamp(x["timestamp"]))
+            cfg = camera_configs.get(camera_id, {})
+            line_x = float(cfg.get("entry_line_x", 0.5))
+            direction = str(cfg.get("entry_direction", "OUTSIDE_TO_INSIDE")).upper()
+            first_ts = pd.Timestamp(obs[0]["timestamp"])
+            last_ts = pd.Timestamp(obs[-1]["timestamp"])
+            duration_sec = max(1.0, float((last_ts - first_ts).total_seconds()) + 1.0)
+
+            crossed_in_ts: pd.Timestamp | None = None
+            crossed_out_ts: pd.Timestamp | None = None
+            entered = False
+            for a, b in zip(obs, obs[1:]):
+                side_a = _line_side(float(a["cx"]), line_x)
+                side_b = _line_side(float(b["cx"]), line_x)
+                crossed_in, crossed_out = _cross_in_out(side_a=side_a, side_b=side_b, direction=direction)
+                if crossed_in and crossed_in_ts is None:
+                    crossed_in_ts = pd.Timestamp(b["timestamp"])
+                    entered = True
+                elif crossed_out and entered and crossed_out_ts is None:
+                    crossed_out_ts = pd.Timestamp(b["timestamp"])
+                    entered = False
+                    break
+
+            point_std_x = float(np.std([float(v["cx"]) for v in obs])) if len(obs) > 1 else 0.0
+            point_std_y = float(np.std([float(v["cy"]) for v in obs])) if len(obs) > 1 else 0.0
+            areas = np.array([_box_area(v["bbox"]) for v in obs], dtype=float)
+            area_mean = float(np.mean(areas)) if len(areas) else 0.0
+            area_cv = float(np.std(areas) / max(1e-9, area_mean)) if len(areas) > 1 else 0.0
+            movement = 0.0
+            for a, b in zip(obs, obs[1:]):
+                movement += math.dist((float(a["cx"]), float(a["cy"])), (float(b["cx"]), float(b["cy"])))
+
+            poster_votes = sum(
+                1
+                for item in obs
+                if str(item.get("ignore_reason", "")).strip().lower() == "poster_or_flat_static"
+                or str(item.get("box_label", "")).strip().lower() in {"ignore", "static_object"}
+            )
+            static_like = bool(
+                (len(obs) >= 5 and movement <= 0.09 and point_std_x <= 0.015 and point_std_y <= 0.015 and area_cv <= 0.10)
+                or (poster_votes >= max(2, int(len(obs) * 0.6)))
+            )
+
+            color_score = float(max(float(item.get("staff_score", 0.0) or 0.0) for item in obs))
+            repeat_presence_score = min(1.0, (duration_sec / 5400.0) + (len(obs) / 90.0))
+            zone_score = float(sum(1 for item in obs if abs(float(item["cx"]) - line_x) <= 0.18) / max(1, len(obs)))
+            staff_score = round(0.60 * color_score + 0.25 * repeat_presence_score + 0.15 * zone_score, 4)
+            staff_vote_ratio = float(sum(1 for item in obs if bool(item.get("staff_flag", False))) / max(1, len(obs)))
+            is_staff = bool(
+                staff_score >= staff_threshold
+                or (staff_vote_ratio >= 0.70 and duration_sec >= 300.0)
+            )
+
+            near_entry_no_cross = bool(crossed_in_ts is None and any(abs(float(v["cx"]) - line_x) <= 0.05 for v in obs))
+            is_outside_passer = bool(crossed_in_ts is None and not is_staff and not static_like and not near_entry_no_cross)
+
+            entry_valid = bool(crossed_in_ts is not None and not is_staff and not static_like and not is_outside_passer)
+            if entry_valid:
+                session_id = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
+                seq += 1
+                track_to_customer_session[key] = session_id
+            else:
+                session_id = f"REJ_{store_id}_{day.replace('-', '')}_{camera_id}_{abs(int(track_id))}"
+
+            if is_staff:
+                status = "STAFF"
+                session_class = "STAFF"
+                invalid_reason = "staff_like"
+            elif static_like:
+                status = "INVALID_STATIC_OBJECT"
+                session_class = "STATIC_OBJECT"
+                invalid_reason = "static_object"
+            elif is_outside_passer:
+                status = "OUTSIDE_PASSER"
+                session_class = "OUTSIDE_PASSER"
+                invalid_reason = "no_valid_entry"
+            elif crossed_in_ts is None:
+                status = "ENTRY_CANDIDATE"
+                session_class = "INVALID"
+                invalid_reason = "entry_not_confirmed"
+            elif crossed_out_ts is None:
+                status = "ACTIVE_CUSTOMER"
+                session_class = "CUSTOMER"
+                invalid_reason = "no_exit_crossing"
+            else:
+                status = "EXITED"
+                session_class = "CUSTOMER"
+                invalid_reason = ""
+
+            track_to_status[key] = status
+            close_reason = "exit_crossing" if crossed_out_ts is not None else "timeout"
+            entry_time = crossed_in_ts if crossed_in_ts is not None else first_ts
+            if crossed_out_ts is not None:
+                exit_time = crossed_out_ts
+            elif crossed_in_ts is not None:
+                exit_time = last_ts
+            else:
+                exit_time = last_ts
+            dwell_seconds = max(1.0, float((pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds()) + 1.0)
+            confidence = round(float(np.mean([float(v.get("confidence", 0.0) or 0.0) for v in obs])), 4)
+            gender = _dominant_gender_from_observations(obs)
+            entry_obs = next((v for v in obs if pd.Timestamp(v["timestamp"]) >= pd.Timestamp(entry_time)), obs[0])
+            exit_obs = next((v for v in reversed(obs) if pd.Timestamp(v["timestamp"]) <= pd.Timestamp(exit_time)), obs[-1])
+            cameras_seen = sorted({str(v["camera_id"]).strip() for v in obs if str(v.get("camera_id", "")).strip()})
+            locations_seen = sorted({str(v["location_name"]).strip() for v in obs if str(v.get("location_name", "")).strip()})
+            floors_seen = sorted({str(v["floor_name"]).strip() for v in obs if str(v.get("floor_name", "")).strip()})
+            notes = (
+                f"tracker_track={camera_id}:{track_id};"
+                f"staff_score={staff_score:.3f};"
+                f"movement={movement:.4f};"
+                f"cross_in={bool(crossed_in_ts)};"
+                f"cross_out={bool(crossed_out_ts)}"
+            )
+            sessions_out.append(
+                {
+                    "store_id": store_id,
+                    "capture_date": day,
+                    "session_id": session_id,
+                    "store_day_customer_id": session_id if entry_valid else "",
+                    "track_id_local": f"{camera_id}:{int(track_id)}",
+                    "entry_time": pd.Timestamp(entry_time),
+                    "last_seen_time": pd.Timestamp(last_ts),
+                    "exit_time": pd.Timestamp(exit_time),
+                    "entry_ts": pd.Timestamp(entry_time),
+                    "exit_ts": pd.Timestamp(exit_time),
+                    "dwell_seconds": round(float(dwell_seconds), 2),
+                    "dwell_sec": round(float(dwell_seconds), 2),
+                    "status": status,
+                    "close_reason": close_reason,
+                    "session_class": session_class,
+                    "staff_flag": int(is_staff),
+                    "is_staff_session": int(is_staff),
+                    "is_valid_session": int(bool(entry_valid and crossed_out_ts is not None)),
+                    "invalid_reason": invalid_reason,
+                    "converted_proxy": 0,
+                    "cameras_seen": ",".join(cameras_seen),
+                    "locations_seen": ",".join(locations_seen),
+                    "floors_seen": ",".join(floors_seen),
+                    "entry_image": str(entry_obs.get("image_name", "")),
+                    "entry_image_path": str(entry_obs.get("image_path", "")),
+                    "entry_snapshot_path": str(entry_obs.get("image_path", "")),
+                    "exit_image": str(exit_obs.get("image_name", "")),
+                    "exit_image_path": str(exit_obs.get("image_path", "")),
+                    "exit_snapshot_path": str(exit_obs.get("image_path", "")),
+                    "frames_seen": int(len(obs)),
+                    "movement_score": int(round(movement * 1000)),
+                    "staff_ratio_max": round(float(staff_vote_ratio), 4),
+                    "staff_score": float(staff_score),
+                    "confidence": float(confidence),
+                    "gender": gender,
+                    "notes": notes,
+                }
+            )
+            if entry_valid:
+                track_customer_windows[key] = (session_id, pd.Timestamp(entry_time), pd.Timestamp(exit_time))
+
+    # Re-attach session ids to frame rows using track ids.
+    for idx, row in df.iterrows():
+        if pd.isna(row.get("timestamp", pd.NaT)):
+            df.at[idx, "store_day_customer_ids"] = "[]"
+            df.at[idx, "customer_session_ids"] = "[]"
+            df.at[idx, "event_label"] = "INVALID"
+            continue
+        ts = pd.Timestamp(row["timestamp"])
+        day = str(row.get("capture_date", "")).strip() or ts.date().isoformat()
+        camera_id = str(row.get("camera_id", "")).strip().upper()
+        track_ids = [int(v) for v in _safe_json_list(row.get("track_ids", "[]")) if str(v).strip()]
+        row_statuses: list[str] = []
+        row_session_ids: list[str] = []
+        for tid in track_ids:
+            key = (day, camera_id, int(tid))
+            status = track_to_status.get(key, "")
+            if status:
+                row_statuses.append(status)
+            sid_payload = track_customer_windows.get(key)
+            if sid_payload is not None:
+                sid, sid_entry_ts, sid_exit_ts = sid_payload
+                if pd.Timestamp(ts) >= pd.Timestamp(sid_entry_ts) and pd.Timestamp(ts) <= pd.Timestamp(sid_exit_ts):
+                    row_session_ids.append(str(sid))
+        row_session_ids = sorted({sid for sid in row_session_ids if sid})
+        df.at[idx, "store_day_customer_ids"] = json.dumps(row_session_ids)
+        df.at[idx, "customer_session_ids"] = json.dumps(row_session_ids)
+
+        is_valid = bool(row.get("is_valid", False))
+        det_err = str(row.get("detection_error", "") or "").strip()
+        reject_reason = str(row.get("reject_reason", "") or "").strip()
+        if (not is_valid) or det_err or reject_reason:
+            label = "INVALID"
+        elif row_session_ids:
+            label = "CUSTOMER"
+        elif any(s == "STAFF" for s in row_statuses):
+            label = "STAFF"
+        elif any(s == "INVALID_STATIC_OBJECT" for s in row_statuses):
+            label = "STATIC_OBJECT"
+        elif any(s == "OUTSIDE_PASSER" for s in row_statuses):
+            label = "OUTSIDE_PASSER"
+        elif any(s == "ENTRY_CANDIDATE" for s in row_statuses):
+            label = "ENTRY_CANDIDATE"
+        else:
+            label = "INVALID"
+        df.at[idx, "event_label"] = label
+
+    sessions_df = pd.DataFrame(sessions_out)
+    if sessions_df.empty:
+        sessions_df = pd.DataFrame(columns=_customer_session_columns())
+    else:
+        for col in _customer_session_columns():
+            if col not in sessions_df.columns:
+                sessions_df[col] = ""
+        sessions_df = sessions_df[_customer_session_columns()].sort_values(
+            ["capture_date", "entry_time", "track_id_local"],
+            na_position="last",
+        ).reset_index(drop=True)
+    return df, sessions_df
+
+
 def build_store_day_customer_sessions(
     image_insights: pd.DataFrame,
     store_id: str,
@@ -1640,26 +2040,7 @@ def build_store_day_customer_sessions(
     df["customer_session_ids"] = "[]"
     df["event_label"] = "INVALID"
     if df.empty or "timestamp" not in df.columns:
-        return df, pd.DataFrame(
-            columns=[
-                "store_id",
-                "capture_date",
-                "store_day_customer_id",
-                "entry_ts",
-                "exit_ts",
-                "dwell_sec",
-                "close_reason",
-                "converted_proxy",
-                "cameras_seen",
-                "locations_seen",
-                "floors_seen",
-                "entry_image",
-                "entry_image_path",
-                "exit_image",
-                "exit_image_path",
-                "session_class",
-            ]
-        )
+        return df, pd.DataFrame(columns=_customer_session_columns())
 
     # Build crossing events from ENTRANCE/EXIT cameras.
     entry_counts, exit_counts = _compute_entry_exit_event_counts(
@@ -1689,6 +2070,14 @@ def build_store_day_customer_sessions(
                 camera_configs=camera_configs,
             )
     strict_gate_mode = bool(entry_counts or exit_counts or gate_camera_ids)
+    if strict_gate_mode:
+        return _build_track_based_strict_sessions(
+            image_insights=df,
+            store_id=store_id,
+            gate_camera_ids=gate_camera_ids,
+            camera_configs=camera_configs,
+            session_timeout_sec=session_timeout_sec,
+        )
 
     billing_cameras = {
         str(cid)
@@ -2213,50 +2602,214 @@ def build_store_summary(
     )
 
 
+def _cosine_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
+    if a is None or b is None:
+        return 1.0
+    a_norm = float(np.linalg.norm(a))
+    b_norm = float(np.linalg.norm(b))
+    if a_norm <= 1e-9 or b_norm <= 1e-9:
+        return 1.0
+    sim = float(np.dot(a, b) / (a_norm * b_norm))
+    sim = max(-1.0, min(1.0, sim))
+    return float(1.0 - sim)
+
+
+def _clip_box_to_image(
+    box: tuple[float, float, float, float],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x1 = max(0, min(width - 1, int(box[0] * width)))
+    y1 = max(0, min(height - 1, int(box[1] * height)))
+    x2 = max(x1 + 1, min(width, int(box[2] * width)))
+    y2 = max(y1 + 1, min(height, int(box[3] * height)))
+    return x1, y1, x2, y2
+
+
+def _appearance_embedding_from_rgb(
+    image_rgb: np.ndarray | None,
+    box: tuple[float, float, float, float] | None,
+) -> np.ndarray | None:
+    if image_rgb is None or box is None:
+        return None
+    if image_rgb.ndim != 3 or image_rgb.shape[2] < 3:
+        return None
+    h, w = image_rgb.shape[:2]
+    if h <= 1 or w <= 1:
+        return None
+    try:
+        x1, y1, x2, y2 = _clip_box_to_image(box, width=w, height=h)
+        crop = image_rgb[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+        rgb = crop.astype(np.float32) / 255.0
+        r = rgb[..., 0]
+        g = rgb[..., 1]
+        b = rgb[..., 2]
+        max_c = np.maximum(np.maximum(r, g), b)
+        min_c = np.minimum(np.minimum(r, g), b)
+        delta = max_c - min_c
+        hue = np.zeros_like(max_c)
+        mask = delta > 1e-6
+        ridx = (max_c == r) & mask
+        gidx = (max_c == g) & mask
+        bidx = (max_c == b) & mask
+        hue[ridx] = (60.0 * ((g[ridx] - b[ridx]) / delta[ridx]) + 360.0) % 360.0
+        hue[gidx] = 60.0 * ((b[gidx] - r[gidx]) / delta[gidx]) + 120.0
+        hue[bidx] = 60.0 * ((r[bidx] - g[bidx]) / delta[bidx]) + 240.0
+        sat = np.where(max_c <= 1e-6, 0.0, delta / np.maximum(max_c, 1e-6))
+        val = max_c
+        h_hist, _ = np.histogram(hue, bins=8, range=(0.0, 360.0), density=True)
+        s_hist, _ = np.histogram(sat, bins=4, range=(0.0, 1.0), density=True)
+        v_hist, _ = np.histogram(val, bins=4, range=(0.0, 1.0), density=True)
+        embed = np.concatenate([h_hist, s_hist, v_hist]).astype(np.float32)
+        norm = float(np.linalg.norm(embed))
+        if norm <= 1e-9:
+            return None
+        return embed / norm
+    except Exception:
+        return None
+
+
+def _fallback_box_from_centroid(centroid: tuple[float, float], half_size: float = 0.05) -> tuple[float, float, float, float]:
+    cx = float(max(0.0, min(1.0, centroid[0])))
+    cy = float(max(0.0, min(1.0, centroid[1])))
+    x1 = max(0.0, cx - half_size)
+    y1 = max(0.0, cy - half_size)
+    x2 = min(1.0, cx + half_size)
+    y2 = min(1.0, cy + half_size)
+    if x2 <= x1:
+        x2 = min(1.0, x1 + 0.01)
+    if y2 <= y1:
+        y2 = min(1.0, y1 + 0.01)
+    return (x1, y1, x2, y2)
+
+
 
 
 def assign_single_camera_tracks(
     image_insights: pd.DataFrame,
     session_gap_sec: int = 30,
     distance_threshold: float = 0.18,
+    tracker_type: str | None = None,
 ) -> pd.DataFrame:
     df = image_insights.copy()
     df["track_ids"] = "[]"
+    if "tracker_backend" not in df.columns:
+        df["tracker_backend"] = ""
     next_id = 1
+    tracker_mode = str(
+        tracker_type
+        or os.getenv("IRIS_TRACKER_TYPE", "botsort")
+    ).strip().lower()
+    if tracker_mode not in {"botsort", "bytetrack", "centroid"}:
+        tracker_mode = "botsort"
+    use_reid = tracker_mode == "botsort"
+    image_cache: dict[str, np.ndarray | None] = {}
+    reid_weight = float(os.getenv("IRIS_REID_WEIGHT", "0.42") or 0.42)
+    reid_weight = max(0.0, min(0.8, reid_weight))
+    reid_threshold = float(os.getenv("IRIS_REID_DISTANCE_THRESHOLD", "0.48") or 0.48)
+    reid_threshold = max(0.1, min(1.0, reid_threshold))
+    motion_cost_limit = float(os.getenv("IRIS_TRACK_MATCH_COST", "0.85") or 0.85)
+    motion_cost_limit = max(0.2, min(2.0, motion_cost_limit))
 
     for camera_id, cam_df in df[df["timestamp"].notna()].groupby("camera_id"):
-        active: dict[int, tuple[pd.Timestamp, tuple[float, float]]] = {}
+        active: dict[int, dict[str, Any]] = {}
         for idx in cam_df.sort_values("timestamp").index.tolist():
-            centroids = df.at[idx, "person_centroids"]
-            if isinstance(centroids, str):
-                try:
-                    centroids = json.loads(centroids)
-                except Exception:
-                    centroids = []
-            current_ids: list[int] = []
             ts = pd.Timestamp(df.at[idx, "timestamp"])
-            for c in centroids:
-                best_id = None
-                best_dist = 999.0
-                for tid, (last_ts, last_c) in list(active.items()):
-                    gap = (ts - last_ts).total_seconds()
-                    if gap > session_gap_sec:
-                        continue
-                    d = math.dist((float(c[0]), float(c[1])), (float(last_c[0]), float(last_c[1])))
-                    if d < best_dist and d <= distance_threshold:
-                        best_dist = d
-                        best_id = tid
-                if best_id is None:
-                    best_id = next_id
-                    next_id += 1
-                active[best_id] = (ts, (float(c[0]), float(c[1])))
-                current_ids.append(best_id)
-            # prune stale
+            centroids = _parse_centroid_list(df.at[idx, "person_centroids"])
+            boxes = _parse_box_list(df.at[idx, "person_boxes"])
+            n_det = max(len(centroids), len(boxes))
+            if n_det <= 0:
+                df.at[idx, "track_ids"] = "[]"
+                df.at[idx, "tracker_backend"] = tracker_mode
+                for tid in list(active.keys()):
+                    if (ts - pd.Timestamp(active[tid]["timestamp"])).total_seconds() > session_gap_sec:
+                        del active[tid]
+                continue
+
+            if len(centroids) < n_det:
+                for det_i in range(len(centroids), n_det):
+                    if det_i < len(boxes):
+                        centroids.append(_box_centroid(boxes[det_i]))
+                    else:
+                        centroids.append((0.5, 0.5))
+            if len(boxes) < n_det:
+                for det_i in range(len(boxes), n_det):
+                    boxes.append(_fallback_box_from_centroid(centroids[det_i]))
+
+            embeddings: list[np.ndarray | None] = [None for _ in range(n_det)]
+            if use_reid and n_det > 0:
+                path = str(df.at[idx, "path"] if "path" in df.columns else "").strip()
+                image_rgb = image_cache.get(path)
+                if path and path not in image_cache:
+                    try:
+                        with Image.open(Path(path)) as img:
+                            image_rgb = np.array(img.convert("RGB"))
+                    except Exception:
+                        image_rgb = None
+                    image_cache[path] = image_rgb
+                if path:
+                    image_rgb = image_cache.get(path)
+                for det_i in range(n_det):
+                    embeddings[det_i] = _appearance_embedding_from_rgb(image_rgb=image_rgb, box=boxes[det_i])
+
             for tid in list(active.keys()):
-                if (ts - active[tid][0]).total_seconds() > session_gap_sec:
+                if (ts - pd.Timestamp(active[tid]["timestamp"])).total_seconds() > session_gap_sec:
                     del active[tid]
-            # Keep 1:1 order alignment with per-frame centroids/boxes.
+
+            pair_candidates: list[tuple[float, int, int]] = []
+            for det_i in range(n_det):
+                c = centroids[det_i]
+                b = boxes[det_i]
+                for tid, state in active.items():
+                    gap_sec = (ts - pd.Timestamp(state["timestamp"])).total_seconds()
+                    if gap_sec > session_gap_sec:
+                        continue
+                    prev_c = state.get("centroid", (0.5, 0.5))
+                    prev_b = state.get("box")
+                    motion_dist = math.dist((float(c[0]), float(c[1])), (float(prev_c[0]), float(prev_c[1])))
+                    iou = _box_iou(b, prev_b) if isinstance(prev_b, tuple) else 0.0
+                    if motion_dist > (distance_threshold * 1.8) and iou < 0.02:
+                        continue
+                    motion_cost = float(motion_dist + (1.0 - iou) * 0.20)
+                    if tracker_mode == "centroid":
+                        match_cost = motion_dist
+                    elif tracker_mode == "bytetrack":
+                        match_cost = motion_cost
+                    else:
+                        app_dist = _cosine_distance(embeddings[det_i], state.get("embedding"))
+                        if app_dist > reid_threshold and motion_dist > distance_threshold:
+                            continue
+                        match_cost = (1.0 - reid_weight) * motion_cost + reid_weight * app_dist
+                    if match_cost <= motion_cost_limit:
+                        pair_candidates.append((float(match_cost), det_i, int(tid)))
+
+            pair_candidates.sort(key=lambda x: x[0])
+            matched_tracks: set[int] = set()
+            matched_dets: set[int] = set()
+            current_ids: list[int] = [0 for _ in range(n_det)]
+            for _, det_i, tid in pair_candidates:
+                if det_i in matched_dets or tid in matched_tracks:
+                    continue
+                matched_dets.add(det_i)
+                matched_tracks.add(tid)
+                current_ids[det_i] = int(tid)
+
+            for det_i in range(n_det):
+                if current_ids[det_i] <= 0:
+                    current_ids[det_i] = next_id
+                    next_id += 1
+                tid = int(current_ids[det_i])
+                active[tid] = {
+                    "timestamp": ts,
+                    "centroid": (float(centroids[det_i][0]), float(centroids[det_i][1])),
+                    "box": boxes[det_i],
+                    "embedding": embeddings[det_i] if use_reid else None,
+                }
+
             df.at[idx, "track_ids"] = json.dumps(current_ids)
+            df.at[idx, "tracker_backend"] = tracker_mode
     return df
 
 
@@ -3435,27 +3988,49 @@ def export_analysis(
             ],
             location_hotspot_path,
         )
+        session_export_cols = [
+            "store_id",
+            "capture_date",
+            "session_id",
+            "store_day_customer_id",
+            "track_id_local",
+            "entry_time",
+            "last_seen_time",
+            "exit_time",
+            "entry_ts",
+            "exit_ts",
+            "dwell_seconds",
+            "dwell_sec",
+            "status",
+            "close_reason",
+            "session_class",
+            "staff_flag",
+            "is_staff_session",
+            "is_valid_session",
+            "invalid_reason",
+            "converted_proxy",
+            "cameras_seen",
+            "locations_seen",
+            "floors_seen",
+            "entry_image",
+            "entry_image_path",
+            "entry_snapshot_path",
+            "exit_image",
+            "exit_image_path",
+            "exit_snapshot_path",
+            "frames_seen",
+            "movement_score",
+            "staff_ratio_max",
+            "staff_score",
+            "confidence",
+            "gender",
+            "notes",
+        ]
+        available_session_cols = [c for c in session_export_cols if c in store_result.customer_sessions.columns]
+        if not available_session_cols:
+            available_session_cols = list(store_result.customer_sessions.columns)
         _write(
-            store_result.customer_sessions[
-                [
-                    "store_id",
-                    "capture_date",
-                    "store_day_customer_id",
-                    "entry_ts",
-                    "exit_ts",
-                    "dwell_sec",
-                    "close_reason",
-                    "converted_proxy",
-                    "cameras_seen",
-                    "locations_seen",
-                    "floors_seen",
-                    "entry_image",
-                    "entry_image_path",
-                    "exit_image",
-                    "exit_image_path",
-                    "session_class",
-                ]
-            ],
+            store_result.customer_sessions[available_session_cols],
             sessions_path,
         )
         if not store_result.daily_report.empty:
@@ -3569,21 +4144,7 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
             location_hotspots_df = pd.read_csv(
                 location_hotspot_path if location_hotspot_path.exists() else location_hotspot_gz_path
             )
-        customer_sessions_df = pd.DataFrame(
-            columns=[
-                "store_id",
-                "capture_date",
-                "store_day_customer_id",
-                "entry_ts",
-                "exit_ts",
-                "dwell_sec",
-                "close_reason",
-                "converted_proxy",
-                "cameras_seen",
-                "locations_seen",
-                "floors_seen",
-            ]
-        )
+        customer_sessions_df = pd.DataFrame(columns=_customer_session_columns())
         if sessions_path.exists() or sessions_gz_path.exists():
             customer_sessions_df = pd.read_csv(
                 sessions_path if sessions_path.exists() else sessions_gz_path,
