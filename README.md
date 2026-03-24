@@ -345,3 +345,17 @@ Fast mode (no rebuild):
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh_and_check.ps1 -Mode restart
 ```
+
+Windows shortcut wrapper (`.bat`):
+
+```bat
+run_iris.bat
+```
+
+Optional modes:
+
+```bat
+run_iris.bat restart
+run_iris.bat rebuild
+run_iris.bat restart --skip-pull
+```

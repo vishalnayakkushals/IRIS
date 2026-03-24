@@ -25,6 +25,7 @@ It records what changed, where it changed, and why.
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
+| `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
@@ -50,6 +51,19 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Added `run_iris.bat` launcher so Windows users can run refresh automation with a short command (`rebuild` default, `restart` optional).
+  - Wired `.bat` usage into README to reduce manual PowerShell command typing.
+- Changed Paths:
+  - `run_iris.bat`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `run_iris.bat`
+- Infra/Config Impact:
+  - None
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
