@@ -24,6 +24,7 @@ It records what changed, where it changed, and why.
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
+| `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
@@ -49,6 +50,18 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Added a one-command PowerShell automation runner for local refresh with readiness checks, log tailing, and runtime error marker scan.
+  - Supports both `restart` (fast) and `rebuild` (code/dependency update) modes, then exits cleanly to prompt.
+- Changed Paths:
+  - `scripts/refresh_and_check.ps1`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/refresh_and_check.ps1`
+- Infra/Config Impact:
+  - None
 
 ### 2026-03-25 | Commit <pending>
 - Summary:

@@ -331,3 +331,17 @@ from .iris_analysis import ...
 ```
 
 your container is running an older image (before the import fix). Pull latest `main` and rebuild with `--force-recreate`.
+
+## One-Command Local Refresh Automation (PowerShell)
+
+Run this helper to automate pull + refresh + readiness checks:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh_and_check.ps1 -Mode rebuild
+```
+
+Fast mode (no rebuild):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh_and_check.ps1 -Mode restart
+```
