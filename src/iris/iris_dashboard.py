@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from iris.iris_analysis import (
     AnalysisOutput,
@@ -1096,9 +1096,9 @@ def _normalize_validation_role(raw: object) -> str:
     if "STAFF" in text:
         return "STAFF"
     if "OUTSIDE" in text:
-        return "OUTSIDE_PASSER"
+        return "PEDESTRIANS"
     if "STATIC" in text:
-        return "STATIC_OBJECT"
+        return "BANNER"
     if "ENTRY_CANDIDATE" in text:
         return "ENTRY_CANDIDATE"
     if "ACTIVE" in text or "EXITED" in text or "CUSTOMER" in text:
@@ -1554,7 +1554,7 @@ def _render_validation_console(
                     st.info("Preview image path is unavailable for selected person.")
 
     with tab_rejected:
-        rejected_roles = {"STAFF", "OUTSIDE_PASSER", "STATIC_OBJECT", "INVALID", "ENTRY_CANDIDATE"}
+        rejected_roles = {"STAFF", "PEDESTRIANS", "BANNER", "INVALID", "ENTRY_CANDIDATE"}
         rejected_people = unique_filtered[unique_filtered["Role"].astype(str).str.upper().isin(rejected_roles)].copy()
         if rejected_people.empty:
             st.info("No rejected-person rows for selected filters.")
@@ -1752,12 +1752,54 @@ def _predicted_label(row: pd.Series) -> str:
     return "mixed"
 
 
+LABEL_CANONICAL_ALIASES: dict[str, str] = {
+    "CUSTOMER": "customer",
+    "STAFF": "staff",
+    "BANNER": "poster_banner",
+    "POSTER_BANNER": "poster_banner",
+    "PRODUCT": "product",
+    "PEDESTRIANS": "outside_passer",
+    "OUTSIDE_PASSER": "outside_passer",
+    "INVALID": "invalid",
+    "NOT_SURE": "not_sure",
+    "MIXED": "mixed",
+    "NO_PERSON": "no_person",
+    "STATIC_OBJECT": "poster_banner",
+}
+
+LABEL_DISPLAY_BY_CANONICAL: dict[str, str] = {
+    "customer": "CUSTOMER",
+    "staff": "STAFF",
+    "poster_banner": "BANNER",
+    "product": "PRODUCT",
+    "outside_passer": "PEDESTRIANS",
+    "invalid": "INVALID",
+    "not_sure": "NOT_SURE",
+    "mixed": "MIXED",
+    "no_person": "NO_PERSON",
+}
+
+
+def _label_to_canonical(raw: object) -> str:
+    text = str(raw or "").strip().upper()
+    if not text:
+        return ""
+    return LABEL_CANONICAL_ALIASES.get(text, text.lower())
+
+
+def _label_to_display(raw: object) -> str:
+    canonical = _label_to_canonical(raw)
+    if not canonical:
+        return ""
+    return LABEL_DISPLAY_BY_CANONICAL.get(canonical, canonical.upper())
+
+
 FEEDBACK_LABEL_OPTIONS = [
     "CUSTOMER",
     "STAFF",
-    "POSTER_BANNER",
+    "BANNER",
     "PRODUCT",
-    "OUTSIDE_PASSER",
+    "PEDESTRIANS",
     "INVALID",
     "NOT_SURE",
 ]
@@ -1775,9 +1817,9 @@ def _feedback_label_default(row: pd.Series) -> str:
     if bag_count > 0:
         return "PRODUCT"
     if event_label in {"STATIC_OBJECT"}:
-        return "POSTER_BANNER"
+        return "BANNER"
     if event_label == "OUTSIDE_PASSER" or predicted == "outside_passer":
-        return "OUTSIDE_PASSER"
+        return "PEDESTRIANS"
     if event_label == "INVALID":
         return "INVALID"
     return "NOT_SURE"
@@ -1804,10 +1846,10 @@ def _build_image_validation_report_df(image_df: pd.DataFrame) -> pd.DataFrame:
     report["timestamp"] = report["timestamp"].astype(str)
     report["drive_link"] = report["drive_link"].fillna("").astype(str)
     report["thumbnail_path"] = report["path"].fillna("").astype(str)
-    report["predicted_label"] = report.apply(_predicted_label, axis=1).astype(str).str.upper()
+    report["predicted_label"] = report.apply(_predicted_label, axis=1).map(_label_to_display)
     report["confidence"] = pd.to_numeric(report.get("max_person_conf", 0.0), errors="coerce").fillna(0.0).round(4)
     report["person_count"] = pd.to_numeric(report.get("person_count", 0), errors="coerce").fillna(0).astype(int)
-    report["role_prediction"] = report.apply(lambda r: _feedback_label_default(r), axis=1).astype(str)
+    report["role_prediction"] = report.apply(lambda r: _label_to_display(_feedback_label_default(r))).astype(str)
     report["remarks"] = report.apply(
         lambda r: (
             str(r.get("detection_error", "") or "").strip()
@@ -1870,7 +1912,7 @@ def _feedback_retrain_cycle(
 
     label_counts: dict[str, int] = {}
     for row in eligible_rows:
-        label = str(row.get("corrected_label", "") or "").strip().lower() or "unknown"
+        label = _label_to_canonical(row.get("corrected_label", "")) or "unknown"
         label_counts[label] = int(label_counts.get(label, 0)) + 1
     version_tag = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
     artifact_path = db_path.parent / "models" / f"qa_feedback_rules_{store_id}_{version_tag}.json"
@@ -1937,8 +1979,18 @@ def _render_overlay_image(row: pd.Series):
         with Image.open(path_obj) as raw:
             canvas = raw.convert("RGB")
         draw = ImageDraw.Draw(canvas)
+        font = ImageFont.load_default()
         width, height = canvas.size
         stroke = max(2, int(round(min(width, height) * 0.004)))
+        label_boxes: list[tuple[int, int, int, int]] = []
+
+        def _overlaps(rect: tuple[int, int, int, int]) -> bool:
+            rx1, ry1, rx2, ry2 = rect
+            for ox1, oy1, ox2, oy2 in label_boxes:
+                if not (rx2 < ox1 or ox2 < rx1 or ry2 < oy1 or oy2 < ry1):
+                    return True
+            return False
+
         for idx, box in enumerate(person_boxes):
             if not isinstance(box, list | tuple) or len(box) != 4:
                 continue
@@ -1955,12 +2007,42 @@ def _render_overlay_image(row: pd.Series):
             if idx < len(track_ids) and str(track_ids[idx]).strip():
                 label += f" T{track_ids[idx]}"
             draw.rectangle((x1, y1, x2, y2), outline=color, width=stroke)
-            tag_h = min(22, max(14, int(height * 0.03)))
-            tag_y1 = max(0, y1 - tag_h)
-            tag_y2 = min(height, y1)
-            tag_x2 = min(width, x1 + max(100, len(label) * 8))
-            draw.rectangle((x1, tag_y1, tag_x2, tag_y2), fill=color)
-            draw.text((x1 + 4, tag_y1 + 2), label, fill="#ffffff")
+            text_bbox = draw.textbbox((0, 0), label, font=font, stroke_width=1)
+            text_w = int(text_bbox[2] - text_bbox[0])
+            text_h = int(text_bbox[3] - text_bbox[1])
+            tag_w = min(width, max(96, text_w + 14))
+            tag_h = min(max(18, text_h + 8), max(20, int(height * 0.09)))
+
+            candidates = [
+                (x1, max(0, y1 - tag_h - 2)),  # above box
+                (x1, min(height - tag_h, y2 + 2)),  # below box
+                (x1, min(height - tag_h, max(0, y1 + 2))),  # inside near top
+            ]
+            tag_x, tag_y = candidates[0]
+            for cand_x, cand_y in candidates:
+                cx = max(0, min(width - tag_w, cand_x))
+                cy = max(0, min(height - tag_h, cand_y))
+                rect = (cx, cy, cx + tag_w, cy + tag_h)
+                if not _overlaps(rect):
+                    tag_x, tag_y = cx, cy
+                    break
+                tag_x, tag_y = cx, cy
+            # Last fallback: shift down until free or image end.
+            rect = (tag_x, tag_y, tag_x + tag_w, tag_y + tag_h)
+            while _overlaps(rect) and tag_y + tag_h + 2 < height:
+                tag_y += tag_h + 2
+                tag_y = min(height - tag_h, tag_y)
+                rect = (tag_x, tag_y, tag_x + tag_w, tag_y + tag_h)
+            label_boxes.append(rect)
+            draw.rectangle((tag_x, tag_y, tag_x + tag_w, tag_y + tag_h), fill=color)
+            draw.text(
+                (tag_x + 6, tag_y + 4),
+                label,
+                fill="#ffffff",
+                font=font,
+                stroke_width=1,
+                stroke_fill="#000000",
+            )
         return canvas
     except Exception:
         return None
@@ -2540,6 +2622,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
     )
     preview_df["timestamp"] = preview_df["timestamp"].astype(str)
+    preview_df["predicted_label"] = preview_df["predicted_label"].map(_label_to_display)
     try:
         st.dataframe(
             preview_df,
@@ -2556,7 +2639,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     st.markdown("**Validation Table (Top 10 Frames)**")
     st.caption(
         "Use this single table to review images, assign feedback labels, and save in bulk. "
-        "Hover preview is optional; image thumbnails are always visible here."
+        "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections, and open `Zoom Preview` for full-size inspection."
     )
     existing_feedback_rows = list_qa_feedback(
         db_path=db_path,
@@ -2589,19 +2672,36 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             if track_key not in latest_track_feedback_by_key:
                 latest_track_feedback_by_key[track_key] = feedback_row
 
-    def _prepare_batch_rows(base_df: pd.DataFrame) -> pd.DataFrame:
+    max_track_slots = max(
+        1,
+        min(
+            20,
+            int(
+                image_df.head(10)["track_ids"].map(
+                    lambda raw: len([str(x) for x in _safe_json_list(raw) if str(x).strip()])
+                ).max()
+                or 1
+            ),
+        ),
+    )
+
+    def _prepare_batch_rows(base_df: pd.DataFrame, slot_numbers: list[int]) -> pd.DataFrame:
         df = base_df.copy()
         df["track_ids_list"] = df["track_ids"].map(
             lambda raw: [str(x) for x in _safe_json_list(raw) if str(x).strip()]
+        )
+        df["staff_flags_list"] = df["staff_flags"].map(
+            lambda raw: [bool(x) for x in _safe_json_list(raw)]
         )
         df["frame_idx"] = df.index.astype(int)
         df["frame_link"] = df["frame_idx"].map(
             lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
         )
+        df["capture_date"] = df["capture_date"].astype(str)
         df["timestamp"] = df["timestamp"].astype(str)
-        df["predicted_label"] = df.apply(_predicted_label, axis=1).astype(str).str.upper()
+        df["predicted_label"] = df.apply(_predicted_label, axis=1).map(_label_to_display)
         df["preview_image"] = df.apply(
-            lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
+            lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=320),
             axis=1,
         )
         df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
@@ -2632,13 +2732,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     {},
                 ).get("corrected_label", "")
                 or ""
-            ).strip().upper(),
+            ),
             axis=1,
-        )
+        ).map(_label_to_display)
         df["track_ids"] = df["track_ids"].map(
             lambda raw: ", ".join([str(x) for x in _safe_json_list(raw) if str(x).strip()])
         )
-        for slot in [1, 2, 3, 4]:
+        for slot in slot_numbers:
             df[f"track_{slot}_id"] = df.apply(
                 lambda r: (
                     list(r.get("track_ids_list", []))[slot - 1]
@@ -2647,25 +2747,61 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 ),
                 axis=1,
             )
-            df[f"track_{slot}_label"] = df.apply(
-                lambda r: str(
-                    latest_track_feedback_by_key.get(
-                        (
-                            str(r.get("capture_date", "") or "").strip(),
-                            str(r.get("camera_id", "") or "").strip(),
-                            str(r.get("filename", "") or "").strip(),
-                            str(r.get(f"track_{slot}_id", "") or "").strip(),
-                        ),
-                        {},
-                    ).get("corrected_label", "")
-                    or ""
-                ).strip().upper(),
+            df[f"track_{slot}_predicted"] = df.apply(
+                lambda r: (
+                    _label_to_display("staff")
+                    if len(list(r.get("staff_flags_list", []))) >= slot and bool(list(r.get("staff_flags_list", []))[slot - 1])
+                    else (
+                        _label_to_display("customer")
+                        if len(list(r.get("staff_flags_list", []))) >= slot
+                        else ""
+                    )
+                ),
                 axis=1,
             )
-        df = df.drop(columns=["track_ids_list"], errors="ignore")
+            df[f"track_{slot}_feedback"] = df.apply(
+                lambda r: (
+                    _label_to_display(
+                        latest_track_feedback_by_key.get(
+                            (
+                                str(r.get("capture_date", "") or "").strip(),
+                                str(r.get("camera_id", "") or "").strip(),
+                                str(r.get("filename", "") or "").strip(),
+                                str(r.get(f"track_{slot}_id", "") or "").strip(),
+                            ),
+                            {},
+                        ).get("corrected_label", "")
+                        or ""
+                    )
+                )
+                if str(r.get(f"track_{slot}_id", "") or "").strip()
+                else "",
+                axis=1,
+            )
+            df[f"track_{slot}_label"] = df.apply(
+                lambda r: (
+                    str(r.get(f"track_{slot}_feedback", "") or "").strip().upper()
+                    if str(r.get(f"track_{slot}_feedback", "") or "").strip()
+                    else ""
+                ),
+                axis=1,
+            )
+        df = df.drop(columns=["track_ids_list", "staff_flags_list"], errors="ignore")
         return df
 
-    batch_rows = _prepare_batch_rows(image_df.head(10))
+    slot_default = min(max_track_slots, 6)
+    visible_track_slots = st.slider(
+        "Track columns (for multi-person frames)",
+        min_value=1,
+        max_value=max_track_slots,
+        value=slot_default,
+        step=1,
+        key=f"qa_track_slots_{sid}",
+        help="Increase this when a frame has more than 6 track IDs.",
+    )
+    slot_numbers = list(range(1, int(visible_track_slots) + 1))
+
+    batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
     hide_reviewed = st.checkbox(
         "Hide frames already reviewed",
         value=True,
@@ -2675,7 +2811,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         batch_rows = batch_rows[batch_rows["feedback_status"] == ""].copy()
         if batch_rows.empty:
             st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
-            batch_rows = _prepare_batch_rows(image_df.head(10))
+            batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
     batch_save_cols = st.columns([1, 1, 2])
     with batch_save_cols[0]:
@@ -2694,99 +2830,68 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             step=0.05,
             key=f"qa_batch_conf_{sid}",
         )
+    editor_columns = [
+        "selected",
+        "preview_image",
+        "capture_date",
+        "camera_id",
+        "filename",
+        "predicted_label",
+        "feedback_label",
+        "feedback_comment",
+        "track_ids",
+    ]
+    disabled_columns = [
+        "preview_image",
+        "capture_date",
+        "camera_id",
+        "filename",
+        "predicted_label",
+        "track_ids",
+        "feedback_status",
+        "last_feedback",
+        "frame_link",
+        "drive_link",
+    ]
+    column_config: dict[str, object] = {
+        "selected": st.column_config.CheckboxColumn("Select"),
+        "preview_image": st.column_config.ImageColumn("Preview"),
+        "feedback_label": st.column_config.SelectboxColumn(
+            "Feedback Label",
+            options=FEEDBACK_LABEL_OPTIONS,
+            required=True,
+        ),
+        "feedback_comment": st.column_config.TextColumn("Comment"),
+        "track_ids": st.column_config.TextColumn("Track IDs"),
+        "feedback_status": st.column_config.TextColumn("Last Status"),
+        "last_feedback": st.column_config.TextColumn("Last Feedback"),
+        "frame_link": st.column_config.LinkColumn("Zoom Preview", display_text="Open"),
+        "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
+    }
+    for slot in slot_numbers:
+        editor_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_label"])
+        disabled_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted"])
+        column_config[f"track_{slot}_id"] = st.column_config.TextColumn(f"T{slot} ID")
+        column_config[f"track_{slot}_predicted"] = st.column_config.TextColumn(f"T{slot} Pred")
+        column_config[f"track_{slot}_label"] = st.column_config.SelectboxColumn(
+            f"T{slot} Feedback",
+            options=TRACK_FEEDBACK_OPTIONS,
+        )
+    editor_columns.extend(["feedback_status", "last_feedback", "frame_link", "drive_link"])
+
     try:
         edited_batch_df = st.data_editor(
-            batch_rows[
-                [
-                    "selected",
-                    "preview_image",
-                    "timestamp",
-                    "camera_id",
-                    "filename",
-                    "predicted_label",
-                    "feedback_label",
-                    "feedback_comment",
-                    "track_ids",
-                    "track_1_id",
-                    "track_1_label",
-                    "track_2_id",
-                    "track_2_label",
-                    "track_3_id",
-                    "track_3_label",
-                    "track_4_id",
-                    "track_4_label",
-                    "feedback_status",
-                    "last_feedback",
-                    "frame_link",
-                    "drive_link",
-                ]
-            ],
+            batch_rows[editor_columns],
             use_container_width=True,
             hide_index=True,
             height=420,
             key=f"qa_batch_editor_{sid}",
-            disabled=[
-                "preview_image",
-                "timestamp",
-                "camera_id",
-                "filename",
-                "predicted_label",
-                "track_ids",
-                "track_1_id",
-                "track_2_id",
-                "track_3_id",
-                "track_4_id",
-                "feedback_status",
-                "last_feedback",
-                "frame_link",
-                "drive_link",
-            ],
-            column_config={
-                "selected": st.column_config.CheckboxColumn("Select"),
-                "preview_image": st.column_config.ImageColumn("Preview"),
-                "feedback_label": st.column_config.SelectboxColumn(
-                    "Feedback Label",
-                    options=FEEDBACK_LABEL_OPTIONS,
-                    required=True,
-                ),
-                "feedback_comment": st.column_config.TextColumn("Comment"),
-                "track_ids": st.column_config.TextColumn("Track IDs"),
-                "track_1_label": st.column_config.SelectboxColumn("Track 1 Label", options=TRACK_FEEDBACK_OPTIONS),
-                "track_2_label": st.column_config.SelectboxColumn("Track 2 Label", options=TRACK_FEEDBACK_OPTIONS),
-                "track_3_label": st.column_config.SelectboxColumn("Track 3 Label", options=TRACK_FEEDBACK_OPTIONS),
-                "track_4_label": st.column_config.SelectboxColumn("Track 4 Label", options=TRACK_FEEDBACK_OPTIONS),
-                "feedback_status": st.column_config.TextColumn("Last Status"),
-                "last_feedback": st.column_config.TextColumn("Last Feedback"),
-                "frame_link": st.column_config.LinkColumn("Frame", display_text="Open"),
-                "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
-            },
+            disabled=disabled_columns,
+            column_config=column_config,
         )
     except Exception:
         st.dataframe(batch_rows, use_container_width=True, hide_index=True, height=420)
-        edited_batch_df = batch_rows[
-            [
-                "selected",
-                "timestamp",
-                "camera_id",
-                "filename",
-                "predicted_label",
-                "feedback_label",
-                "feedback_comment",
-                "track_ids",
-                "track_1_id",
-                "track_1_label",
-                "track_2_id",
-                "track_2_label",
-                "track_3_id",
-                "track_3_label",
-                "track_4_id",
-                "track_4_label",
-                "feedback_status",
-                "last_feedback",
-                "frame_link",
-                "drive_link",
-            ]
-        ].copy()
+        edited_batch_df = batch_rows[editor_columns].copy()
 
     if st.button("Save Selected Feedback (Top 10)", key=f"qa_batch_save_{sid}", type="primary"):
         settings = get_app_settings(db_path)
@@ -2808,12 +2913,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         for _, row in edited_batch_df.iterrows():
             if not bool(row.get("selected", False)):
                 continue
-            capture_date = str(row.get("timestamp", "")).split(" ")[0].strip()
+            capture_date = str(row.get("capture_date", "") or "").strip()
             camera_id = str(row.get("camera_id", "") or "").strip()
             filename = str(row.get("filename", "") or "").strip()
             if not filename:
                 continue
             corrected_label = str(row.get("feedback_label", "NOT_SURE") or "NOT_SURE").strip().upper()
+            corrected_label_canonical = _label_to_canonical(corrected_label)
             comment = str(row.get("feedback_comment", "") or "").strip()
             source_key = (capture_date, camera_id, filename)
             source_row = source_lookup.get(source_key)
@@ -2834,7 +2940,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 camera_id=camera_id,
                 track_id="",
                 predicted_label=str(_predicted_label(source_row)),
-                corrected_label=corrected_label.lower(),
+                corrected_label=corrected_label_canonical,
                 confidence=float(batch_confidence),
                 needs_review=not bool(auto_confirm_feedback),
                 actor_email=(active_email or "system@local"),
@@ -2851,7 +2957,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     reviewer_email=(active_email or "system@local"),
                 )
                 confirmed += 1
-            if corrected_label == "POSTER_BANNER" and int(source_row.get("person_count", 0) or 0) > 0:
+            if corrected_label_canonical == "poster_banner" and int(source_row.get("person_count", 0) or 0) > 0:
                 relearned += _learn_false_positive_signatures_from_row(
                     db_path=db_path,
                     store_id=sid,
@@ -2859,13 +2965,14 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     root_dir=root_dir,
                     feedback_id=int(feedback_id),
                 )
-            for slot in [1, 2, 3, 4]:
+            for slot in slot_numbers:
                 track_id_value = str(row.get(f"track_{slot}_id", "") or "").strip()
                 track_label_value = str(row.get(f"track_{slot}_label", "") or "").strip().upper()
                 if not track_id_value or not track_label_value:
                     continue
                 if track_label_value not in FEEDBACK_LABEL_OPTIONS:
                     continue
+                track_label_canonical = _label_to_canonical(track_label_value)
                 track_feedback_id = add_qa_feedback(
                     db_path=db_path,
                     store_id=sid,
@@ -2874,7 +2981,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     camera_id=camera_id,
                     track_id=track_id_value,
                     predicted_label=str(_predicted_label(source_row)),
-                    corrected_label=track_label_value.lower(),
+                    corrected_label=track_label_canonical,
                     confidence=float(batch_confidence),
                     needs_review=not bool(auto_confirm_feedback),
                     actor_email=(active_email or "system@local"),
@@ -2956,7 +3063,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 st.markdown(f"[Open Google Drive Source (Optional)]({drive_link})")
         st.caption(f"File: {selected_row.get('filename', '')}")
         st.caption(f"Camera: {selected_row.get('camera_id', '')}")
-        st.caption(f"Predicted: {_predicted_label(selected_row)}")
+        st.caption(f"Predicted: {_label_to_display(_predicted_label(selected_row))}")
         st.caption(
             f"People={int(selected_row.get('person_count', 0))}, "
             f"Staff={int(selected_row.get('staff_count', 0))}, "
@@ -2988,7 +3095,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         predicted_label = _predicted_label(selected_row)
         st.text_input(
             "Predicted label",
-            value=str(predicted_label).upper(),
+            value=_label_to_display(predicted_label),
             disabled=True,
             help="Auto-filled from current model output for this frame.",
         )
@@ -3014,7 +3121,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             camera_id=str(selected_row.get("camera_id", "")),
             track_id="" if track_option == "frame" else str(track_option),
             predicted_label=predicted_label,
-            corrected_label=str(corrected_label_display).strip().lower(),
+            corrected_label=_label_to_canonical(corrected_label_display),
             confidence=float(confidence),
             needs_review=bool(needs_review),
             actor_email=(active_email or "system@local"),
@@ -3031,7 +3138,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             )
         st.success(f"Saved feedback #{feedback_id}.")
         learned = 0
-        if corrected_label_display == "POSTER_BANNER" and int(selected_row.get("person_count", 0) or 0) > 0:
+        if _label_to_canonical(corrected_label_display) == "poster_banner" and int(selected_row.get("person_count", 0) or 0) > 0:
             learned = _learn_false_positive_signatures_from_row(
                 db_path=db_path,
                 store_id=sid,
@@ -3080,8 +3187,19 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         return
     feedback_df = pd.DataFrame(feedback_rows)
     feedback_df["review_status"] = feedback_df["review_status"].astype(str).str.lower()
+    feedback_df["predicted_label_display"] = feedback_df["predicted_label"].map(_label_to_display)
+    feedback_df["corrected_label_display"] = feedback_df["corrected_label"].map(_label_to_display)
     if feedback_search:
-        search_cols = ["id", "filename", "camera_id", "comment", "predicted_label", "corrected_label"]
+        search_cols = [
+            "id",
+            "filename",
+            "camera_id",
+            "comment",
+            "predicted_label",
+            "corrected_label",
+            "predicted_label_display",
+            "corrected_label_display",
+        ]
         mask = feedback_df[search_cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower().str.contains(feedback_search, regex=False)
         feedback_df = feedback_df[mask].copy()
         if feedback_df.empty:
@@ -3093,6 +3211,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "_created_sort",
         ascending=(sort_mode == "oldest"),
     ).drop(columns=["_created_sort"]).reset_index(drop=True)
+    feedback_df = feedback_df.drop(columns=["predicted_label_display", "corrected_label_display"], errors="ignore")
+    feedback_df["predicted_label"] = feedback_df["predicted_label"].map(_label_to_display)
+    feedback_df["corrected_label"] = feedback_df["corrected_label"].map(_label_to_display)
     pending_df = feedback_df[feedback_df["review_status"] == "pending"].copy()
     confirmed_df = feedback_df[feedback_df["review_status"] == "confirmed"].copy()
     rejected_df = feedback_df[feedback_df["review_status"] == "rejected"].copy()
@@ -3208,7 +3329,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         key=f"qa_feedback_edit_selector_{sid}",
     )
     edit_row = history_df[history_df["edit_label"] == selected_edit].iloc[0]
-    current_label = str(edit_row.get("corrected_label", "")).strip().upper()
+    current_label = _label_to_display(edit_row.get("corrected_label", ""))
     if current_label not in FEEDBACK_LABEL_OPTIONS:
         current_label = "NOT_SURE"
     edit_cols = st.columns([2, 2, 1])
@@ -3238,7 +3359,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         update_qa_feedback_entry(
             db_path=db_path,
             feedback_id=int(edit_row.get("id", 0) or 0),
-            corrected_label=str(edited_label).strip().lower(),
+            corrected_label=_label_to_canonical(edited_label),
             comment=str(edited_comment),
             confidence=float(edited_confidence),
             reviewer_email=(active_email or "system@local"),

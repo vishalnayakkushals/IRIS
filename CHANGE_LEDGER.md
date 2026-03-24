@@ -50,6 +50,21 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Improved Frame Review overlay readability by repositioning labels to avoid clipping/overlap and adding stronger text contrast for track IDs (e.g., T21/T22/T25 visibility).
+  - Upgraded top-10 validation table for multi-person transparency: hidden timestamp, track-level predicted vs feedback columns (`Tn Pred`, `Tn Feedback`) and dynamic slot scaling up to 20 tracks.
+  - Standardized UI feedback wording to `PEDESTRIANS` and `BANNER` while preserving backward-compatible storage aliases (`outside_passer`, `poster_banner`) for retrain safety.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/daily_feedback_reprocess.py`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-24 | Commit <pending>
 - Summary:
   - Enhanced Frame Review batch validation for track-aware feedback: added per-frame track ID columns (`track_1`..`track_4`) with editable label assignment so T7/T9-style corrections are captured as structured feedback instead of free-text remarks.

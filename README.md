@@ -122,6 +122,10 @@ Dashboard tabs:
 - `Quality`
 - `Store Admin`
 
+Frame Review terminology (UI labels):
+- `PEDESTRIANS` (display name for legacy `OUTSIDE_PASSER`)
+- `BANNER` (display name for legacy `POSTER_BANNER`)
+
 ## Store Admin Capabilities
 
 From `Store Admin`:

@@ -22,6 +22,20 @@ from iris.store_registry import (
     upsert_app_settings,
 )
 
+_LABEL_CANONICAL_ALIASES: dict[str, str] = {
+    "banner": "poster_banner",
+    "poster_banner": "poster_banner",
+    "pedestrians": "outside_passer",
+    "outside_passer": "outside_passer",
+}
+
+
+def _canonical_feedback_label(raw: object) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    return _LABEL_CANONICAL_ALIASES.get(text, text)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Daily feedback-aware retrain + reprocess cycle")
@@ -87,7 +101,7 @@ def _retrain_store_feedback_rules(
 
     label_counts: dict[str, int] = {}
     for row in eligible_rows:
-        label = str(row.get("corrected_label", "") or "").strip().lower() or "unknown"
+        label = _canonical_feedback_label(row.get("corrected_label", "")) or "unknown"
         label_counts[label] = int(label_counts.get(label, 0)) + 1
     version_tag = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
     artifact_path = db_path.parent / "models" / f"qa_feedback_rules_{store_id}_{version_tag}.json"
