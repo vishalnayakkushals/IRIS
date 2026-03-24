@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote_plus
 
 import pandas as pd
 import numpy as np
@@ -220,28 +220,36 @@ def _ensure_session_state() -> None:
         st.session_state["ctrl_scope_email"] = ""
 
 
-def _query_value(name: str, default: str = "") -> str:
+def _query_value(name: str, default: str = "", decode_plus: bool = False) -> str:
     value = st.query_params.get(name, default)
+    text = ""
     if isinstance(value, list):
-        return str(value[0]) if value else default
-    return str(value)
+        text = str(value[0]) if value else default
+    else:
+        text = str(value)
+    if decode_plus:
+        try:
+            return unquote_plus(text)
+        except Exception:
+            return text
+    return text
 
 
 def _resolve_menu_from_query() -> tuple[str, str, str]:
     module_names = list(NAV_TREE.keys())
-    raw_page_param = _query_value("page", "")
+    raw_page_param = _query_value("page", "", decode_plus=True).strip()
     page_param = LEGACY_PAGE_ALIAS.get(raw_page_param, raw_page_param)
     if page_param in PAGE_TO_PATH:
         module, section = PAGE_TO_PATH[page_param]
         return module, section, page_param
 
-    module = _query_value("module", module_names[0])
+    module = _query_value("module", module_names[0], decode_plus=True).strip()
     if module not in NAV_TREE:
         module = module_names[0]
 
     sections = NAV_TREE[module]
     section_names = list(sections.keys())
-    section = _query_value("section", section_names[0])
+    section = _query_value("section", section_names[0], decode_plus=True).strip()
     if section not in sections:
         section = section_names[0]
 
@@ -4935,6 +4943,11 @@ def main() -> None:
         filter_email = st.text_input("Filter by email (optional)", value=active_email or "")
         logs_df = pd.DataFrame(list_user_activity(db_path=db_path, actor_email=filter_email.strip() or None, limit=1000))
         st.dataframe(logs_df, use_container_width=True)
+    else:
+        st.warning(
+            f"Page '{current_page}' is not mapped in this build. Showing Overview instead."
+        )
+        _render_overview(view_output)
 
 if __name__ == "__main__":
     main()

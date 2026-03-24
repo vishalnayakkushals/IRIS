@@ -52,6 +52,18 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Fixed blank-page navigation edge case by decoding URL query params (`+` / encoded spaces) for module/section/page resolution.
+  - Added safe page-render fallback: if page key is not mapped, show a warning and render Overview instead of a blank content area.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Fixed Windows YOLO runtime load-order issue (`c10.dll` WinError 1114) by preloading torch before numpy/pandas on non-pytest runs so true YOLO path is used again.
   - Upgraded Frame Review into validation-first workflow: image-wise validation report export, required feedback label set, editable review history, and model-version capture per feedback row.
   - Added safe feedback retrain/reprocess loop with minimum 10 new confirmed rows, model-version registration/promotion, rerun trigger, and daily batch script with end-of-day summary output.
