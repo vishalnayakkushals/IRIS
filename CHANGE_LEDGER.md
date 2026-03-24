@@ -54,6 +54,19 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Simplified top-10 Frame Review table for per-person QA by removing image-level `predicted_label`, `feedback_label`, and frame-link columns from batch editor.
+  - Kept left-side `Select` checkbox as required control for scoped save; only selected rows are persisted.
+  - Changed batch save behavior to persist track-level feedback only (`Tn Feedback`), with one-time banner relearn per selected frame row when applicable.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Added `run_iris.bat` launcher so Windows users can run refresh automation with a short command (`rebuild` default, `restart` optional).
   - Wired `.bat` usage into README to reduce manual PowerShell command typing.
 - Changed Paths:

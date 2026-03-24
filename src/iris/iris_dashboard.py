@@ -2639,7 +2639,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     st.markdown("**Validation Table (Top 10 Frames)**")
     st.caption(
         "Use this single table to review images, assign feedback labels, and save in bulk. "
-        "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections, and open `Zoom Preview` for full-size inspection."
+        "Keep `Select` checked only for rows you want to save. "
+        "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections."
     )
     existing_feedback_rows = list_qa_feedback(
         db_path=db_path,
@@ -2836,8 +2837,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "capture_date",
         "camera_id",
         "filename",
-        "predicted_label",
-        "feedback_label",
         "feedback_comment",
         "track_ids",
     ]
@@ -2846,26 +2845,18 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "capture_date",
         "camera_id",
         "filename",
-        "predicted_label",
         "track_ids",
         "feedback_status",
         "last_feedback",
-        "frame_link",
         "drive_link",
     ]
     column_config: dict[str, object] = {
         "selected": st.column_config.CheckboxColumn("Select"),
         "preview_image": st.column_config.ImageColumn("Preview"),
-        "feedback_label": st.column_config.SelectboxColumn(
-            "Feedback Label",
-            options=FEEDBACK_LABEL_OPTIONS,
-            required=True,
-        ),
         "feedback_comment": st.column_config.TextColumn("Comment"),
         "track_ids": st.column_config.TextColumn("Track IDs"),
         "feedback_status": st.column_config.TextColumn("Last Status"),
         "last_feedback": st.column_config.TextColumn("Last Feedback"),
-        "frame_link": st.column_config.LinkColumn("Zoom Preview", display_text="Open"),
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
     }
     for slot in slot_numbers:
@@ -2877,7 +2868,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             f"T{slot} Feedback",
             options=TRACK_FEEDBACK_OPTIONS,
         )
-    editor_columns.extend(["feedback_status", "last_feedback", "frame_link", "drive_link"])
+    editor_columns.extend(["feedback_status", "last_feedback", "drive_link"])
 
     try:
         edited_batch_df = st.data_editor(
@@ -2918,8 +2909,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             filename = str(row.get("filename", "") or "").strip()
             if not filename:
                 continue
-            corrected_label = str(row.get("feedback_label", "NOT_SURE") or "NOT_SURE").strip().upper()
-            corrected_label_canonical = _label_to_canonical(corrected_label)
             comment = str(row.get("feedback_comment", "") or "").strip()
             source_key = (capture_date, camera_id, filename)
             source_row = source_lookup.get(source_key)
@@ -2932,39 +2921,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     continue
                 source_row = matched.iloc[0]
                 capture_date = str(source_row.get("capture_date", "") or capture_date).strip()
-            feedback_id = add_qa_feedback(
-                db_path=db_path,
-                store_id=sid,
-                capture_date=capture_date,
-                filename=filename,
-                camera_id=camera_id,
-                track_id="",
-                predicted_label=str(_predicted_label(source_row)),
-                corrected_label=corrected_label_canonical,
-                confidence=float(batch_confidence),
-                needs_review=not bool(auto_confirm_feedback),
-                actor_email=(active_email or "system@local"),
-                model_version=active_model_id,
-                drive_link=str(source_row.get("drive_link", "") or "").strip(),
-                comment=comment,
-            )
-            saved += 1
-            if bool(auto_confirm_feedback):
-                update_qa_feedback_review(
-                    db_path=db_path,
-                    feedback_id=int(feedback_id),
-                    review_status="confirmed",
-                    reviewer_email=(active_email or "system@local"),
-                )
-                confirmed += 1
-            if corrected_label_canonical == "poster_banner" and int(source_row.get("person_count", 0) or 0) > 0:
-                relearned += _learn_false_positive_signatures_from_row(
-                    db_path=db_path,
-                    store_id=sid,
-                    row=source_row,
-                    root_dir=root_dir,
-                    feedback_id=int(feedback_id),
-                )
+            banner_relearned_for_row = False
             for slot in slot_numbers:
                 track_id_value = str(row.get(f"track_{slot}_id", "") or "").strip()
                 track_label_value = str(row.get(f"track_{slot}_label", "") or "").strip().upper()
@@ -2991,6 +2948,15 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 )
                 saved += 1
                 track_saved += 1
+                if (not banner_relearned_for_row) and track_label_canonical == "poster_banner" and int(source_row.get("person_count", 0) or 0) > 0:
+                    relearned += _learn_false_positive_signatures_from_row(
+                        db_path=db_path,
+                        store_id=sid,
+                        row=source_row,
+                        root_dir=root_dir,
+                        feedback_id=int(track_feedback_id),
+                    )
+                    banner_relearned_for_row = True
                 if bool(auto_confirm_feedback):
                     update_qa_feedback_review(
                         db_path=db_path,
