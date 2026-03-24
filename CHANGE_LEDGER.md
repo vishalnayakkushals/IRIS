@@ -23,6 +23,7 @@ It records what changed, where it changed, and why.
 | `src/iris/entrance_pipeline.py` | Deterministic entrance-camera classifier (zone logic, poster/staff/passers filtering, per-track audit JSON). |
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
+| `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
@@ -48,6 +49,23 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-24 | Commit <pending>
+- Summary:
+  - Fixed Windows YOLO runtime load-order issue (`c10.dll` WinError 1114) by preloading torch before numpy/pandas on non-pytest runs so true YOLO path is used again.
+  - Upgraded Frame Review into validation-first workflow: image-wise validation report export, required feedback label set, editable review history, and model-version capture per feedback row.
+  - Added safe feedback retrain/reprocess loop with minimum 10 new confirmed rows, model-version registration/promotion, rerun trigger, and daily batch script with end-of-day summary output.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `src/iris/store_registry.py`
+  - `src/iris/iris_dashboard.py`
+  - `scripts/daily_feedback_reprocess.py`
+  - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/daily_feedback_reprocess.py`
+- Infra/Config Impact:
+  - Windows-only torch preload can be disabled with `IRIS_PRELOAD_TORCH=0`.
 
 ### 2026-03-23 | Commit <pending>
 - Summary:

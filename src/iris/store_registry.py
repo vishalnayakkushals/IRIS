@@ -372,6 +372,8 @@ def init_db(db_path: Path) -> None:
                 predicted_label TEXT NOT NULL DEFAULT '',
                 corrected_label TEXT NOT NULL DEFAULT '',
                 confidence REAL NOT NULL DEFAULT 0.8,
+                model_version TEXT NOT NULL DEFAULT '',
+                drive_link TEXT NOT NULL DEFAULT '',
                 needs_review INTEGER NOT NULL DEFAULT 0,
                 review_status TEXT NOT NULL DEFAULT 'pending',
                 comment TEXT NOT NULL DEFAULT '',
@@ -409,6 +411,11 @@ def init_db(db_path: Path) -> None:
             conn.execute("ALTER TABLE camera_configs ADD COLUMN floor_name TEXT NOT NULL DEFAULT ''")
         if "location_name" not in _table_columns(conn, "camera_configs"):
             conn.execute("ALTER TABLE camera_configs ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
+        qa_feedback_cols = _table_columns(conn, "qa_feedback")
+        if "model_version" not in qa_feedback_cols:
+            conn.execute("ALTER TABLE qa_feedback ADD COLUMN model_version TEXT NOT NULL DEFAULT ''")
+        if "drive_link" not in qa_feedback_cols:
+            conn.execute("ALTER TABLE qa_feedback ADD COLUMN drive_link TEXT NOT NULL DEFAULT ''")
         _seed_defaults(conn)
         conn.commit()
     finally:
@@ -1075,6 +1082,8 @@ def add_qa_feedback(
     confidence: float,
     needs_review: bool,
     actor_email: str,
+    model_version: str = "",
+    drive_link: str = "",
     comment: str = "",
 ) -> int:
     init_db(db_path)
@@ -1085,9 +1094,10 @@ def add_qa_feedback(
             """
             INSERT INTO qa_feedback(
                 store_id,capture_date,filename,camera_id,track_id,predicted_label,corrected_label,
-                confidence,needs_review,review_status,comment,actor_email,reviewer_email,created_at,reviewed_at
+                confidence,model_version,drive_link,needs_review,review_status,comment,
+                actor_email,reviewer_email,created_at,reviewed_at
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 store_id.strip(),
@@ -1098,6 +1108,8 @@ def add_qa_feedback(
                 predicted_label.strip().lower(),
                 corrected_label.strip().lower(),
                 float(confidence),
+                model_version.strip(),
+                drive_link.strip(),
                 1 if needs_review else 0,
                 "pending",
                 comment.strip(),
@@ -1125,7 +1137,8 @@ def list_qa_feedback(
     try:
         query = (
             "SELECT id,store_id,capture_date,filename,camera_id,track_id,predicted_label,corrected_label,"
-            "confidence,needs_review,review_status,comment,actor_email,reviewer_email,created_at,reviewed_at "
+            "confidence,model_version,drive_link,needs_review,review_status,comment,"
+            "actor_email,reviewer_email,created_at,reviewed_at "
             "FROM qa_feedback"
         )
         where: list[str] = []
@@ -1151,6 +1164,8 @@ def list_qa_feedback(
             "predicted_label",
             "corrected_label",
             "confidence",
+            "model_version",
+            "drive_link",
             "needs_review",
             "review_status",
             "comment",
@@ -1186,6 +1201,37 @@ def update_qa_feedback_review(
             WHERE id=?
             """,
             (status, reviewer_email.strip().lower(), _now_utc(), int(feedback_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_qa_feedback_entry(
+    db_path: Path,
+    feedback_id: int,
+    corrected_label: str,
+    comment: str,
+    confidence: float,
+    reviewer_email: str,
+) -> None:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE qa_feedback
+            SET corrected_label=?, comment=?, confidence=?, reviewer_email=?, reviewed_at=?
+            WHERE id=?
+            """,
+            (
+                corrected_label.strip().lower(),
+                comment.strip(),
+                float(max(0.0, min(1.0, confidence))),
+                reviewer_email.strip().lower(),
+                _now_utc(),
+                int(feedback_id),
+            ),
         )
         conn.commit()
     finally:

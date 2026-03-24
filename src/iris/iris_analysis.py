@@ -10,11 +10,25 @@ import os
 import re
 import colorsys
 import pickle
+import sys
 from typing import Any, Protocol, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
-import cv2
 
+_TORCH_PRELOAD_ERROR = ""
+if (
+    os.name == "nt"
+    and "pytest" not in sys.modules
+    and str(os.getenv("IRIS_PRELOAD_TORCH", "1")).strip() != "0"
+):
+    # On Windows, importing torch after numpy/pandas/opencv can fail with WinError 1114 (c10.dll init).
+    # Preloading torch first stabilizes the YOLO runtime path without forcing YOLO usage.
+    try:
+        import torch as _torch_preload  # type: ignore  # noqa: F401
+    except Exception as exc:
+        _TORCH_PRELOAD_ERROR = str(exc)
+
+import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -515,6 +529,10 @@ def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, us
             )
         except Exception as exc:
             yolo_warning = f"YOLO detector unavailable: {exc}"
+            if _TORCH_PRELOAD_ERROR and "1114" in str(exc):
+                yolo_warning += (
+                    f" | torch preload diagnostic: {_TORCH_PRELOAD_ERROR}"
+                )
             try:
                 detector = OpenCvHogPersonDetector(conf_threshold=conf_threshold)
                 warning = f"{yolo_warning}. Fallback active: OpenCV HOG."

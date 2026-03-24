@@ -65,7 +65,10 @@ from iris.store_registry import (
     set_role_permissions,
     set_user_password,
     sync_store_from_drive,
+    register_model_version,
+    promote_model_version,
     update_qa_feedback_review,
+    update_qa_feedback_entry,
     upsert_camera_config,
     upsert_location_master,
     upsert_manager_access,
@@ -1726,6 +1729,146 @@ def _predicted_label(row: pd.Series) -> str:
     return "mixed"
 
 
+FEEDBACK_LABEL_OPTIONS = [
+    "CUSTOMER",
+    "STAFF",
+    "POSTER_BANNER",
+    "PRODUCT",
+    "OUTSIDE_PASSER",
+    "INVALID",
+    "NOT_SURE",
+]
+
+
+def _feedback_label_default(row: pd.Series) -> str:
+    predicted = str(_predicted_label(row)).strip().lower()
+    event_label = str(row.get("event_label", "") or "").strip().upper()
+    bag_count = int(pd.to_numeric([row.get("bag_count", 0)], errors="coerce")[0] or 0)
+    if event_label == "STAFF" or predicted == "staff":
+        return "STAFF"
+    if event_label == "CUSTOMER" or predicted == "customer":
+        return "CUSTOMER"
+    if bag_count > 0:
+        return "PRODUCT"
+    if event_label in {"STATIC_OBJECT"}:
+        return "POSTER_BANNER"
+    if event_label == "OUTSIDE_PASSER" or predicted == "outside_passer":
+        return "OUTSIDE_PASSER"
+    if event_label == "INVALID":
+        return "INVALID"
+    return "NOT_SURE"
+
+
+def _build_image_validation_report_df(image_df: pd.DataFrame) -> pd.DataFrame:
+    report = image_df.copy()
+    if report.empty:
+        return pd.DataFrame(
+            columns=[
+                "image_name",
+                "timestamp",
+                "drive_link",
+                "thumbnail_path",
+                "predicted_label",
+                "confidence",
+                "person_count",
+                "role_prediction",
+                "remarks",
+                "review_status",
+            ]
+        )
+    report["image_name"] = report["filename"].astype(str)
+    report["timestamp"] = report["timestamp"].astype(str)
+    report["drive_link"] = report["drive_link"].fillna("").astype(str)
+    report["thumbnail_path"] = report["path"].fillna("").astype(str)
+    report["predicted_label"] = report.apply(_predicted_label, axis=1).astype(str).str.upper()
+    report["confidence"] = pd.to_numeric(report.get("max_person_conf", 0.0), errors="coerce").fillna(0.0).round(4)
+    report["person_count"] = pd.to_numeric(report.get("person_count", 0), errors="coerce").fillna(0).astype(int)
+    report["role_prediction"] = report.apply(lambda r: _feedback_label_default(r), axis=1).astype(str)
+    report["remarks"] = report.apply(
+        lambda r: (
+            str(r.get("detection_error", "") or "").strip()
+            or str(r.get("reject_reason", "") or "").strip()
+            or ""
+        ),
+        axis=1,
+    )
+    report["review_status"] = "pending"
+    return report[
+        [
+            "image_name",
+            "timestamp",
+            "drive_link",
+            "thumbnail_path",
+            "predicted_label",
+            "confidence",
+            "person_count",
+            "role_prediction",
+            "remarks",
+            "review_status",
+        ]
+    ].copy()
+
+
+def _feedback_retrain_cycle(
+    db_path: Path,
+    store_id: str,
+    actor_email: str,
+    min_new_rows: int = 10,
+) -> tuple[bool, str, int]:
+    settings = get_app_settings(db_path)
+    key_last = f"qa_last_retrain_feedback_id__{store_id}"
+    key_model = f"qa_active_model_id__{store_id}"
+    try:
+        last_retrain_id = int(str(settings.get(key_last, "0") or "0"))
+    except Exception:
+        last_retrain_id = 0
+    confirmed_rows = list_qa_feedback(
+        db_path=db_path,
+        store_id=store_id,
+        review_status="confirmed",
+        limit=200000,
+    )
+    new_rows = [row for row in confirmed_rows if int(row.get("id", 0) or 0) > last_retrain_id]
+    if len(new_rows) < int(max(1, min_new_rows)):
+        return False, f"Need at least {int(min_new_rows)} new confirmed feedback rows.", len(new_rows)
+
+    label_counts: dict[str, int] = {}
+    for row in new_rows:
+        label = str(row.get("corrected_label", "") or "").strip().lower() or "unknown"
+        label_counts[label] = int(label_counts.get(label, 0)) + 1
+    version_tag = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
+    artifact_path = db_path.parent / "models" / f"qa_feedback_rules_{store_id}_{version_tag}.json"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "store_id": store_id,
+        "version_tag": version_tag,
+        "new_feedback_rows": len(new_rows),
+        "label_counts": label_counts,
+        "updated_by": actor_email,
+        "updated_at": pd.Timestamp.utcnow().isoformat(),
+    }
+    artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    model_name = f"iris_feedback_rules_{store_id}"
+    model_id = register_model_version(
+        db_path=db_path,
+        model_name=model_name,
+        version_tag=version_tag,
+        metrics_json=json.dumps(payload),
+        status="candidate",
+        artifact_path=str(artifact_path),
+    )
+    promote_model_version(db_path=db_path, model_name=model_name, model_id=model_id)
+    max_feedback_id = max(int(row.get("id", 0) or 0) for row in new_rows)
+    upsert_app_settings(
+        db_path=db_path,
+        settings={
+            key_last: str(max_feedback_id),
+            key_model: str(model_id),
+        },
+    )
+    return True, f"Retrained feedback rules as {model_id}.", len(new_rows)
+
+
 def _render_overlay_image(row: pd.Series):
     image_path = str(row.get("path", "")).strip()
     if not image_path:
@@ -1845,6 +1988,8 @@ def _sync_confirmed_feedback_export(db_path: Path) -> Path:
                 "predicted_label",
                 "corrected_label",
                 "confidence",
+                "model_version",
+                "drive_link",
                 "needs_review",
                 "review_status",
                 "comment",
@@ -2294,6 +2439,25 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     top_cols[2].metric("Unique Customer IDs", int(len(unique_ids)))
     top_cols[3].metric("Frames With Drive Link", int((image_df["drive_link"].fillna("") != "").sum()))
 
+    validation_report_df = _build_image_validation_report_df(image_df=image_df)
+    out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / f"store_{sid}_image_validation_report.csv"
+    validation_report_df.to_csv(report_path, index=False)
+    st.caption(f"Image-wise validation report: {report_path}")
+    try:
+        st.dataframe(
+            validation_report_df.head(300),
+            use_container_width=True,
+            hide_index=True,
+            height=260,
+            column_config={
+                "drive_link": st.column_config.LinkColumn("Drive Link", display_text="Open"),
+            },
+        )
+    except Exception:
+        st.dataframe(validation_report_df.head(300), use_container_width=True, hide_index=True, height=260)
+
     auth_token = str(st.session_state.get("session_token", "")).strip()
     extra_auth = f"&auth={quote(auth_token)}" if auth_token else ""
     st.markdown(
@@ -2430,11 +2594,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             else:
                 st.caption("Source image not available locally.")
 
-    st.markdown("**Mark Prediction Wrong**")
+    st.markdown("**Validation Feedback**")
     st.caption(
         "Corrections are stored first as pending review. Confirmed rows are exported for retraining, so accidental labels can be rejected safely."
     )
-    st.markdown("1. Select the frame above. 2. Pick the corrected label. 3. Save correction. Reviewer can approve/reject below.")
+    st.markdown("1. Select the frame above. 2. Pick feedback label. 3. Save. Reviewer can approve/reject below.")
     with st.form(f"qa_feedback_form_{sid}", clear_on_submit=False):
         track_ids = [str(x) for x in _safe_json_list(selected_row.get("track_ids", "[]")) if str(x).strip()]
         track_option = st.selectbox(
@@ -2445,23 +2609,24 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         predicted_label = _predicted_label(selected_row)
         st.text_input(
             "Predicted label",
-            value=predicted_label,
+            value=str(predicted_label).upper(),
             disabled=True,
             help="Auto-filled from current model output for this frame.",
         )
-        corrected_label = st.radio(
-            "Corrected label",
-            options=["customer", "staff", "outside_passer", "invalid", "mixed", "no_person"],
-            index=["customer", "staff", "outside_passer", "invalid", "mixed", "no_person"].index(
-                predicted_label if predicted_label in {"customer", "staff", "outside_passer", "invalid", "mixed", "no_person"} else "invalid"
-            ),
-            horizontal=True,
+        default_feedback = _feedback_label_default(selected_row)
+        corrected_label_display = st.selectbox(
+            "Feedback label",
+            options=FEEDBACK_LABEL_OPTIONS,
+            index=FEEDBACK_LABEL_OPTIONS.index(default_feedback) if default_feedback in FEEDBACK_LABEL_OPTIONS else 0,
         )
         confidence = st.slider("Correction confidence", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
         needs_review = st.checkbox("Require reviewer approval", value=True)
-        comment = st.text_input("Comment", value="")
-        submit_feedback = st.form_submit_button("Save QA correction")
+        comment = st.text_input("Comment", value="", placeholder="Why this label is correct")
+        submit_feedback = st.form_submit_button("Save Feedback")
     if submit_feedback:
+        settings = get_app_settings(db_path)
+        active_model_key = f"qa_active_model_id__{sid}"
+        active_model_id = str(settings.get(active_model_key, "baseline_rules_v1") or "baseline_rules_v1")
         feedback_id = add_qa_feedback(
             db_path=db_path,
             store_id=sid,
@@ -2470,15 +2635,17 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             camera_id=str(selected_row.get("camera_id", "")),
             track_id="" if track_option == "frame" else str(track_option),
             predicted_label=predicted_label,
-            corrected_label=corrected_label,
+            corrected_label=str(corrected_label_display).strip().lower(),
             confidence=float(confidence),
             needs_review=bool(needs_review),
             actor_email=(active_email or "system@local"),
+            model_version=active_model_id,
+            drive_link=str(selected_row.get("drive_link", "")).strip(),
             comment=comment,
         )
-        st.success(f"Saved QA correction #{feedback_id}.")
+        st.success(f"Saved feedback #{feedback_id}.")
         learned = 0
-        if corrected_label == "no_person" and int(selected_row.get("person_count", 0) or 0) > 0:
+        if corrected_label_display == "POSTER_BANNER" and int(selected_row.get("person_count", 0) or 0) > 0:
             learned = _learn_false_positive_signatures_from_row(
                 db_path=db_path,
                 store_id=sid,
@@ -2499,7 +2666,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     with status_cols[0]:
         status_filter = st.selectbox(
             "Feedback status",
-            options=["all", "pending", "confirmed", "rejected"],
+            options=["pending", "all", "confirmed", "rejected"],
             index=0,
             key=f"qa_feedback_filter_{sid}",
         )
@@ -2550,6 +2717,41 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     kpi_cols[2].metric("Confirmed", int(len(confirmed_df)))
     kpi_cols[3].metric("Rejected", int(len(rejected_df)))
 
+    settings = get_app_settings(db_path)
+    retrain_key = f"qa_last_retrain_feedback_id__{sid}"
+    try:
+        last_retrain_feedback_id = int(str(settings.get(retrain_key, "0") or "0"))
+    except Exception:
+        last_retrain_feedback_id = 0
+    new_confirmed_rows = confirmed_df[
+        pd.to_numeric(confirmed_df.get("id", 0), errors="coerce").fillna(0).astype(int) > int(last_retrain_feedback_id)
+    ].copy()
+    retrain_cols = st.columns([2, 1])
+    with retrain_cols[0]:
+        st.caption(
+            f"New confirmed feedback since last retrain: {int(len(new_confirmed_rows))} "
+            f"(minimum required: 10)"
+        )
+    with retrain_cols[1]:
+        if st.button(
+            "Retrain + Reprocess",
+            key=f"qa_retrain_{sid}",
+            disabled=int(len(new_confirmed_rows)) < 10,
+            type="primary",
+        ):
+            ok, message, used_rows = _feedback_retrain_cycle(
+                db_path=db_path,
+                store_id=sid,
+                actor_email=(active_email or "system@local"),
+                min_new_rows=10,
+            )
+            if ok:
+                st.success(f"{message} Applied rows: {used_rows}. Re-running analysis now.")
+                st.session_state["force_rerun_analysis"] = True
+                st.rerun()
+            else:
+                st.info(f"{message} New rows: {used_rows}.")
+
     feedback_df["frame_link"] = feedback_df.apply(
         lambda r: _frame_review_identity_link(
             store_id=sid,
@@ -2574,6 +2776,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     "track_id",
                     "predicted_label",
                     "corrected_label",
+                    "model_version",
                     "confidence",
                     "comment",
                     "actor_email",
@@ -2594,6 +2797,56 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
     except Exception:
         st.dataframe(feedback_df, use_container_width=True, hide_index=True, height=280)
+
+    st.markdown("**Review History (Editable)**")
+    history_df = feedback_df.copy()
+    history_df["edit_label"] = history_df.apply(
+        lambda r: f"✎ #{int(r.get('id', 0))} | {str(r.get('filename', ''))} | {str(r.get('corrected_label', ''))}",
+        axis=1,
+    )
+    selected_edit = st.selectbox(
+        "Select feedback row to edit",
+        options=history_df["edit_label"].tolist(),
+        key=f"qa_feedback_edit_selector_{sid}",
+    )
+    edit_row = history_df[history_df["edit_label"] == selected_edit].iloc[0]
+    current_label = str(edit_row.get("corrected_label", "")).strip().upper()
+    if current_label not in FEEDBACK_LABEL_OPTIONS:
+        current_label = "NOT_SURE"
+    edit_cols = st.columns([2, 2, 1])
+    with edit_cols[0]:
+        edited_label = st.selectbox(
+            "Edit feedback label",
+            options=FEEDBACK_LABEL_OPTIONS,
+            index=FEEDBACK_LABEL_OPTIONS.index(current_label),
+            key=f"qa_feedback_edit_label_{sid}",
+        )
+    with edit_cols[1]:
+        edited_comment = st.text_input(
+            "Edit comment",
+            value=str(edit_row.get("comment", "") or ""),
+            key=f"qa_feedback_edit_comment_{sid}",
+        )
+    with edit_cols[2]:
+        edited_confidence = st.slider(
+            "Edit confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(pd.to_numeric([edit_row.get("confidence", 0.7)], errors="coerce")[0] or 0.7),
+            step=0.05,
+            key=f"qa_feedback_edit_conf_{sid}",
+        )
+    if st.button("Save Edit", key=f"qa_feedback_edit_save_{sid}"):
+        update_qa_feedback_entry(
+            db_path=db_path,
+            feedback_id=int(edit_row.get("id", 0) or 0),
+            corrected_label=str(edited_label).strip().lower(),
+            comment=str(edited_comment),
+            confidence=float(edited_confidence),
+            reviewer_email=(active_email or "system@local"),
+        )
+        st.success(f"Feedback #{int(edit_row.get('id', 0) or 0)} updated.")
+        st.rerun()
 
     if pending_df.empty:
         export_path = _sync_confirmed_feedback_export(db_path=db_path)
@@ -2625,6 +2878,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             f"Feedback #{selected_feedback_id} | Predicted `{selected_pending.get('predicted_label', '')}` "
             f"-> Corrected `{selected_pending.get('corrected_label', '')}` | Confidence {confidence_show:.2f}"
         )
+        st.caption(f"Model Version: {str(selected_pending.get('model_version', '') or '-').strip() or '-'}")
+        st.caption(f"Feedback Time: {str(selected_pending.get('created_at', '') or '-').strip() or '-'}")
         st.caption(f"Comment: {str(selected_pending.get('comment', '')).strip() or '-'}")
         st.caption(f"Submitted by: {selected_pending.get('actor_email', '')}")
         review_open_link = _frame_review_identity_link(

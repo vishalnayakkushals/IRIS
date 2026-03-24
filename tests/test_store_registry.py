@@ -10,6 +10,7 @@ from PIL import Image
 from iris.store_registry import (
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
+    add_qa_feedback,
     add_false_positive_signature,
     detect_source_provider,
     ensure_store_login,
@@ -25,6 +26,7 @@ from iris.store_registry import (
     list_camera_configs,
     list_location_master,
     list_false_positive_signatures,
+    list_qa_feedback,
     upsert_camera_config,
     upsert_location_master,
     delete_location_master,
@@ -36,6 +38,7 @@ from iris.store_registry import (
     list_stores,
     parse_drive_folder_id,
     sync_store_from_drive,
+    update_qa_feedback_entry,
     list_model_versions,
     maybe_auto_rollback_model,
     promote_model_version,
@@ -580,3 +583,64 @@ def test_list_synced_stores_can_filter_by_provider(tmp_path: Path, monkeypatch) 
     only_local = list_synced_stores(db_path=db, provider_filter="local")
     assert [r["store_id"] for r in only_gdrive] == ["GDRIVE1"]
     assert [r["store_id"] for r in only_local] == ["LOCAL1"]
+
+
+def test_qa_feedback_persists_model_version_and_drive_link(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    feedback_id = add_qa_feedback(
+        db_path=db,
+        store_id="S001",
+        capture_date="2026-03-24",
+        filename="12-17-32_D07-1.jpg",
+        camera_id="D07",
+        track_id="7",
+        predicted_label="customer",
+        corrected_label="staff",
+        confidence=0.85,
+        needs_review=True,
+        actor_email="qa@example.com",
+        model_version="iris_feedback_rules_S001_v1",
+        drive_link="https://drive.google.com/file/d/abc/view",
+        comment="uniform matched",
+    )
+    rows = list_qa_feedback(db_path=db, store_id="S001", review_status=None, limit=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert int(row["id"]) == int(feedback_id)
+    assert str(row["model_version"]) == "iris_feedback_rules_S001_v1"
+    assert str(row["drive_link"]) == "https://drive.google.com/file/d/abc/view"
+
+
+def test_update_qa_feedback_entry_allows_editing_label_comment_and_confidence(tmp_path: Path) -> None:
+    db = tmp_path / "registry.db"
+    feedback_id = add_qa_feedback(
+        db_path=db,
+        store_id="S001",
+        capture_date="2026-03-24",
+        filename="12-17-32_D07-1.jpg",
+        camera_id="D07",
+        track_id="",
+        predicted_label="invalid",
+        corrected_label="not_sure",
+        confidence=0.5,
+        needs_review=True,
+        actor_email="qa@example.com",
+        model_version="baseline",
+        drive_link="",
+        comment="initial",
+    )
+    update_qa_feedback_entry(
+        db_path=db,
+        feedback_id=int(feedback_id),
+        corrected_label="customer",
+        comment="updated after manual review",
+        confidence=0.9,
+        reviewer_email="reviewer@example.com",
+    )
+    rows = list_qa_feedback(db_path=db, store_id="S001", review_status=None, limit=10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert str(row["corrected_label"]) == "customer"
+    assert str(row["comment"]) == "updated after manual review"
+    assert float(row["confidence"]) == 0.9
+    assert str(row["reviewer_email"]) == "reviewer@example.com"
