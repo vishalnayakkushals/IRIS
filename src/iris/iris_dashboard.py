@@ -2673,6 +2673,32 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             )
             if track_key not in latest_track_feedback_by_key:
                 latest_track_feedback_by_key[track_key] = feedback_row
+    preview_cache_key = f"qa_preview_cache_{sid}"
+    preview_cache = st.session_state.get(preview_cache_key)
+    if not isinstance(preview_cache, dict):
+        preview_cache = {}
+        st.session_state[preview_cache_key] = preview_cache
+
+    def _preview_uri_cached(row: pd.Series) -> str:
+        cache_key = (
+            str(row.get("capture_date", "") or "").strip(),
+            str(row.get("camera_id", "") or "").strip(),
+            str(row.get("filename", "") or "").strip(),
+            str(row.get("path", "") or "").strip(),
+            str(row.get("person_boxes", "") or "").strip(),
+            str(row.get("staff_flags", "") or "").strip(),
+            str(row.get("track_ids", "") or "").strip(),
+            320,
+        )
+        cached = str(preview_cache.get(cache_key, "") or "")
+        if cached:
+            return cached
+        generated = _overlay_or_source_preview_uri(row, store_id=sid, root_dir=root_dir, max_size=320)
+        preview_cache[cache_key] = generated
+        if len(preview_cache) > 600:
+            for old_key in list(preview_cache.keys())[:120]:
+                preview_cache.pop(old_key, None)
+        return generated
 
     max_track_slots = max(
         1,
@@ -2702,10 +2728,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["capture_date"] = df["capture_date"].astype(str)
         df["timestamp"] = df["timestamp"].astype(str)
         df["predicted_label"] = df.apply(_predicted_label, axis=1).map(_label_to_display)
-        df["preview_image"] = df.apply(
-            lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=320),
-            axis=1,
-        )
+        df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
         df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
         df["feedback_comment"] = ""
         df["selected"] = True
@@ -2815,23 +2838,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
             batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
-    batch_save_cols = st.columns([1, 1, 2])
-    with batch_save_cols[0]:
-        auto_confirm_feedback = st.checkbox(
-            "Auto-confirm on save",
-            value=True,
-            key=f"qa_batch_auto_confirm_{sid}",
-            help="Recommended for test-store validation so retrain picks up new rows immediately.",
-        )
-    with batch_save_cols[1]:
-        batch_confidence = st.slider(
-            "Batch confidence",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.9,
-            step=0.05,
-            key=f"qa_batch_conf_{sid}",
-        )
     editor_columns = [
         "selected",
         "preview_image",
@@ -2867,21 +2873,40 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
     editor_columns.extend(["drive_link"])
 
-    try:
-        edited_batch_df = st.data_editor(
-            batch_rows[editor_columns],
-            use_container_width=True,
-            hide_index=True,
-            height=420,
-            key=f"qa_batch_editor_{sid}",
-            disabled=disabled_columns,
-            column_config=column_config,
-        )
-    except Exception:
-        st.dataframe(batch_rows, use_container_width=True, hide_index=True, height=420)
-        edited_batch_df = batch_rows[editor_columns].copy()
+    with st.form(key=f"qa_batch_form_{sid}", clear_on_submit=False):
+        batch_save_cols = st.columns([1, 1, 2])
+        with batch_save_cols[0]:
+            auto_confirm_feedback = st.checkbox(
+                "Auto-confirm on save",
+                value=True,
+                key=f"qa_batch_auto_confirm_{sid}",
+                help="Recommended for test-store validation so retrain picks up new rows immediately.",
+            )
+        with batch_save_cols[1]:
+            batch_confidence = st.slider(
+                "Batch confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.9,
+                step=0.05,
+                key=f"qa_batch_conf_{sid}",
+            )
+        try:
+            edited_batch_df = st.data_editor(
+                batch_rows[editor_columns],
+                use_container_width=True,
+                hide_index=True,
+                height=420,
+                key=f"qa_batch_editor_{sid}",
+                disabled=disabled_columns,
+                column_config=column_config,
+            )
+        except Exception:
+            st.dataframe(batch_rows, use_container_width=True, hide_index=True, height=420)
+            edited_batch_df = batch_rows[editor_columns].copy()
+        submit_batch = st.form_submit_button("Save Selected Feedback (Top 10)", type="primary")
 
-    if st.button("Save Selected Feedback (Top 10)", key=f"qa_batch_save_{sid}", type="primary"):
+    if submit_batch:
         settings = get_app_settings(db_path)
         active_model_key = f"qa_active_model_id__{sid}"
         active_model_id = str(settings.get(active_model_key, "baseline_rules_v1") or "baseline_rules_v1")
@@ -2932,33 +2957,36 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 track_key = (capture_date, camera_id, filename, track_id_value)
                 existing_track_feedback = latest_track_feedback_by_key.get(track_key)
                 existing_track_id = int(existing_track_feedback.get("id", 0) or 0) if isinstance(existing_track_feedback, dict) else 0
+                desired_status = "confirmed" if bool(auto_confirm_feedback) else "pending"
+                desired_confidence = float(batch_confidence)
                 if existing_track_id > 0:
+                    existing_label = _label_to_canonical((existing_track_feedback or {}).get("corrected_label", ""))
+                    existing_comment = str((existing_track_feedback or {}).get("comment", "") or "").strip()
+                    existing_status = str((existing_track_feedback or {}).get("review_status", "pending") or "pending").strip().lower()
+                    existing_confidence = float(
+                        pd.to_numeric([(existing_track_feedback or {}).get("confidence", 0.0)], errors="coerce")[0] or 0.0
+                    )
+                    if (
+                        existing_label == track_label_canonical
+                        and existing_comment == comment
+                        and existing_status == desired_status
+                        and abs(existing_confidence - desired_confidence) < 1e-6
+                    ):
+                        continue
                     update_qa_feedback_entry(
                         db_path=db_path,
                         feedback_id=existing_track_id,
                         corrected_label=track_label_canonical,
                         comment=comment,
-                        confidence=float(batch_confidence),
+                        confidence=desired_confidence,
                         reviewer_email=(active_email or "system@local"),
+                        review_status=desired_status,
                     )
                     track_feedback_id = existing_track_id
                     track_updated += 1
-                    if bool(auto_confirm_feedback):
-                        update_qa_feedback_review(
-                            db_path=db_path,
-                            feedback_id=int(track_feedback_id),
-                            review_status="confirmed",
-                            reviewer_email=(active_email or "system@local"),
-                        )
+                    if desired_status == "confirmed":
                         confirmed += 1
                         track_confirmed += 1
-                    else:
-                        update_qa_feedback_review(
-                            db_path=db_path,
-                            feedback_id=int(track_feedback_id),
-                            review_status="pending",
-                            reviewer_email=(active_email or "system@local"),
-                        )
                 else:
                     track_feedback_id = add_qa_feedback(
                         db_path=db_path,
@@ -2969,21 +2997,17 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                         track_id=track_id_value,
                         predicted_label=str(_predicted_label(source_row)),
                         corrected_label=track_label_canonical,
-                        confidence=float(batch_confidence),
+                        confidence=desired_confidence,
                         needs_review=not bool(auto_confirm_feedback),
                         actor_email=(active_email or "system@local"),
                         model_version=active_model_id,
                         drive_link=str(source_row.get("drive_link", "") or "").strip(),
                         comment=comment,
+                        review_status=desired_status,
+                        reviewer_email=(active_email or "system@local") if desired_status == "confirmed" else "",
                     )
                     track_created += 1
-                    if bool(auto_confirm_feedback):
-                        update_qa_feedback_review(
-                            db_path=db_path,
-                            feedback_id=int(track_feedback_id),
-                            review_status="confirmed",
-                            reviewer_email=(active_email or "system@local"),
-                        )
+                    if desired_status == "confirmed":
                         confirmed += 1
                         track_confirmed += 1
                 latest_track_feedback_by_key[track_key] = {
@@ -2993,7 +3017,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     "filename": filename,
                     "track_id": track_id_value,
                     "corrected_label": track_label_canonical,
-                    "review_status": "confirmed" if bool(auto_confirm_feedback) else "pending",
+                    "review_status": desired_status,
+                    "comment": comment,
+                    "confidence": desired_confidence,
                 }
                 saved += 1
                 track_saved += 1

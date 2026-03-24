@@ -1085,9 +1085,21 @@ def add_qa_feedback(
     model_version: str = "",
     drive_link: str = "",
     comment: str = "",
+    review_status: str = "pending",
+    reviewer_email: str = "",
 ) -> int:
     init_db(db_path)
     now = _now_utc()
+    status = str(review_status or "pending").strip().lower()
+    if status not in {"pending", "confirmed", "rejected"}:
+        raise ValueError("review_status must be pending, confirmed, or rejected")
+    normalized_reviewer = str(reviewer_email or "").strip().lower()
+    if status != "pending" and not normalized_reviewer:
+        normalized_reviewer = actor_email.strip().lower()
+    reviewed_at = now if status in {"confirmed", "rejected"} else ""
+    needs_review_value = 1 if bool(needs_review) else 0
+    if status != "pending":
+        needs_review_value = 0
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
@@ -1110,13 +1122,13 @@ def add_qa_feedback(
                 float(confidence),
                 model_version.strip(),
                 drive_link.strip(),
-                1 if needs_review else 0,
-                "pending",
+                int(needs_review_value),
+                status,
                 comment.strip(),
                 actor_email.strip().lower(),
-                "",
+                normalized_reviewer,
                 now,
-                "",
+                reviewed_at,
             ),
         )
         feedback_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1214,25 +1226,50 @@ def update_qa_feedback_entry(
     comment: str,
     confidence: float,
     reviewer_email: str,
+    review_status: str | None = None,
 ) -> None:
     init_db(db_path)
+    status = str(review_status or "").strip().lower()
+    if status and status not in {"pending", "confirmed", "rejected"}:
+        raise ValueError("review_status must be pending, confirmed, or rejected")
+    reviewed_at = _now_utc()
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(
-            """
-            UPDATE qa_feedback
-            SET corrected_label=?, comment=?, confidence=?, reviewer_email=?, reviewed_at=?
-            WHERE id=?
-            """,
-            (
-                corrected_label.strip().lower(),
-                comment.strip(),
-                float(max(0.0, min(1.0, confidence))),
-                reviewer_email.strip().lower(),
-                _now_utc(),
-                int(feedback_id),
-            ),
-        )
+        if status:
+            conn.execute(
+                """
+                UPDATE qa_feedback
+                SET corrected_label=?, comment=?, confidence=?, reviewer_email=?, reviewed_at=?,
+                    review_status=?, needs_review=?
+                WHERE id=?
+                """,
+                (
+                    corrected_label.strip().lower(),
+                    comment.strip(),
+                    float(max(0.0, min(1.0, confidence))),
+                    reviewer_email.strip().lower(),
+                    reviewed_at,
+                    status,
+                    1 if status == "pending" else 0,
+                    int(feedback_id),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE qa_feedback
+                SET corrected_label=?, comment=?, confidence=?, reviewer_email=?, reviewed_at=?
+                WHERE id=?
+                """,
+                (
+                    corrected_label.strip().lower(),
+                    comment.strip(),
+                    float(max(0.0, min(1.0, confidence))),
+                    reviewer_email.strip().lower(),
+                    reviewed_at,
+                    int(feedback_id),
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

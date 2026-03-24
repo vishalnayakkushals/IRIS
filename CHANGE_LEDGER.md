@@ -54,6 +54,20 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Reduced Frame Review interaction latency by moving top-10 batch editor into a form so dropdown edits do not trigger full-page reruns on every change.
+  - Added preview thumbnail session-cache for top-10 rows to avoid re-rendering overlays repeatedly during QA interactions.
+  - Optimized save path by skipping no-op track updates and collapsing update+review-status into single DB writes; new inserts can now be created directly as `confirmed` when auto-confirm is enabled.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Updated top-10 track feedback save behavior to persist edits by frame+track key: repeated saves now update existing track feedback rows instead of creating duplicates.
   - Retained historical persistence in DB while making in-table re-edit workflow deterministic for future reference.
 - Changed Paths:
