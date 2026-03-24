@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--detector", choices=["yolo", "mock"], default="yolo")
     p.add_argument("--conf", type=float, default=0.18)
     p.add_argument("--summary", type=Path, default=Path("data/exports/current/eod_feedback_summary.json"))
+    p.add_argument(
+        "--force-retrain",
+        action="store_true",
+        help="Ignore feedback watermark and retrain from all confirmed feedback rows.",
+    )
     return p.parse_args()
 
 
@@ -40,6 +45,7 @@ def _retrain_store_feedback_rules(
     db_path: Path,
     store_id: str,
     min_new_feedback: int,
+    force_retrain: bool = False,
 ) -> dict[str, object]:
     settings = get_app_settings(db_path)
     key_last = f"qa_last_retrain_feedback_id__{store_id}"
@@ -55,18 +61,27 @@ def _retrain_store_feedback_rules(
         limit=200000,
     )
     new_rows = [row for row in confirmed_rows if int(row.get("id", 0) or 0) > last_feedback_id]
+    eligible_rows = confirmed_rows if bool(force_retrain) else new_rows
+    eligible_ids = sorted(int(row.get("id", 0) or 0) for row in eligible_rows)
     payload: dict[str, object] = {
         "store_id": store_id,
+        "retrain_mode": "force_all_confirmed" if bool(force_retrain) else "incremental_new_only",
+        "last_retrain_feedback_id": int(last_feedback_id),
         "confirmed_total": int(len(confirmed_rows)),
         "new_confirmed_rows": int(len(new_rows)),
+        "eligible_feedback_rows": int(len(eligible_rows)),
+        "eligible_feedback_ids_sample": eligible_ids[:20],
         "retrained": False,
         "model_id": "",
     }
-    if len(new_rows) < int(max(1, min_new_feedback)):
+    if len(eligible_rows) < int(max(1, min_new_feedback)):
+        payload["skip_reason"] = (
+            f"eligible_feedback_rows<{int(max(1, min_new_feedback))}"
+        )
         return payload
 
     label_counts: dict[str, int] = {}
-    for row in new_rows:
+    for row in eligible_rows:
         label = str(row.get("corrected_label", "") or "").strip().lower() or "unknown"
         label_counts[label] = int(label_counts.get(label, 0)) + 1
     version_tag = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -76,6 +91,9 @@ def _retrain_store_feedback_rules(
         "store_id": store_id,
         "version_tag": version_tag,
         "new_feedback_rows": len(new_rows),
+        "eligible_feedback_rows": len(eligible_rows),
+        "force_retrain": bool(force_retrain),
+        "last_retrain_feedback_id": int(last_feedback_id),
         "label_counts": label_counts,
         "updated_at": pd.Timestamp.utcnow().isoformat(),
     }
@@ -90,7 +108,7 @@ def _retrain_store_feedback_rules(
         artifact_path=str(artifact_path),
     )
     promote_model_version(db_path=db_path, model_name=model_name, model_id=model_id)
-    max_feedback_id = max(int(row.get("id", 0) or 0) for row in new_rows)
+    max_feedback_id = max(int(row.get("id", 0) or 0) for row in eligible_rows)
     upsert_app_settings(
         db_path=db_path,
         settings={
@@ -102,6 +120,8 @@ def _retrain_store_feedback_rules(
     payload["model_id"] = str(model_id)
     payload["artifact_path"] = str(artifact_path)
     payload["label_counts"] = label_counts
+    payload["used_feedback_rows"] = int(len(eligible_rows))
+    payload["new_watermark_feedback_id"] = int(max_feedback_id)
     return payload
 
 
@@ -116,6 +136,7 @@ def main() -> None:
             db_path=args.db,
             store_id=store_id,
             min_new_feedback=int(args.min_new_feedback),
+            force_retrain=bool(args.force_retrain),
         )
         for store_id in target_stores
     ]

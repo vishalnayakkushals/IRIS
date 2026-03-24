@@ -1809,6 +1809,7 @@ def _feedback_retrain_cycle(
     store_id: str,
     actor_email: str,
     min_new_rows: int = 10,
+    force_retrain: bool = False,
 ) -> tuple[bool, str, int]:
     settings = get_app_settings(db_path)
     key_last = f"qa_last_retrain_feedback_id__{store_id}"
@@ -1824,11 +1825,22 @@ def _feedback_retrain_cycle(
         limit=200000,
     )
     new_rows = [row for row in confirmed_rows if int(row.get("id", 0) or 0) > last_retrain_id]
-    if len(new_rows) < int(max(1, min_new_rows)):
-        return False, f"Need at least {int(min_new_rows)} new confirmed feedback rows.", len(new_rows)
+    eligible_rows = confirmed_rows if bool(force_retrain) else new_rows
+    if len(eligible_rows) < int(max(1, min_new_rows)):
+        return (
+            False,
+            (
+                f"Need at least {int(min_new_rows)} eligible rows. "
+                f"confirmed_total={len(confirmed_rows)}, "
+                f"new_confirmed_rows={len(new_rows)}, "
+                f"last_retrain_feedback_id={last_retrain_id}, "
+                f"mode={'force_all_confirmed' if force_retrain else 'incremental_new_only'}"
+            ),
+            len(eligible_rows),
+        )
 
     label_counts: dict[str, int] = {}
-    for row in new_rows:
+    for row in eligible_rows:
         label = str(row.get("corrected_label", "") or "").strip().lower() or "unknown"
         label_counts[label] = int(label_counts.get(label, 0)) + 1
     version_tag = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -1837,7 +1849,11 @@ def _feedback_retrain_cycle(
     payload = {
         "store_id": store_id,
         "version_tag": version_tag,
-        "new_feedback_rows": len(new_rows),
+        "retrain_mode": "force_all_confirmed" if bool(force_retrain) else "incremental_new_only",
+        "last_retrain_feedback_id": int(last_retrain_id),
+        "confirmed_total": len(confirmed_rows),
+        "new_confirmed_rows": len(new_rows),
+        "eligible_feedback_rows": len(eligible_rows),
         "label_counts": label_counts,
         "updated_by": actor_email,
         "updated_at": pd.Timestamp.utcnow().isoformat(),
@@ -1853,7 +1869,7 @@ def _feedback_retrain_cycle(
         artifact_path=str(artifact_path),
     )
     promote_model_version(db_path=db_path, model_name=model_name, model_id=model_id)
-    max_feedback_id = max(int(row.get("id", 0) or 0) for row in new_rows)
+    max_feedback_id = max(int(row.get("id", 0) or 0) for row in eligible_rows)
     upsert_app_settings(
         db_path=db_path,
         settings={
@@ -1861,7 +1877,19 @@ def _feedback_retrain_cycle(
             key_model: str(model_id),
         },
     )
-    return True, f"Retrained feedback rules as {model_id}.", len(new_rows)
+    return (
+        True,
+        (
+            f"Retrained feedback rules as {model_id}. "
+            f"confirmed_total={len(confirmed_rows)}, "
+            f"new_confirmed_rows={len(new_rows)}, "
+            f"eligible_feedback_rows={len(eligible_rows)}, "
+            f"last_retrain_feedback_id={last_retrain_id}, "
+            f"new_watermark_feedback_id={max_feedback_id}, "
+            f"mode={'force_all_confirmed' if force_retrain else 'incremental_new_only'}"
+        ),
+        len(eligible_rows),
+    )
 
 
 def _render_overlay_image(row: pd.Series):
@@ -2721,17 +2749,28 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     new_confirmed_rows = confirmed_df[
         pd.to_numeric(confirmed_df.get("id", 0), errors="coerce").fillna(0).astype(int) > int(last_retrain_feedback_id)
     ].copy()
+    force_retrain = st.checkbox(
+        "Force Retrain (use all confirmed feedback rows)",
+        value=False,
+        key=f"qa_force_retrain_{sid}",
+        help="Use this after runtime/detector fixes when no new rows exist but you want retraining from all confirmed feedback.",
+    )
+    eligible_count = int(len(confirmed_df) if force_retrain else len(new_confirmed_rows))
     retrain_cols = st.columns([2, 1])
     with retrain_cols[0]:
         st.caption(
-            f"New confirmed feedback since last retrain: {int(len(new_confirmed_rows))} "
-            f"(minimum required: 10)"
+            f"confirmed_total={int(len(confirmed_df))} | "
+            f"new_confirmed_rows={int(len(new_confirmed_rows))} | "
+            f"eligible_feedback_rows={eligible_count} | "
+            f"last_retrain_feedback_id={int(last_retrain_feedback_id)} | "
+            f"minimum_required=10 | "
+            f"mode={'force_all_confirmed' if force_retrain else 'incremental_new_only'}"
         )
     with retrain_cols[1]:
         if st.button(
             "Retrain + Reprocess",
             key=f"qa_retrain_{sid}",
-            disabled=int(len(new_confirmed_rows)) < 10,
+            disabled=eligible_count < 10,
             type="primary",
         ):
             ok, message, used_rows = _feedback_retrain_cycle(
@@ -2739,13 +2778,14 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 store_id=sid,
                 actor_email=(active_email or "system@local"),
                 min_new_rows=10,
+                force_retrain=bool(force_retrain),
             )
             if ok:
                 st.success(f"{message} Applied rows: {used_rows}. Re-running analysis now.")
                 st.session_state["force_rerun_analysis"] = True
                 st.rerun()
             else:
-                st.info(f"{message} New rows: {used_rows}.")
+                st.info(f"{message} Used rows: {used_rows}.")
 
     feedback_df["frame_link"] = feedback_df.apply(
         lambda r: _frame_review_identity_link(

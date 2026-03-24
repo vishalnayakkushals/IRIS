@@ -52,6 +52,33 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Aligned dashboard retrain flow with script retrain semantics by adding force mode from UI and explicit retrain diagnostics (`confirmed_total`, `new_confirmed_rows`, watermark, eligible rows, mode).
+  - Stabilized YOLO Docker dependency resolution by using pinned `opencv-python==4.10.0.84` with pinned NumPy for YOLO-enabled builds to avoid opencv/numpy mismatch drift.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `deploy/Dockerfile`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - YOLO Docker builds now prioritize dependency compatibility over headless-opencv-only packaging.
+
+### 2026-03-24 | Commit <pending>
+- Summary:
+  - Fixed retrain/reprocess observability and control for `TEST_STORE_D07`: added explicit watermark/eligibility logging and a `--force-retrain` mode to retrain from all confirmed feedback when no new rows exist.
+  - Clarified retrain skip reason in summary output (`eligible_feedback_rows` vs `min_new_feedback`).
+  - Stabilized Docker YOLO dependency stack by removing full `opencv-python` after Ultralytics install and enforcing pinned headless OpenCV + NumPy versions.
+- Changed Paths:
+  - `scripts/daily_feedback_reprocess.py`
+  - `deploy/Dockerfile`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New optional CLI flag: `--force-retrain` for `scripts/daily_feedback_reprocess.py`.
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Optimized runtime startup without changing detection logic: module-availability checks no longer import heavy YOLO/DeepFace/TensorFlow packages during UI render.
   - Switched Docker default to `IRIS_ENABLE_DEEPFACE=0` to avoid automatic heavy TensorFlow/DeepFace model downloads unless explicitly enabled.
   - Pinned `numpy` and `opencv-python-headless` versions to reduce dependency drift and avoid multi-version conflicts.
