@@ -52,6 +52,19 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Fixed blank/frozen dashboard behavior when exports are empty by changing auto-recovery to manual trigger button (no heavy analysis on initial page load).
+  - Updated retrain/reprocess script date filtering to be optional (`--capture-date`), defaulting to all dates so test-store exports are not accidentally zeroed by `today` filter.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/daily_feedback_reprocess.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `scripts/daily_feedback_reprocess.py` now accepts optional `--capture-date` (`YYYY-MM-DD` / `YYYYMMDD`).
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Aligned dashboard retrain flow with script retrain semantics by adding force mode from UI and explicit retrain diagnostics (`confirmed_total`, `new_confirmed_rows`, watermark, eligible rows, mode).
   - Stabilized YOLO Docker dependency resolution by using pinned `opencv-python==4.10.0.84` with pinned NumPy for YOLO-enabled builds to avoid opencv/numpy mismatch drift.
 - Changed Paths:

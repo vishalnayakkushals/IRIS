@@ -4798,8 +4798,11 @@ def main() -> None:
                 "Exports are empty/stale while source images exist. "
                 f"Found ~{source_count} source images in `{root_dir}`."
             )
-            if not bool(st.session_state.get("empty_export_auto_recovered", False)):
-                st.session_state["empty_export_auto_recovered"] = True
+            st.caption(
+                "Auto-recovery is manual to keep UI responsive. "
+                "Use the button below to regenerate exports when needed."
+            )
+            if st.button("Regenerate Analysis From Source", key="manual_empty_export_recover", type="primary"):
                 with st.spinner("Regenerating analysis from source images..."):
                     cfg_map_obj = camera_config_map(db_path=db_path)
                     cfg_map = {

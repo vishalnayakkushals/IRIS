@@ -32,6 +32,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-new-feedback", type=int, default=10)
     p.add_argument("--detector", choices=["yolo", "mock"], default="yolo")
     p.add_argument("--conf", type=float, default=0.18)
+    p.add_argument(
+        "--capture-date",
+        default="",
+        help="Optional capture date filter (YYYY-MM-DD or YYYYMMDD). Empty = all dates.",
+    )
     p.add_argument("--summary", type=Path, default=Path("data/exports/current/eod_feedback_summary.json"))
     p.add_argument(
         "--force-retrain",
@@ -127,6 +132,19 @@ def _retrain_store_feedback_rules(
 
 def main() -> None:
     args = parse_args()
+    capture_date_filter: date | None = None
+    raw_capture_date = str(args.capture_date or "").strip()
+    if raw_capture_date:
+        normalized = raw_capture_date
+        if len(normalized) == 8 and normalized.isdigit():
+            normalized = f"{normalized[0:4]}-{normalized[4:6]}-{normalized[6:8]}"
+        try:
+            capture_date_filter = date.fromisoformat(normalized)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Invalid --capture-date '{raw_capture_date}'. Use YYYY-MM-DD or YYYYMMDD."
+            ) from exc
+
     if args.store_id.strip():
         target_stores = [args.store_id.strip()]
     else:
@@ -146,7 +164,7 @@ def main() -> None:
         detector_type=args.detector,
         conf_threshold=float(args.conf),
         store_filter=args.store_id.strip() or None,
-        capture_date_filter=date.today(),
+        capture_date_filter=capture_date_filter,
         max_images_per_store=None,
     )
     export_analysis(output=output, out_dir=args.out)
@@ -154,6 +172,7 @@ def main() -> None:
     summary = {
         "run_at": pd.Timestamp.utcnow().isoformat(),
         "stores_considered": target_stores,
+        "capture_date_filter": capture_date_filter.isoformat() if capture_date_filter else "",
         "retrain_summary": retrain_summary,
         "stores_analyzed": int(len(output.stores)),
         "detector_warning": str(output.detector_warning or ""),
