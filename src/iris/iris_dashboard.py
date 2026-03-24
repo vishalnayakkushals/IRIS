@@ -2640,7 +2640,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     st.caption(
         "Use this single table to review images, assign feedback labels, and save in bulk. "
         "Keep `Select` checked only for rows you want to save. "
-        "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections."
+        "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections. "
+        "Saving again updates existing track feedback for the same frame+track."
     )
     existing_feedback_rows = list_qa_feedback(
         db_path=db_path,
@@ -2888,6 +2889,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         confirmed = 0
         track_saved = 0
         track_confirmed = 0
+        track_updated = 0
+        track_created = 0
         relearned = 0
         source_lookup = {
             (
@@ -2926,22 +2929,72 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 if track_label_value not in FEEDBACK_LABEL_OPTIONS:
                     continue
                 track_label_canonical = _label_to_canonical(track_label_value)
-                track_feedback_id = add_qa_feedback(
-                    db_path=db_path,
-                    store_id=sid,
-                    capture_date=capture_date,
-                    filename=filename,
-                    camera_id=camera_id,
-                    track_id=track_id_value,
-                    predicted_label=str(_predicted_label(source_row)),
-                    corrected_label=track_label_canonical,
-                    confidence=float(batch_confidence),
-                    needs_review=not bool(auto_confirm_feedback),
-                    actor_email=(active_email or "system@local"),
-                    model_version=active_model_id,
-                    drive_link=str(source_row.get("drive_link", "") or "").strip(),
-                    comment=comment,
-                )
+                track_key = (capture_date, camera_id, filename, track_id_value)
+                existing_track_feedback = latest_track_feedback_by_key.get(track_key)
+                existing_track_id = int(existing_track_feedback.get("id", 0) or 0) if isinstance(existing_track_feedback, dict) else 0
+                if existing_track_id > 0:
+                    update_qa_feedback_entry(
+                        db_path=db_path,
+                        feedback_id=existing_track_id,
+                        corrected_label=track_label_canonical,
+                        comment=comment,
+                        confidence=float(batch_confidence),
+                        reviewer_email=(active_email or "system@local"),
+                    )
+                    track_feedback_id = existing_track_id
+                    track_updated += 1
+                    if bool(auto_confirm_feedback):
+                        update_qa_feedback_review(
+                            db_path=db_path,
+                            feedback_id=int(track_feedback_id),
+                            review_status="confirmed",
+                            reviewer_email=(active_email or "system@local"),
+                        )
+                        confirmed += 1
+                        track_confirmed += 1
+                    else:
+                        update_qa_feedback_review(
+                            db_path=db_path,
+                            feedback_id=int(track_feedback_id),
+                            review_status="pending",
+                            reviewer_email=(active_email or "system@local"),
+                        )
+                else:
+                    track_feedback_id = add_qa_feedback(
+                        db_path=db_path,
+                        store_id=sid,
+                        capture_date=capture_date,
+                        filename=filename,
+                        camera_id=camera_id,
+                        track_id=track_id_value,
+                        predicted_label=str(_predicted_label(source_row)),
+                        corrected_label=track_label_canonical,
+                        confidence=float(batch_confidence),
+                        needs_review=not bool(auto_confirm_feedback),
+                        actor_email=(active_email or "system@local"),
+                        model_version=active_model_id,
+                        drive_link=str(source_row.get("drive_link", "") or "").strip(),
+                        comment=comment,
+                    )
+                    track_created += 1
+                    if bool(auto_confirm_feedback):
+                        update_qa_feedback_review(
+                            db_path=db_path,
+                            feedback_id=int(track_feedback_id),
+                            review_status="confirmed",
+                            reviewer_email=(active_email or "system@local"),
+                        )
+                        confirmed += 1
+                        track_confirmed += 1
+                latest_track_feedback_by_key[track_key] = {
+                    "id": int(track_feedback_id),
+                    "capture_date": capture_date,
+                    "camera_id": camera_id,
+                    "filename": filename,
+                    "track_id": track_id_value,
+                    "corrected_label": track_label_canonical,
+                    "review_status": "confirmed" if bool(auto_confirm_feedback) else "pending",
+                }
                 saved += 1
                 track_saved += 1
                 if (not banner_relearned_for_row) and track_label_canonical == "poster_banner" and int(source_row.get("person_count", 0) or 0) > 0:
@@ -2953,20 +3006,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                         feedback_id=int(track_feedback_id),
                     )
                     banner_relearned_for_row = True
-                if bool(auto_confirm_feedback):
-                    update_qa_feedback_review(
-                        db_path=db_path,
-                        feedback_id=int(track_feedback_id),
-                        review_status="confirmed",
-                        reviewer_email=(active_email or "system@local"),
-                    )
-                    confirmed += 1
-                    track_confirmed += 1
         if saved <= 0:
             st.info("No rows were selected to save.")
         else:
             st.success(
-                f"Saved {saved} feedback rows (track-level={track_saved}). "
+                f"Saved {saved} feedback rows (track-level={track_saved}, created={track_created}, updated={track_updated}). "
                 f"Auto-confirmed={confirmed} (track-level={track_confirmed}). "
                 f"Poster-signatures learned={relearned}."
             )

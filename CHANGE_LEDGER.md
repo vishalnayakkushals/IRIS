@@ -54,6 +54,18 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Updated top-10 track feedback save behavior to persist edits by frame+track key: repeated saves now update existing track feedback rows instead of creating duplicates.
+  - Retained historical persistence in DB while making in-table re-edit workflow deterministic for future reference.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Removed `feedback_status` and `last_feedback` columns from the top-10 Frame Review batch editor to keep the validation grid focused on track-level correction only.
   - Kept internal reviewed-state logic intact for `Hide frames already reviewed` filtering.
 - Changed Paths:
