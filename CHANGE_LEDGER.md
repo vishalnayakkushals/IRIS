@@ -52,6 +52,19 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Enhanced Frame Review batch validation for track-aware feedback: added per-frame track ID columns (`track_1`..`track_4`) with editable label assignment so T7/T9-style corrections are captured as structured feedback instead of free-text remarks.
+  - Persisted selected per-track labels as dedicated QA feedback rows (`track_id` populated), keeping existing frame-level feedback/comment flow intact.
+  - Added carry-forward of last saved per-track label in top-10 batch table for faster iterative QA.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Fixed Frame Review usability for 10-image validation: added single-table batch review with inline image previews, per-row label/comment editing, and bulk save.
   - Added immediate feedback acceptance path (`auto-confirm`) so saved labels can be used for next retrain run without manual reviewer pass.
   - Added robust preview fallback so manual review works even when hover preview behavior is inconsistent in browser.

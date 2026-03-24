@@ -1761,6 +1761,7 @@ FEEDBACK_LABEL_OPTIONS = [
     "INVALID",
     "NOT_SURE",
 ]
+TRACK_FEEDBACK_OPTIONS = [""] + FEEDBACK_LABEL_OPTIONS
 
 
 def _feedback_label_default(row: pd.Series) -> str:
@@ -2564,6 +2565,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         limit=5000,
     )
     latest_feedback_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
+    latest_track_feedback_by_key: dict[tuple[str, str, str, str], dict[str, object]] = {}
     for feedback_row in sorted(
         existing_feedback_rows,
         key=lambda r: int(r.get("id", 0) or 0),
@@ -2576,49 +2578,94 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
         if key not in latest_feedback_by_key:
             latest_feedback_by_key[key] = feedback_row
+        track_id = str(feedback_row.get("track_id", "") or "").strip()
+        if track_id:
+            track_key = (
+                str(feedback_row.get("capture_date", "") or "").strip(),
+                str(feedback_row.get("camera_id", "") or "").strip(),
+                str(feedback_row.get("filename", "") or "").strip(),
+                track_id,
+            )
+            if track_key not in latest_track_feedback_by_key:
+                latest_track_feedback_by_key[track_key] = feedback_row
 
-    batch_rows = image_df.head(10).copy()
-    batch_rows["frame_idx"] = batch_rows.index.astype(int)
-    batch_rows["frame_link"] = batch_rows["frame_idx"].map(
-        lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
-    )
-    batch_rows["timestamp"] = batch_rows["timestamp"].astype(str)
-    batch_rows["predicted_label"] = batch_rows.apply(_predicted_label, axis=1).astype(str).str.upper()
-    batch_rows["preview_image"] = batch_rows.apply(
-        lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
-        axis=1,
-    )
-    batch_rows["feedback_label"] = batch_rows.apply(_feedback_label_default, axis=1).astype(str)
-    batch_rows["feedback_comment"] = ""
-    batch_rows["selected"] = True
-    batch_rows["feedback_status"] = batch_rows.apply(
-        lambda r: str(
-            latest_feedback_by_key.get(
-                (
-                    str(r.get("capture_date", "") or "").strip(),
-                    str(r.get("camera_id", "") or "").strip(),
-                    str(r.get("filename", "") or "").strip(),
+    def _prepare_batch_rows(base_df: pd.DataFrame) -> pd.DataFrame:
+        df = base_df.copy()
+        df["track_ids_list"] = df["track_ids"].map(
+            lambda raw: [str(x) for x in _safe_json_list(raw) if str(x).strip()]
+        )
+        df["frame_idx"] = df.index.astype(int)
+        df["frame_link"] = df["frame_idx"].map(
+            lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
+        )
+        df["timestamp"] = df["timestamp"].astype(str)
+        df["predicted_label"] = df.apply(_predicted_label, axis=1).astype(str).str.upper()
+        df["preview_image"] = df.apply(
+            lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
+            axis=1,
+        )
+        df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
+        df["feedback_comment"] = ""
+        df["selected"] = True
+        df["feedback_status"] = df.apply(
+            lambda r: str(
+                latest_feedback_by_key.get(
+                    (
+                        str(r.get("capture_date", "") or "").strip(),
+                        str(r.get("camera_id", "") or "").strip(),
+                        str(r.get("filename", "") or "").strip(),
+                    ),
+                    {},
+                ).get("review_status", "")
+                or ""
+            ).strip().lower(),
+            axis=1,
+        )
+        df["last_feedback"] = df.apply(
+            lambda r: str(
+                latest_feedback_by_key.get(
+                    (
+                        str(r.get("capture_date", "") or "").strip(),
+                        str(r.get("camera_id", "") or "").strip(),
+                        str(r.get("filename", "") or "").strip(),
+                    ),
+                    {},
+                ).get("corrected_label", "")
+                or ""
+            ).strip().upper(),
+            axis=1,
+        )
+        df["track_ids"] = df["track_ids"].map(
+            lambda raw: ", ".join([str(x) for x in _safe_json_list(raw) if str(x).strip()])
+        )
+        for slot in [1, 2, 3, 4]:
+            df[f"track_{slot}_id"] = df.apply(
+                lambda r: (
+                    list(r.get("track_ids_list", []))[slot - 1]
+                    if len(list(r.get("track_ids_list", []))) >= slot
+                    else ""
                 ),
-                {},
-            ).get("review_status", "")
-            or ""
-        ).strip().lower(),
-        axis=1,
-    )
-    batch_rows["last_feedback"] = batch_rows.apply(
-        lambda r: str(
-            latest_feedback_by_key.get(
-                (
-                    str(r.get("capture_date", "") or "").strip(),
-                    str(r.get("camera_id", "") or "").strip(),
-                    str(r.get("filename", "") or "").strip(),
-                ),
-                {},
-            ).get("corrected_label", "")
-            or ""
-        ).strip().upper(),
-        axis=1,
-    )
+                axis=1,
+            )
+            df[f"track_{slot}_label"] = df.apply(
+                lambda r: str(
+                    latest_track_feedback_by_key.get(
+                        (
+                            str(r.get("capture_date", "") or "").strip(),
+                            str(r.get("camera_id", "") or "").strip(),
+                            str(r.get("filename", "") or "").strip(),
+                            str(r.get(f"track_{slot}_id", "") or "").strip(),
+                        ),
+                        {},
+                    ).get("corrected_label", "")
+                    or ""
+                ).strip().upper(),
+                axis=1,
+            )
+        df = df.drop(columns=["track_ids_list"], errors="ignore")
+        return df
+
+    batch_rows = _prepare_batch_rows(image_df.head(10))
     hide_reviewed = st.checkbox(
         "Hide frames already reviewed",
         value=True,
@@ -2628,48 +2675,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         batch_rows = batch_rows[batch_rows["feedback_status"] == ""].copy()
         if batch_rows.empty:
             st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
-            batch_rows = image_df.head(10).copy()
-            batch_rows["frame_idx"] = batch_rows.index.astype(int)
-            batch_rows["frame_link"] = batch_rows["frame_idx"].map(
-                lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
-            )
-            batch_rows["timestamp"] = batch_rows["timestamp"].astype(str)
-            batch_rows["predicted_label"] = batch_rows.apply(_predicted_label, axis=1).astype(str).str.upper()
-            batch_rows["preview_image"] = batch_rows.apply(
-                lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
-                axis=1,
-            )
-            batch_rows["feedback_label"] = batch_rows.apply(_feedback_label_default, axis=1).astype(str)
-            batch_rows["feedback_comment"] = ""
-            batch_rows["selected"] = True
-            batch_rows["feedback_status"] = batch_rows.apply(
-                lambda r: str(
-                    latest_feedback_by_key.get(
-                        (
-                            str(r.get("capture_date", "") or "").strip(),
-                            str(r.get("camera_id", "") or "").strip(),
-                            str(r.get("filename", "") or "").strip(),
-                        ),
-                        {},
-                    ).get("review_status", "")
-                    or ""
-                ).strip().lower(),
-                axis=1,
-            )
-            batch_rows["last_feedback"] = batch_rows.apply(
-                lambda r: str(
-                    latest_feedback_by_key.get(
-                        (
-                            str(r.get("capture_date", "") or "").strip(),
-                            str(r.get("camera_id", "") or "").strip(),
-                            str(r.get("filename", "") or "").strip(),
-                        ),
-                        {},
-                    ).get("corrected_label", "")
-                    or ""
-                ).strip().upper(),
-                axis=1,
-            )
+            batch_rows = _prepare_batch_rows(image_df.head(10))
 
     batch_save_cols = st.columns([1, 1, 2])
     with batch_save_cols[0]:
@@ -2700,6 +2706,15 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     "predicted_label",
                     "feedback_label",
                     "feedback_comment",
+                    "track_ids",
+                    "track_1_id",
+                    "track_1_label",
+                    "track_2_id",
+                    "track_2_label",
+                    "track_3_id",
+                    "track_3_label",
+                    "track_4_id",
+                    "track_4_label",
                     "feedback_status",
                     "last_feedback",
                     "frame_link",
@@ -2716,6 +2731,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 "camera_id",
                 "filename",
                 "predicted_label",
+                "track_ids",
+                "track_1_id",
+                "track_2_id",
+                "track_3_id",
+                "track_4_id",
                 "feedback_status",
                 "last_feedback",
                 "frame_link",
@@ -2730,6 +2750,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     required=True,
                 ),
                 "feedback_comment": st.column_config.TextColumn("Comment"),
+                "track_ids": st.column_config.TextColumn("Track IDs"),
+                "track_1_label": st.column_config.SelectboxColumn("Track 1 Label", options=TRACK_FEEDBACK_OPTIONS),
+                "track_2_label": st.column_config.SelectboxColumn("Track 2 Label", options=TRACK_FEEDBACK_OPTIONS),
+                "track_3_label": st.column_config.SelectboxColumn("Track 3 Label", options=TRACK_FEEDBACK_OPTIONS),
+                "track_4_label": st.column_config.SelectboxColumn("Track 4 Label", options=TRACK_FEEDBACK_OPTIONS),
                 "feedback_status": st.column_config.TextColumn("Last Status"),
                 "last_feedback": st.column_config.TextColumn("Last Feedback"),
                 "frame_link": st.column_config.LinkColumn("Frame", display_text="Open"),
@@ -2747,6 +2772,15 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 "predicted_label",
                 "feedback_label",
                 "feedback_comment",
+                "track_ids",
+                "track_1_id",
+                "track_1_label",
+                "track_2_id",
+                "track_2_label",
+                "track_3_id",
+                "track_3_label",
+                "track_4_id",
+                "track_4_label",
                 "feedback_status",
                 "last_feedback",
                 "frame_link",
@@ -2760,6 +2794,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         active_model_id = str(settings.get(active_model_key, "baseline_rules_v1") or "baseline_rules_v1")
         saved = 0
         confirmed = 0
+        track_saved = 0
+        track_confirmed = 0
         relearned = 0
         source_lookup = {
             (
@@ -2823,11 +2859,46 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                     root_dir=root_dir,
                     feedback_id=int(feedback_id),
                 )
+            for slot in [1, 2, 3, 4]:
+                track_id_value = str(row.get(f"track_{slot}_id", "") or "").strip()
+                track_label_value = str(row.get(f"track_{slot}_label", "") or "").strip().upper()
+                if not track_id_value or not track_label_value:
+                    continue
+                if track_label_value not in FEEDBACK_LABEL_OPTIONS:
+                    continue
+                track_feedback_id = add_qa_feedback(
+                    db_path=db_path,
+                    store_id=sid,
+                    capture_date=capture_date,
+                    filename=filename,
+                    camera_id=camera_id,
+                    track_id=track_id_value,
+                    predicted_label=str(_predicted_label(source_row)),
+                    corrected_label=track_label_value.lower(),
+                    confidence=float(batch_confidence),
+                    needs_review=not bool(auto_confirm_feedback),
+                    actor_email=(active_email or "system@local"),
+                    model_version=active_model_id,
+                    drive_link=str(source_row.get("drive_link", "") or "").strip(),
+                    comment=comment,
+                )
+                saved += 1
+                track_saved += 1
+                if bool(auto_confirm_feedback):
+                    update_qa_feedback_review(
+                        db_path=db_path,
+                        feedback_id=int(track_feedback_id),
+                        review_status="confirmed",
+                        reviewer_email=(active_email or "system@local"),
+                    )
+                    confirmed += 1
+                    track_confirmed += 1
         if saved <= 0:
             st.info("No rows were selected to save.")
         else:
             st.success(
-                f"Saved {saved} feedback rows. Auto-confirmed={confirmed}. "
+                f"Saved {saved} feedback rows (track-level={track_saved}). "
+                f"Auto-confirmed={confirmed} (track-level={track_confirmed}). "
                 f"Poster-signatures learned={relearned}."
             )
             st.session_state["force_rerun_analysis"] = True
