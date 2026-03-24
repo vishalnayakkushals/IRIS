@@ -52,6 +52,19 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Fixed Frame Review usability for 10-image validation: added single-table batch review with inline image previews, per-row label/comment editing, and bulk save.
+  - Added immediate feedback acceptance path (`auto-confirm`) so saved labels can be used for next retrain run without manual reviewer pass.
+  - Added robust preview fallback so manual review works even when hover preview behavior is inconsistent in browser.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Fixed blank/frozen dashboard behavior when exports are empty by changing auto-recovery to manual trigger button (no heavy analysis on initial page load).
   - Updated retrain/reprocess script date filtering to be optional (`--capture-date`), defaulting to all dates so test-store exports are not accidentally zeroed by `today` filter.
 - Changed Paths:

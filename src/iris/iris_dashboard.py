@@ -465,6 +465,34 @@ def _hover_preview_data_uri(image_path: Path, max_size: int = 260) -> str:
         return ""
 
 
+def _pil_image_data_uri(image: Image.Image, max_size: int = 260) -> str:
+    try:
+        canvas = image.convert("RGB")
+        canvas.thumbnail((max_size, max_size))
+        buf = io.BytesIO()
+        canvas.save(buf, format="JPEG", quality=72, optimize=True)
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+def _overlay_or_source_preview_uri(row: pd.Series, store_id: str, root_dir: Path, max_size: int = 260) -> str:
+    row_for_overlay = row.copy()
+    raw_path = str(row_for_overlay.get("path", "") or "").strip()
+    if not raw_path:
+        resolved = _resolve_row_image_path(row=row_for_overlay, store_id=store_id, root_dir=root_dir)
+        if resolved is not None:
+            row_for_overlay["path"] = str(resolved)
+    overlay = _render_overlay_image(row_for_overlay)
+    if overlay is not None:
+        return _pil_image_data_uri(overlay, max_size=max_size)
+    resolved = _resolve_row_image_path(row=row_for_overlay, store_id=store_id, root_dir=root_dir)
+    if resolved is not None:
+        return _hover_preview_data_uri(resolved, max_size=max_size)
+    return ""
+
+
 def _render_header_bar(
     app_name: str,
     logo_path: str,
@@ -2524,29 +2552,286 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
     except Exception:
         st.dataframe(preview_df, use_container_width=True, height=360, hide_index=True)
-    st.markdown("**Hyperlinked Filenames (Hover Preview)**")
-    hover_rows = preview_df.head(30)
-    hover_items: list[str] = []
-    for _, row in hover_rows.iterrows():
-        frame_url = str(row.get("frame_link", "")).strip()
-        filename = html.escape(str(row.get("filename", "Open image")))
-        resolved_path = _resolve_row_image_path(row=row, store_id=sid, root_dir=root_dir)
-        preview_uri = _hover_preview_data_uri(resolved_path) if resolved_path is not None else ""
-        if preview_uri:
-            hover_items.append(
+    st.markdown("**Validation Table (Top 10 Frames)**")
+    st.caption(
+        "Use this single table to review images, assign feedback labels, and save in bulk. "
+        "Hover preview is optional; image thumbnails are always visible here."
+    )
+    existing_feedback_rows = list_qa_feedback(
+        db_path=db_path,
+        store_id=sid,
+        review_status=None,
+        limit=5000,
+    )
+    latest_feedback_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
+    for feedback_row in sorted(
+        existing_feedback_rows,
+        key=lambda r: int(r.get("id", 0) or 0),
+        reverse=True,
+    ):
+        key = (
+            str(feedback_row.get("capture_date", "") or "").strip(),
+            str(feedback_row.get("camera_id", "") or "").strip(),
+            str(feedback_row.get("filename", "") or "").strip(),
+        )
+        if key not in latest_feedback_by_key:
+            latest_feedback_by_key[key] = feedback_row
+
+    batch_rows = image_df.head(10).copy()
+    batch_rows["frame_idx"] = batch_rows.index.astype(int)
+    batch_rows["frame_link"] = batch_rows["frame_idx"].map(
+        lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
+    )
+    batch_rows["timestamp"] = batch_rows["timestamp"].astype(str)
+    batch_rows["predicted_label"] = batch_rows.apply(_predicted_label, axis=1).astype(str).str.upper()
+    batch_rows["preview_image"] = batch_rows.apply(
+        lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
+        axis=1,
+    )
+    batch_rows["feedback_label"] = batch_rows.apply(_feedback_label_default, axis=1).astype(str)
+    batch_rows["feedback_comment"] = ""
+    batch_rows["selected"] = True
+    batch_rows["feedback_status"] = batch_rows.apply(
+        lambda r: str(
+            latest_feedback_by_key.get(
                 (
-                    '<div class="iris-hover-item">'
-                    f'<a href="{frame_url}" target="_self">{filename}</a>'
-                    f'<div class="iris-hover-card"><img src="{preview_uri}" alt="{filename}" /></div>'
-                    "</div>"
+                    str(r.get("capture_date", "") or "").strip(),
+                    str(r.get("camera_id", "") or "").strip(),
+                    str(r.get("filename", "") or "").strip(),
+                ),
+                {},
+            ).get("review_status", "")
+            or ""
+        ).strip().lower(),
+        axis=1,
+    )
+    batch_rows["last_feedback"] = batch_rows.apply(
+        lambda r: str(
+            latest_feedback_by_key.get(
+                (
+                    str(r.get("capture_date", "") or "").strip(),
+                    str(r.get("camera_id", "") or "").strip(),
+                    str(r.get("filename", "") or "").strip(),
+                ),
+                {},
+            ).get("corrected_label", "")
+            or ""
+        ).strip().upper(),
+        axis=1,
+    )
+    hide_reviewed = st.checkbox(
+        "Hide frames already reviewed",
+        value=True,
+        key=f"qa_hide_reviewed_{sid}",
+    )
+    if hide_reviewed:
+        batch_rows = batch_rows[batch_rows["feedback_status"] == ""].copy()
+        if batch_rows.empty:
+            st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
+            batch_rows = image_df.head(10).copy()
+            batch_rows["frame_idx"] = batch_rows.index.astype(int)
+            batch_rows["frame_link"] = batch_rows["frame_idx"].map(
+                lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
+            )
+            batch_rows["timestamp"] = batch_rows["timestamp"].astype(str)
+            batch_rows["predicted_label"] = batch_rows.apply(_predicted_label, axis=1).astype(str).str.upper()
+            batch_rows["preview_image"] = batch_rows.apply(
+                lambda r: _overlay_or_source_preview_uri(r, store_id=sid, root_dir=root_dir, max_size=240),
+                axis=1,
+            )
+            batch_rows["feedback_label"] = batch_rows.apply(_feedback_label_default, axis=1).astype(str)
+            batch_rows["feedback_comment"] = ""
+            batch_rows["selected"] = True
+            batch_rows["feedback_status"] = batch_rows.apply(
+                lambda r: str(
+                    latest_feedback_by_key.get(
+                        (
+                            str(r.get("capture_date", "") or "").strip(),
+                            str(r.get("camera_id", "") or "").strip(),
+                            str(r.get("filename", "") or "").strip(),
+                        ),
+                        {},
+                    ).get("review_status", "")
+                    or ""
+                ).strip().lower(),
+                axis=1,
+            )
+            batch_rows["last_feedback"] = batch_rows.apply(
+                lambda r: str(
+                    latest_feedback_by_key.get(
+                        (
+                            str(r.get("capture_date", "") or "").strip(),
+                            str(r.get("camera_id", "") or "").strip(),
+                            str(r.get("filename", "") or "").strip(),
+                        ),
+                        {},
+                    ).get("corrected_label", "")
+                    or ""
+                ).strip().upper(),
+                axis=1,
+            )
+
+    batch_save_cols = st.columns([1, 1, 2])
+    with batch_save_cols[0]:
+        auto_confirm_feedback = st.checkbox(
+            "Auto-confirm on save",
+            value=True,
+            key=f"qa_batch_auto_confirm_{sid}",
+            help="Recommended for test-store validation so retrain picks up new rows immediately.",
+        )
+    with batch_save_cols[1]:
+        batch_confidence = st.slider(
+            "Batch confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.9,
+            step=0.05,
+            key=f"qa_batch_conf_{sid}",
+        )
+    try:
+        edited_batch_df = st.data_editor(
+            batch_rows[
+                [
+                    "selected",
+                    "preview_image",
+                    "timestamp",
+                    "camera_id",
+                    "filename",
+                    "predicted_label",
+                    "feedback_label",
+                    "feedback_comment",
+                    "feedback_status",
+                    "last_feedback",
+                    "frame_link",
+                    "drive_link",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+            key=f"qa_batch_editor_{sid}",
+            disabled=[
+                "preview_image",
+                "timestamp",
+                "camera_id",
+                "filename",
+                "predicted_label",
+                "feedback_status",
+                "last_feedback",
+                "frame_link",
+                "drive_link",
+            ],
+            column_config={
+                "selected": st.column_config.CheckboxColumn("Select"),
+                "preview_image": st.column_config.ImageColumn("Preview"),
+                "feedback_label": st.column_config.SelectboxColumn(
+                    "Feedback Label",
+                    options=FEEDBACK_LABEL_OPTIONS,
+                    required=True,
+                ),
+                "feedback_comment": st.column_config.TextColumn("Comment"),
+                "feedback_status": st.column_config.TextColumn("Last Status"),
+                "last_feedback": st.column_config.TextColumn("Last Feedback"),
+                "frame_link": st.column_config.LinkColumn("Frame", display_text="Open"),
+                "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
+            },
+        )
+    except Exception:
+        st.dataframe(batch_rows, use_container_width=True, hide_index=True, height=420)
+        edited_batch_df = batch_rows[
+            [
+                "selected",
+                "timestamp",
+                "camera_id",
+                "filename",
+                "predicted_label",
+                "feedback_label",
+                "feedback_comment",
+                "feedback_status",
+                "last_feedback",
+                "frame_link",
+                "drive_link",
+            ]
+        ].copy()
+
+    if st.button("Save Selected Feedback (Top 10)", key=f"qa_batch_save_{sid}", type="primary"):
+        settings = get_app_settings(db_path)
+        active_model_key = f"qa_active_model_id__{sid}"
+        active_model_id = str(settings.get(active_model_key, "baseline_rules_v1") or "baseline_rules_v1")
+        saved = 0
+        confirmed = 0
+        relearned = 0
+        source_lookup = {
+            (
+                str(r.get("capture_date", "") or "").strip(),
+                str(r.get("camera_id", "") or "").strip(),
+                str(r.get("filename", "") or "").strip(),
+            ): r
+            for _, r in image_df.iterrows()
+        }
+        for _, row in edited_batch_df.iterrows():
+            if not bool(row.get("selected", False)):
+                continue
+            capture_date = str(row.get("timestamp", "")).split(" ")[0].strip()
+            camera_id = str(row.get("camera_id", "") or "").strip()
+            filename = str(row.get("filename", "") or "").strip()
+            if not filename:
+                continue
+            corrected_label = str(row.get("feedback_label", "NOT_SURE") or "NOT_SURE").strip().upper()
+            comment = str(row.get("feedback_comment", "") or "").strip()
+            source_key = (capture_date, camera_id, filename)
+            source_row = source_lookup.get(source_key)
+            if source_row is None:
+                matched = image_df[
+                    (image_df["filename"].astype(str) == filename)
+                    & (image_df["camera_id"].astype(str) == camera_id)
+                ]
+                if matched.empty:
+                    continue
+                source_row = matched.iloc[0]
+                capture_date = str(source_row.get("capture_date", "") or capture_date).strip()
+            feedback_id = add_qa_feedback(
+                db_path=db_path,
+                store_id=sid,
+                capture_date=capture_date,
+                filename=filename,
+                camera_id=camera_id,
+                track_id="",
+                predicted_label=str(_predicted_label(source_row)),
+                corrected_label=corrected_label.lower(),
+                confidence=float(batch_confidence),
+                needs_review=not bool(auto_confirm_feedback),
+                actor_email=(active_email or "system@local"),
+                model_version=active_model_id,
+                drive_link=str(source_row.get("drive_link", "") or "").strip(),
+                comment=comment,
+            )
+            saved += 1
+            if bool(auto_confirm_feedback):
+                update_qa_feedback_review(
+                    db_path=db_path,
+                    feedback_id=int(feedback_id),
+                    review_status="confirmed",
+                    reviewer_email=(active_email or "system@local"),
                 )
-            )
+                confirmed += 1
+            if corrected_label == "POSTER_BANNER" and int(source_row.get("person_count", 0) or 0) > 0:
+                relearned += _learn_false_positive_signatures_from_row(
+                    db_path=db_path,
+                    store_id=sid,
+                    row=source_row,
+                    root_dir=root_dir,
+                    feedback_id=int(feedback_id),
+                )
+        if saved <= 0:
+            st.info("No rows were selected to save.")
         else:
-            hover_items.append(
-                f'<div class="iris-hover-item"><a href="{frame_url}" target="_self">{filename}</a></div>'
+            st.success(
+                f"Saved {saved} feedback rows. Auto-confirmed={confirmed}. "
+                f"Poster-signatures learned={relearned}."
             )
-    if hover_items:
-        st.markdown('<div class="iris-hover-list">' + "".join(hover_items) + "</div>", unsafe_allow_html=True)
+            st.session_state["force_rerun_analysis"] = True
+            st.rerun()
 
     selector = image_df.head(500).copy()
     selector["row_label"] = selector.apply(
@@ -2643,7 +2928,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             index=FEEDBACK_LABEL_OPTIONS.index(default_feedback) if default_feedback in FEEDBACK_LABEL_OPTIONS else 0,
         )
         confidence = st.slider("Correction confidence", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
-        needs_review = st.checkbox("Require reviewer approval", value=True)
+        needs_review = st.checkbox("Require reviewer approval", value=False)
         comment = st.text_input("Comment", value="", placeholder="Why this label is correct")
         submit_feedback = st.form_submit_button("Save Feedback")
     if submit_feedback:
@@ -2666,6 +2951,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             drive_link=str(selected_row.get("drive_link", "")).strip(),
             comment=comment,
         )
+        if not bool(needs_review):
+            update_qa_feedback_review(
+                db_path=db_path,
+                feedback_id=int(feedback_id),
+                review_status="confirmed",
+                reviewer_email=(active_email or "system@local"),
+            )
         st.success(f"Saved feedback #{feedback_id}.")
         learned = 0
         if corrected_label_display == "POSTER_BANNER" and int(selected_row.get("person_count", 0) or 0) > 0:
