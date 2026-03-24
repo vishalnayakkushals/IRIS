@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import date
 import html
+import importlib.util
 import io
 import json
 import os
@@ -142,7 +143,7 @@ PIPELINE_PRESET_DEFAULT = "Full Scan (Dev)"
 PIPELINE_PRESETS: dict[str, dict[str, object]] = {
     "Full Scan (Dev)": {
         "ctrl_max_images_per_store": 0,
-        "ctrl_enable_age_gender": True,
+        "ctrl_enable_age_gender": False,
         "ctrl_auto_sync_linked_drives": True,
         "ctrl_auto_sync_on_save": False,
         "ctrl_detector_type": "yolo",
@@ -176,33 +177,19 @@ PAGE_TO_PATH: dict[str, tuple[str, str]] = {
 
 
 def _is_yolo_available() -> bool:
-    try:
-        import ultralytics  # type: ignore  # noqa: F401
-
-        return True
-    except Exception:
-        return False
+    return importlib.util.find_spec("ultralytics") is not None
 
 
 def _is_tf_frcnn_available() -> bool:
     model_path = os.getenv("TF_FRCNN_MODEL_PATH", "data/models/frozen_inference_graph.pb").strip()
     if not Path(model_path).exists():
         return False
-    try:
-        import tensorflow.compat.v1 as tf  # type: ignore  # noqa: F401
-
-        return True
-    except Exception:
-        return False
+    return importlib.util.find_spec("tensorflow") is not None
 
 
 def _is_deepface_available() -> bool:
-    try:
-        from deepface import DeepFace as _DeepFace  # type: ignore  # noqa: F401
-
-        return True
-    except Exception:
-        return False
+    # Avoid importing DeepFace during UI render; import can trigger heavy TF initialization.
+    return importlib.util.find_spec("deepface") is not None
 
 
 def _ensure_session_state() -> None:
@@ -4396,7 +4383,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         st.rerun()
     if mode_cols[2].button("Save Current as Custom", key="pipeline_save_custom"):
         custom_payload = {
-            "ctrl_enable_age_gender": bool(st.session_state.get("ctrl_enable_age_gender", True)),
+            "ctrl_enable_age_gender": bool(st.session_state.get("ctrl_enable_age_gender", False)),
             "ctrl_auto_sync_linked_drives": bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)),
             "ctrl_auto_sync_on_save": bool(st.session_state.get("ctrl_auto_sync_on_save", False)),
             "ctrl_detector_type": str(st.session_state.get("ctrl_detector_type", "yolo")),
@@ -4621,7 +4608,7 @@ def main() -> None:
     if "ctrl_capture_date" not in st.session_state:
         st.session_state["ctrl_capture_date"] = ""
     if "ctrl_enable_age_gender" not in st.session_state:
-        st.session_state["ctrl_enable_age_gender"] = True
+        st.session_state["ctrl_enable_age_gender"] = False
     if "ctrl_write_gzip_exports" not in st.session_state:
         st.session_state["ctrl_write_gzip_exports"] = True
     if "ctrl_keep_plain_csv" not in st.session_state:

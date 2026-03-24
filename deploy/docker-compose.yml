@@ -6,7 +6,7 @@ services:
       dockerfile: ${IRIS_DOCKERFILE:-deploy/Dockerfile}
       args:
         IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-1}
-        IRIS_ENABLE_DEEPFACE: ${IRIS_ENABLE_DEEPFACE:-1}
+        IRIS_ENABLE_DEEPFACE: ${IRIS_ENABLE_DEEPFACE:-0}
     ports:
       - "8765:8765"
     restart: unless-stopped

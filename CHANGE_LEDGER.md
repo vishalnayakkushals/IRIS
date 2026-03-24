@@ -52,6 +52,24 @@ Use this template for each new change:
 
 ### 2026-03-24 | Commit <pending>
 - Summary:
+  - Optimized runtime startup without changing detection logic: module-availability checks no longer import heavy YOLO/DeepFace/TensorFlow packages during UI render.
+  - Switched Docker default to `IRIS_ENABLE_DEEPFACE=0` to avoid automatic heavy TensorFlow/DeepFace model downloads unless explicitly enabled.
+  - Pinned `numpy` and `opencv-python-headless` versions to reduce dependency drift and avoid multi-version conflicts.
+  - Added conservative runtime thread/log env tuning in Docker for better responsiveness.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `deploy/docker-compose.yml`
+  - `deploy/Dockerfile`
+  - `requirements.txt`
+  - `deploy/requirements.docker.txt`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - DeepFace is now opt-in by default in Docker build (`IRIS_ENABLE_DEEPFACE=0`).
+
+### 2026-03-24 | Commit <pending>
+- Summary:
   - Fixed blank-page navigation edge case by decoding URL query params (`+` / encoded spaces) for module/section/page resolution.
   - Added safe page-render fallback: if page key is not mapped, show a warning and render Overview instead of a blank content area.
 - Changed Paths:
