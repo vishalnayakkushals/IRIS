@@ -54,6 +54,18 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Removed `feedback_status` and `last_feedback` columns from the top-10 Frame Review batch editor to keep the validation grid focused on track-level correction only.
+  - Kept internal reviewed-state logic intact for `Hide frames already reviewed` filtering.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Simplified top-10 Frame Review table for per-person QA by removing image-level `predicted_label`, `feedback_label`, and frame-link columns from batch editor.
   - Kept left-side `Select` checkbox as required control for scoped save; only selected rows are persisted.
   - Changed batch save behavior to persist track-level feedback only (`Tn Feedback`), with one-time banner relearn per selected frame row when applicable.

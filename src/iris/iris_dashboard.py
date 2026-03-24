@@ -2846,8 +2846,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "camera_id",
         "filename",
         "track_ids",
-        "feedback_status",
-        "last_feedback",
         "drive_link",
     ]
     column_config: dict[str, object] = {
@@ -2855,8 +2853,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "preview_image": st.column_config.ImageColumn("Preview"),
         "feedback_comment": st.column_config.TextColumn("Comment"),
         "track_ids": st.column_config.TextColumn("Track IDs"),
-        "feedback_status": st.column_config.TextColumn("Last Status"),
-        "last_feedback": st.column_config.TextColumn("Last Feedback"),
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
     }
     for slot in slot_numbers:
@@ -2868,7 +2864,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             f"T{slot} Feedback",
             options=TRACK_FEEDBACK_OPTIONS,
         )
-    editor_columns.extend(["feedback_status", "last_feedback", "drive_link"])
+    editor_columns.extend(["drive_link"])
 
     try:
         edited_batch_df = st.data_editor(
