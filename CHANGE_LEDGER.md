@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-25 | Commit <pending>
+### 2026-03-25 | Commit b99a8eb
 - Summary:
   - Reduced scheduler resource spikes by forcing scheduler-triggered prediction cycles to run in single-process mode (`use_parallel=False`, `use_streaming=False`) while keeping model logic unchanged.
   - Added CPU thread caps for `iris-scheduler` container (`OMP/OPENBLAS/MKL/NUMEXPR=1`) to prevent host-wide CPU saturation from numerical thread over-subscription.
