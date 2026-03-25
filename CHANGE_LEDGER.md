@@ -53,6 +53,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Simplified Frame Review by removing the `Hide frames already reviewed` toggle from the page and enforcing that behavior from `Access > Config > Feedback` only.
+  - Removed the inline image-wise validation CSV section/table from Frame Review to reduce clutter and avoid showing non-actionable file paths in UI.
+  - Removed the confusing `Open unique customer verification page` link from Frame Review to avoid broken/unclear navigation.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-25 | Commit fbbcdc9
 - Summary:
   - Simplified `Store Detail` for validation-first usage by removing embedded Validation Console, Data Quality Issues, Relevant Image Gallery, and in-page proof tables; kept only KPI summary + hotspot/trend visuals.

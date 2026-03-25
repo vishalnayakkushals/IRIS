@@ -1924,56 +1924,6 @@ def _feedback_label_default(row: pd.Series) -> str:
     return "NOT_SURE"
 
 
-def _build_image_validation_report_df(image_df: pd.DataFrame) -> pd.DataFrame:
-    report = image_df.copy()
-    if report.empty:
-        return pd.DataFrame(
-            columns=[
-                "image_name",
-                "timestamp",
-                "drive_link",
-                "thumbnail_path",
-                "predicted_label",
-                "confidence",
-                "person_count",
-                "role_prediction",
-                "remarks",
-                "review_status",
-            ]
-        )
-    report["image_name"] = report["filename"].astype(str)
-    report["timestamp"] = report["timestamp"].astype(str)
-    report["drive_link"] = report["drive_link"].fillna("").astype(str)
-    report["thumbnail_path"] = report["path"].fillna("").astype(str)
-    report["predicted_label"] = report.apply(_predicted_label, axis=1).map(_label_to_display)
-    report["confidence"] = pd.to_numeric(report.get("max_person_conf", 0.0), errors="coerce").fillna(0.0).round(4)
-    report["person_count"] = pd.to_numeric(report.get("person_count", 0), errors="coerce").fillna(0).astype(int)
-    report["role_prediction"] = report.apply(lambda r: _label_to_display(_feedback_label_default(r))).astype(str)
-    report["remarks"] = report.apply(
-        lambda r: (
-            str(r.get("detection_error", "") or "").strip()
-            or str(r.get("reject_reason", "") or "").strip()
-            or ""
-        ),
-        axis=1,
-    )
-    report["review_status"] = "pending"
-    return report[
-        [
-            "image_name",
-            "timestamp",
-            "drive_link",
-            "thumbnail_path",
-            "predicted_label",
-            "confidence",
-            "person_count",
-            "role_prediction",
-            "remarks",
-            "review_status",
-        ]
-    ].copy()
-
-
 def _resolve_track_prediction_from_source_row(source_row: pd.Series, track_id: str) -> str:
     track_ids = [str(x) for x in _safe_json_list(source_row.get("track_ids", "[]")) if str(x).strip()]
     if not track_ids:
@@ -2833,26 +2783,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         f"Mismatched={int(accuracy_summary.get('mismatch_rows', 0.0))}"
     )
 
-    validation_report_df = _build_image_validation_report_df(image_df=image_df)
+    st.markdown("**Feedback Accuracy Trend**")
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / f"store_{sid}_image_validation_report.csv"
-    validation_report_df.to_csv(report_path, index=False)
-    st.caption(f"Image-wise validation report: {report_path}")
-    try:
-        st.dataframe(
-            validation_report_df.head(300),
-            use_container_width=True,
-            hide_index=True,
-            height=260,
-            column_config={
-                "drive_link": st.column_config.LinkColumn("Drive Link", display_text="Open"),
-            },
-        )
-    except Exception:
-        st.dataframe(validation_report_df.head(300), use_container_width=True, hide_index=True, height=260)
-
-    st.markdown("**Feedback Accuracy Trend**")
     trend_path = out_dir / f"store_{sid}_feedback_accuracy_trend.csv"
     if accuracy_trend_df.empty:
         st.info("No scored feedback rows yet. Save feedback to start tracking model match accuracy.")
@@ -2873,13 +2806,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         except Exception:
             pass
         st.dataframe(accuracy_trend_df, use_container_width=True, hide_index=True, height=220)
-
-    auth_token = str(st.session_state.get("session_token", "")).strip()
-    extra_auth = f"&auth={quote(auth_token)}" if auth_token else ""
-    st.markdown(
-        f'<a href="?module=Reports&section=Business%20Health&page=Customer%20Journeys&store={quote(sid)}{extra_auth}" target="_blank">Open unique customer verification page</a>',
-        unsafe_allow_html=True,
-    )
 
     table_cols = [
         "timestamp",
@@ -3143,15 +3069,14 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     )
 
     batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
-    hide_reviewed = st.checkbox(
-        "Hide frames already reviewed",
-        value=bool(cfg_hide_reviewed),
-        key=f"qa_hide_reviewed_{sid}",
-    )
+    hide_reviewed = bool(cfg_hide_reviewed)
     if hide_reviewed:
         batch_rows = batch_rows[batch_rows["feedback_status"] == ""].copy()
         if batch_rows.empty:
-            st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
+            st.info(
+                "All top 10 frames are already reviewed. "
+                "To re-label old rows, change `Access > Config > Feedback > Hide Reviewed Rows In Pending` and refresh."
+            )
             batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
     editor_columns = ["selected", "capture_date", "camera_id", "filename", "frame_no_customer_label", "feedback_comment", "track_ids"]
