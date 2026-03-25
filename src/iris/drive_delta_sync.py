@@ -260,23 +260,9 @@ def sync_store_gdrive_delta(
 
     target_dir = ensure_store_snapshot_dir(data_root=data_root, store_id=store.store_id)
     active_rows = _list_present_index_rows(db_path=db_path, store_id=store.store_id)
-    first_run = len(active_rows) == 0
-    mode = "full_initial" if first_run else "latest_delta"
-
-    if first_run:
-        listed_items = _drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
-        scope_date = "ALL"
-    else:
-        dated_folders = _list_drive_date_subfolders(parent_folder_id=folder_id, api_key=api_key)
-        if not dated_folders:
-            listed_items = _drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
-            scope_date = "ALL_NO_DATE_FOLDERS"
-            mode = "full_fallback"
-        else:
-            latest_date, latest_folder_id = dated_folders[-1]
-            raw_items = _drive_api_list_files_recursive(folder_id=latest_folder_id, api_key=api_key)
-            listed_items = _prepend_folder_prefix(raw_items, folder_name=latest_date)
-            scope_date = latest_date
+    mode = "full_recursive"
+    listed_items = _drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
+    scope_date = "ALL"
 
     listed_map = {str(item.get("id", "")).strip(): item for item in listed_items if str(item.get("id", "")).strip()}
     listed_ids = set(listed_map.keys())

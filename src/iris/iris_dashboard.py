@@ -56,6 +56,7 @@ from iris.store_registry import (
     list_location_master,
     list_permission_codes,
     list_roles,
+    list_model_versions,
     list_store_master,
     list_stores,
     list_users,
@@ -1857,6 +1858,7 @@ LABEL_CANONICAL_ALIASES: dict[str, str] = {
     "NOT_SURE": "not_sure",
     "MIXED": "mixed",
     "NO_PERSON": "no_person",
+    "NO_CUSTOMER": "no_person",
     "STATIC_OBJECT": "poster_banner",
 }
 
@@ -1869,7 +1871,7 @@ LABEL_DISPLAY_BY_CANONICAL: dict[str, str] = {
     "invalid": "INVALID",
     "not_sure": "NOT_SURE",
     "mixed": "MIXED",
-    "no_person": "NO_PERSON",
+    "no_person": "NO_CUSTOMER",
 }
 
 
@@ -1893,6 +1895,7 @@ FEEDBACK_LABEL_OPTIONS = [
     "BANNER",
     "PRODUCT",
     "PEDESTRIANS",
+    "NO_CUSTOMER",
     "INVALID",
     "NOT_SURE",
 ]
@@ -1903,6 +1906,9 @@ def _feedback_label_default(row: pd.Series) -> str:
     predicted = str(_predicted_label(row)).strip().lower()
     event_label = str(row.get("event_label", "") or "").strip().upper()
     bag_count = int(pd.to_numeric([row.get("bag_count", 0)], errors="coerce")[0] or 0)
+    person_count = int(pd.to_numeric([row.get("person_count", 0)], errors="coerce")[0] or 0)
+    if person_count <= 0 or predicted == "no_person":
+        return "NO_CUSTOMER"
     if event_label == "STAFF" or predicted == "staff":
         return "STAFF"
     if event_label == "CUSTOMER" or predicted == "customer":
@@ -1964,6 +1970,163 @@ def _build_image_validation_report_df(image_df: pd.DataFrame) -> pd.DataFrame:
             "role_prediction",
             "remarks",
             "review_status",
+        ]
+    ].copy()
+
+
+def _resolve_track_prediction_from_source_row(source_row: pd.Series, track_id: str) -> str:
+    track_ids = [str(x) for x in _safe_json_list(source_row.get("track_ids", "[]")) if str(x).strip()]
+    if not track_ids:
+        return ""
+    try:
+        idx = track_ids.index(str(track_id).strip())
+    except ValueError:
+        return ""
+    staff_flags = [bool(x) for x in _safe_json_list(source_row.get("staff_flags", "[]"))]
+    if idx < len(staff_flags):
+        return "staff" if bool(staff_flags[idx]) else "customer"
+    return "customer"
+
+
+def _build_feedback_accuracy_report(
+    *,
+    feedback_rows: list[dict[str, object]],
+    image_df: pd.DataFrame,
+    db_path: Path,
+    store_id: str,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    summary = {
+        "considered_rows": 0.0,
+        "scored_rows": 0.0,
+        "matched_rows": 0.0,
+        "mismatch_rows": 0.0,
+        "accuracy_pct": 0.0,
+        "no_customer_rows": 0.0,
+    }
+    if not feedback_rows:
+        return summary, pd.DataFrame(
+            columns=[
+                "model_version",
+                "total_rows",
+                "matched_rows",
+                "mismatch_rows",
+                "accuracy_pct",
+                "last_feedback_at",
+            ]
+        )
+    feedback_df = pd.DataFrame(feedback_rows).copy()
+    if feedback_df.empty:
+        return summary, pd.DataFrame()
+    feedback_df["review_status"] = feedback_df.get("review_status", "").astype(str).str.lower()
+    image_lookup = {
+        (
+            str(r.get("capture_date", "") or "").strip(),
+            str(r.get("camera_id", "") or "").strip(),
+            str(r.get("filename", "") or "").strip(),
+        ): r
+        for _, r in image_df.iterrows()
+    }
+
+    def _resolved_predicted_label(row: pd.Series) -> str:
+        key = (
+            str(row.get("capture_date", "") or "").strip(),
+            str(row.get("camera_id", "") or "").strip(),
+            str(row.get("filename", "") or "").strip(),
+        )
+        track_id = str(row.get("track_id", "") or "").strip()
+        source_row = image_lookup.get(key)
+        if source_row is not None:
+            if track_id:
+                track_pred = _resolve_track_prediction_from_source_row(source_row, track_id=track_id)
+                if track_pred:
+                    return track_pred
+            return str(_predicted_label(source_row))
+        return str(row.get("predicted_label", "") or "")
+
+    feedback_df["predicted_resolved"] = feedback_df.apply(_resolved_predicted_label, axis=1)
+    feedback_df["predicted_canonical"] = feedback_df["predicted_resolved"].map(_label_to_canonical)
+    feedback_df["corrected_canonical"] = feedback_df.get("corrected_label", "").map(_label_to_canonical)
+    considered_df = feedback_df[feedback_df["review_status"].isin(["confirmed", "pending"])].copy()
+    if considered_df.empty:
+        return summary, pd.DataFrame()
+    scored_df = considered_df[
+        (considered_df["predicted_canonical"].astype(str) != "")
+        & (considered_df["corrected_canonical"].astype(str) != "")
+        & (considered_df["corrected_canonical"].astype(str) != "not_sure")
+    ].copy()
+    if scored_df.empty:
+        summary["considered_rows"] = float(len(considered_df))
+        summary["no_customer_rows"] = float((considered_df["corrected_canonical"] == "no_person").sum())
+        return summary, pd.DataFrame()
+
+    scored_df["is_match"] = (
+        scored_df["predicted_canonical"].astype(str) == scored_df["corrected_canonical"].astype(str)
+    ).astype(int)
+    matched_rows = int(scored_df["is_match"].sum())
+    total_rows = int(len(scored_df))
+    mismatch_rows = int(max(0, total_rows - matched_rows))
+    summary.update(
+        {
+            "considered_rows": float(len(considered_df)),
+            "scored_rows": float(total_rows),
+            "matched_rows": float(matched_rows),
+            "mismatch_rows": float(mismatch_rows),
+            "accuracy_pct": float((matched_rows * 100.0 / total_rows) if total_rows > 0 else 0.0),
+            "no_customer_rows": float((considered_df["corrected_canonical"] == "no_person").sum()),
+        }
+    )
+
+    scored_df["model_version"] = scored_df.get("model_version", "").astype(str).str.strip()
+    scored_df.loc[scored_df["model_version"] == "", "model_version"] = "(unknown)"
+    scored_df["created_at_dt"] = pd.to_datetime(scored_df.get("created_at"), errors="coerce")
+    trend_df = (
+        scored_df.groupby("model_version", dropna=False)
+        .agg(
+            total_rows=("id", "count"),
+            matched_rows=("is_match", "sum"),
+            last_feedback_at=("created_at_dt", "max"),
+        )
+        .reset_index()
+    )
+    trend_df["mismatch_rows"] = (trend_df["total_rows"] - trend_df["matched_rows"]).clip(lower=0).astype(int)
+    trend_df["accuracy_pct"] = (
+        pd.to_numeric(trend_df["matched_rows"], errors="coerce")
+        .fillna(0)
+        .astype(float)
+        .mul(100.0)
+        .div(pd.to_numeric(trend_df["total_rows"], errors="coerce").replace({0: np.nan}))
+        .fillna(0.0)
+        .round(2)
+    )
+    trend_df["last_feedback_at"] = pd.to_datetime(trend_df["last_feedback_at"], errors="coerce")
+
+    model_order: dict[str, int] = {}
+    try:
+        model_rows = list_model_versions(db_path=db_path, model_name=f"iris_feedback_rules_{store_id}")
+        ordered = sorted(
+            model_rows,
+            key=lambda row: str(row.get("created_at", "") or ""),
+        )
+        for idx, row in enumerate(ordered):
+            key = str(row.get("model_id", "") or "").strip()
+            if key:
+                model_order[key] = idx + 1
+    except Exception:
+        model_order = {}
+
+    trend_df["_order"] = trend_df["model_version"].map(lambda x: model_order.get(str(x), 10_000))
+    trend_df = trend_df.sort_values(by=["_order", "last_feedback_at", "model_version"]).reset_index(drop=True)
+    trend_df["run_index"] = np.arange(1, len(trend_df) + 1, dtype=int)
+    trend_df["last_feedback_at"] = trend_df["last_feedback_at"].astype(str).replace({"NaT": ""})
+    return summary, trend_df[
+        [
+            "run_index",
+            "model_version",
+            "total_rows",
+            "matched_rows",
+            "mismatch_rows",
+            "accuracy_pct",
+            "last_feedback_at",
         ]
     ].copy()
 
@@ -2666,12 +2829,33 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             if str(cid).strip()
         }
     )
+    existing_feedback_rows = list_qa_feedback(
+        db_path=db_path,
+        store_id=sid,
+        review_status=None,
+        limit=5000,
+    )
+    accuracy_summary, accuracy_trend_df = _build_feedback_accuracy_report(
+        feedback_rows=existing_feedback_rows,
+        image_df=image_df,
+        db_path=db_path,
+        store_id=sid,
+    )
 
-    top_cols = st.columns(4)
+    top_cols = st.columns(6)
     top_cols[0].metric("Frames", int(len(image_df)))
     top_cols[1].metric("Detected People", int(image_df["person_count"].sum()))
     top_cols[2].metric("Unique Customer IDs", int(len(unique_ids)))
-    top_cols[3].metric("Frames With Drive Link", int((image_df["drive_link"].fillna("") != "").sum()))
+    scored_rows = int(accuracy_summary.get("scored_rows", 0.0))
+    accuracy_label = f"{float(accuracy_summary.get('accuracy_pct', 0.0)):.2f}%" if scored_rows > 0 else "N/A"
+    top_cols[3].metric("Feedback Match Accuracy", accuracy_label)
+    top_cols[4].metric("Compared Feedback Rows", scored_rows)
+    top_cols[5].metric("No Customer Labels", int(accuracy_summary.get("no_customer_rows", 0.0)))
+    st.caption(
+        f"Frames with drive link: {int((image_df['drive_link'].fillna('') != '').sum())} | "
+        f"Matched={int(accuracy_summary.get('matched_rows', 0.0))} | "
+        f"Mismatched={int(accuracy_summary.get('mismatch_rows', 0.0))}"
+    )
 
     validation_report_df = _build_image_validation_report_df(image_df=image_df)
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
@@ -2691,6 +2875,28 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         )
     except Exception:
         st.dataframe(validation_report_df.head(300), use_container_width=True, hide_index=True, height=260)
+
+    st.markdown("**Feedback Accuracy Trend**")
+    trend_path = out_dir / f"store_{sid}_feedback_accuracy_trend.csv"
+    if accuracy_trend_df.empty:
+        st.info("No scored feedback rows yet. Save feedback to start tracking model match accuracy.")
+    else:
+        accuracy_trend_df.to_csv(trend_path, index=False)
+        st.caption(f"Accuracy trend export: {trend_path}")
+        try:
+            fig = px.line(
+                accuracy_trend_df,
+                x="run_index",
+                y="accuracy_pct",
+                markers=True,
+                hover_data=["model_version", "total_rows", "matched_rows", "mismatch_rows", "last_feedback_at"],
+                labels={"run_index": "Model Run Index", "accuracy_pct": "Match Accuracy (%)"},
+                title=f"{sid} Feedback Match Accuracy",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+        st.dataframe(accuracy_trend_df, use_container_width=True, hide_index=True, height=220)
 
     auth_token = str(st.session_state.get("session_token", "")).strip()
     extra_auth = f"&auth={quote(auth_token)}" if auth_token else ""
@@ -2740,16 +2946,12 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     st.caption(
         "Use this single table to review images, assign feedback labels, and save in bulk. "
         "Keep `Select` checked only for rows you want to save. "
+        "Use `No Customer` for empty/no-customer frames. "
         "Use `Tn Pred` vs `Tn Feedback` columns for per-track corrections. "
         "Saving again updates existing track feedback for the same frame+track."
     )
-    existing_feedback_rows = list_qa_feedback(
-        db_path=db_path,
-        store_id=sid,
-        review_status=None,
-        limit=5000,
-    )
     latest_feedback_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
+    latest_frame_feedback_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
     latest_track_feedback_by_key: dict[tuple[str, str, str, str], dict[str, object]] = {}
     for feedback_row in sorted(
         existing_feedback_rows,
@@ -2764,6 +2966,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         if key not in latest_feedback_by_key:
             latest_feedback_by_key[key] = feedback_row
         track_id = str(feedback_row.get("track_id", "") or "").strip()
+        if not track_id and key not in latest_frame_feedback_by_key:
+            latest_frame_feedback_by_key[key] = feedback_row
         if track_id:
             track_key = (
                 str(feedback_row.get("capture_date", "") or "").strip(),
@@ -2777,6 +2981,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         (d, c, f)
         for (d, c, f, _tid) in latest_track_feedback_by_key.keys()
     }
+    reviewed_frame_keys |= set(latest_frame_feedback_by_key.keys())
     preview_cache_key = f"qa_preview_cache_{sid}"
     preview_cache = st.session_state.get(preview_cache_key)
     if not isinstance(preview_cache, dict):
@@ -2838,6 +3043,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
         df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
         df["feedback_comment"] = ""
+        df["frame_no_customer_label"] = df.apply(
+            lambda r: "NO_CUSTOMER" if int(pd.to_numeric([r.get("person_count", 0)], errors="coerce")[0] or 0) <= 0 else "",
+            axis=1,
+        )
         df["selected"] = True
         df["feedback_status"] = df.apply(
             lambda r: (
@@ -2865,6 +3074,26 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             ),
             axis=1,
         ).map(_label_to_display)
+        df["frame_no_customer_label"] = df.apply(
+            lambda r: (
+                "NO_CUSTOMER"
+                if _label_to_canonical(
+                    latest_frame_feedback_by_key.get(
+                        (
+                            str(r.get("capture_date", "") or "").strip(),
+                            str(r.get("camera_id", "") or "").strip(),
+                            str(r.get("filename", "") or "").strip(),
+                        ),
+                        {},
+                    ).get("corrected_label", "")
+                    or ""
+                )
+                == "no_person"
+                else ""
+                or str(r.get("frame_no_customer_label", "") or "")
+            ),
+            axis=1,
+        )
         df["track_ids"] = df["track_ids"].map(
             lambda raw: ", ".join([str(x) for x in _safe_json_list(raw) if str(x).strip()])
         )
@@ -2949,7 +3178,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
             batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
-    editor_columns = ["selected", "capture_date", "camera_id", "filename", "feedback_comment", "track_ids"]
+    editor_columns = ["selected", "capture_date", "camera_id", "filename", "frame_no_customer_label", "feedback_comment", "track_ids"]
     if not bool(fast_edit_mode):
         editor_columns.insert(1, "preview_image")
     disabled_columns = [
@@ -2963,6 +3192,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         disabled_columns.insert(0, "preview_image")
     column_config: dict[str, object] = {
         "selected": st.column_config.CheckboxColumn("Select"),
+        "frame_no_customer_label": st.column_config.SelectboxColumn("No Customer", options=["", "NO_CUSTOMER"]),
         "feedback_comment": st.column_config.TextColumn("Comment"),
         "track_ids": st.column_config.TextColumn("Track IDs"),
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
@@ -3022,6 +3252,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         track_confirmed = 0
         track_updated = 0
         track_created = 0
+        frame_saved = 0
+        frame_confirmed = 0
+        frame_updated = 0
+        frame_created = 0
         relearned = 0
         source_lookup = {
             (
@@ -3052,6 +3286,82 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 source_row = matched.iloc[0]
                 capture_date = str(source_row.get("capture_date", "") or capture_date).strip()
             banner_relearned_for_row = False
+            desired_status = "confirmed" if bool(auto_confirm_feedback) else "pending"
+            desired_confidence = float(batch_confidence)
+            frame_feedback_value = str(row.get("frame_no_customer_label", "") or "").strip().upper()
+            if frame_feedback_value == "NO_CUSTOMER":
+                frame_key = (capture_date, camera_id, filename)
+                frame_label_canonical = _label_to_canonical(frame_feedback_value)
+                frame_predicted_canonical = _label_to_canonical(_predicted_label(source_row))
+                existing_frame_feedback = latest_frame_feedback_by_key.get(frame_key)
+                existing_frame_id = int(existing_frame_feedback.get("id", 0) or 0) if isinstance(existing_frame_feedback, dict) else 0
+                if existing_frame_id > 0:
+                    existing_label = _label_to_canonical((existing_frame_feedback or {}).get("corrected_label", ""))
+                    existing_comment = str((existing_frame_feedback or {}).get("comment", "") or "").strip()
+                    existing_status = str((existing_frame_feedback or {}).get("review_status", "pending") or "pending").strip().lower()
+                    existing_confidence = float(
+                        pd.to_numeric([(existing_frame_feedback or {}).get("confidence", 0.0)], errors="coerce")[0] or 0.0
+                    )
+                    if not (
+                        existing_label == frame_label_canonical
+                        and existing_comment == comment
+                        and existing_status == desired_status
+                        and abs(existing_confidence - desired_confidence) < 1e-6
+                    ):
+                        update_qa_feedback_entry(
+                            db_path=db_path,
+                            feedback_id=existing_frame_id,
+                            corrected_label=frame_label_canonical,
+                            comment=comment,
+                            confidence=desired_confidence,
+                            reviewer_email=(active_email or "system@local"),
+                            review_status=desired_status,
+                        )
+                        frame_updated += 1
+                        if desired_status == "confirmed":
+                            confirmed += 1
+                            frame_confirmed += 1
+                    latest_frame_feedback_by_key[frame_key] = {
+                        "id": int(existing_frame_id),
+                        "corrected_label": frame_label_canonical,
+                        "review_status": desired_status,
+                        "comment": comment,
+                        "confidence": desired_confidence,
+                    }
+                    saved += 1
+                    frame_saved += 1
+                else:
+                    frame_feedback_id = add_qa_feedback(
+                        db_path=db_path,
+                        store_id=sid,
+                        capture_date=capture_date,
+                        filename=filename,
+                        camera_id=camera_id,
+                        track_id="",
+                        predicted_label=str(frame_predicted_canonical),
+                        corrected_label=frame_label_canonical,
+                        confidence=desired_confidence,
+                        needs_review=not bool(auto_confirm_feedback),
+                        actor_email=(active_email or "system@local"),
+                        model_version=active_model_id,
+                        drive_link=str(source_row.get("drive_link", "") or "").strip(),
+                        comment=comment,
+                        review_status=desired_status,
+                        reviewer_email=(active_email or "system@local") if desired_status == "confirmed" else "",
+                    )
+                    latest_frame_feedback_by_key[frame_key] = {
+                        "id": int(frame_feedback_id),
+                        "corrected_label": frame_label_canonical,
+                        "review_status": desired_status,
+                        "comment": comment,
+                        "confidence": desired_confidence,
+                    }
+                    saved += 1
+                    frame_saved += 1
+                    frame_created += 1
+                    if desired_status == "confirmed":
+                        confirmed += 1
+                        frame_confirmed += 1
             for slot in slot_numbers:
                 track_id_value = str(row.get(f"track_{slot}_id", "") or "").strip()
                 track_label_value = str(row.get(f"track_{slot}_label", "") or "").strip().upper()
@@ -3060,11 +3370,12 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 if track_label_value not in FEEDBACK_LABEL_OPTIONS:
                     continue
                 track_label_canonical = _label_to_canonical(track_label_value)
+                track_predicted_canonical = _label_to_canonical(str(row.get(f"track_{slot}_predicted", "") or ""))
+                if not track_predicted_canonical:
+                    track_predicted_canonical = _label_to_canonical(_predicted_label(source_row))
                 track_key = (capture_date, camera_id, filename, track_id_value)
                 existing_track_feedback = latest_track_feedback_by_key.get(track_key)
                 existing_track_id = int(existing_track_feedback.get("id", 0) or 0) if isinstance(existing_track_feedback, dict) else 0
-                desired_status = "confirmed" if bool(auto_confirm_feedback) else "pending"
-                desired_confidence = float(batch_confidence)
                 if existing_track_id > 0:
                     existing_label = _label_to_canonical((existing_track_feedback or {}).get("corrected_label", ""))
                     existing_comment = str((existing_track_feedback or {}).get("comment", "") or "").strip()
@@ -3101,7 +3412,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                         filename=filename,
                         camera_id=camera_id,
                         track_id=track_id_value,
-                        predicted_label=str(_predicted_label(source_row)),
+                        predicted_label=str(track_predicted_canonical),
                         corrected_label=track_label_canonical,
                         confidence=desired_confidence,
                         needs_review=not bool(auto_confirm_feedback),
@@ -3142,8 +3453,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             st.info("No rows were selected to save.")
         else:
             st.success(
-                f"Saved {saved} feedback rows (track-level={track_saved}, created={track_created}, updated={track_updated}). "
-                f"Auto-confirmed={confirmed} (track-level={track_confirmed}). "
+                f"Saved {saved} feedback rows (frame-level={frame_saved}, track-level={track_saved}, "
+                f"created={frame_created + track_created}, updated={frame_updated + track_updated}). "
+                f"Auto-confirmed={confirmed} (frame-level={frame_confirmed}, track-level={track_confirmed}). "
                 f"Poster-signatures learned={relearned}."
             )
             if bool(rerun_after_save):

@@ -55,6 +55,23 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Made source ingestion more universal for nested folders by switching Drive delta sync runs to full recursive listing on every cycle (not latest-date-only), so reorganized folders like `Test/Test1`, `Test/Test2`, etc. are picked up automatically.
+  - Added validation accuracy reporting in Frame Review: match KPIs (predicted vs corrected), exportable model-version trend table, and accuracy trend graph to track quality after retrains.
+  - Added `NO_CUSTOMER` feedback option (canonical `no_person`) for empty/no-customer frames, including a dedicated dropdown in top-10 validation table and retrain-label alias support.
+  - Improved track feedback persistence to save track-level predicted labels (customer/staff) for cleaner accuracy scoring.
+- Changed Paths:
+  - `src/iris/drive_delta_sync.py`
+  - `tests/test_drive_delta_sync.py`
+  - `src/iris/iris_dashboard.py`
+  - `scripts/daily_feedback_reprocess.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Fixed startup `sqlite3.OperationalError: database is locked` race between UI and scheduler services by hardening DB lock handling during schema/init commit.
   - Increased SQLite busy timeout window and added transient-lock retry loop around `init_db` commit to absorb short write-lock contention safely.
 - Changed Paths:

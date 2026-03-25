@@ -27,6 +27,8 @@ _LABEL_CANONICAL_ALIASES: dict[str, str] = {
     "poster_banner": "poster_banner",
     "pedestrians": "outside_passer",
     "outside_passer": "outside_passer",
+    "no_customer": "no_person",
+    "no_person": "no_person",
 }
 
 

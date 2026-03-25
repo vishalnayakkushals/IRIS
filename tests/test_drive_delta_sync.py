@@ -13,7 +13,7 @@ def test_date_bucket_from_relative_path() -> None:
     assert _date_bucket_from_relative_path("") == ""
 
 
-def test_latest_delta_sync_marks_missing_and_downloads_new(tmp_path: Path, monkeypatch) -> None:
+def test_full_recursive_sync_marks_missing_and_downloads_new(tmp_path: Path, monkeypatch) -> None:
     db = tmp_path / "registry.db"
     data_root = tmp_path / "stores"
     init_db(db)
@@ -51,13 +51,8 @@ def test_latest_delta_sync_marks_missing_and_downloads_new(tmp_path: Path, monke
         ],
     )
 
-    monkeypatch.setattr(
-        "iris.drive_delta_sync._list_drive_date_subfolders",
-        lambda parent_folder_id, api_key: [("2026-03-18", "d18"), ("2026-03-19", "d19")],
-    )
-
     def fake_list_recursive(folder_id: str, api_key: str):
-        assert folder_id == "d19"
+        assert folder_id == "root123"
         return [{"id": "new1", "name": "new.jpg", "relative_path": "new.jpg", "drive_web_link": "https://drive.google.com/file/d/new1/view"}]
 
     monkeypatch.setattr("iris.drive_delta_sync._drive_api_list_files_recursive", fake_list_recursive)
@@ -65,14 +60,14 @@ def test_latest_delta_sync_marks_missing_and_downloads_new(tmp_path: Path, monke
     def fake_download(file_items, target_dir, api_key):
         rows = []
         for item in file_items:
-            dest = target_dir / "2026-03-19" / "new.jpg"
+            dest = target_dir / "new.jpg"
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"new")
             rows.append(
                 {
                     "file_id": "new1",
                     "name": "new.jpg",
-                    "relative_path": "2026-03-19/new.jpg",
+                    "relative_path": "new.jpg",
                     "drive_web_link": "https://drive.google.com/file/d/new1/view",
                     "local_path": str(dest),
                 }
@@ -90,8 +85,8 @@ def test_latest_delta_sync_marks_missing_and_downloads_new(tmp_path: Path, monke
         remove_local_deleted_files=False,
     )
 
-    assert result.mode == "latest_delta"
-    assert result.scope_date == "2026-03-19"
+    assert result.mode == "full_recursive"
+    assert result.scope_date == "ALL"
     assert result.downloaded_new == 1
     assert result.marked_deleted == 1
     assert existing_local.exists()
