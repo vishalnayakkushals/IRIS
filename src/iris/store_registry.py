@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import time
 from typing import Any
@@ -29,6 +30,11 @@ S3_PATH_URL_PATTERN = re.compile(
 )
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_PERMISSION_CODES = ("config", "dashboard", "licenses", "roles", "stores", "users")
+_SQLITE_TRANSIENT_ERRORS = (
+    "disk i/o error",
+    "database is locked",
+    "database is busy",
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,33 @@ class UserRecord:
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {str(row[1]) for row in rows}
+
+
+def _sqlite_connect(db_path: Path, timeout: float = 30.0, retries: int = 6) -> sqlite3.Connection:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, int(retries)) + 1):
+        try:
+            conn = sqlite3.connect(db_path, timeout=float(timeout))
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            text = str(exc).lower()
+            transient = any(token in text for token in _SQLITE_TRANSIENT_ERRORS)
+            if transient and attempt < retries:
+                time.sleep(0.2 * attempt)
+                continue
+            break
+    free_gb = -1.0
+    try:
+        free_gb = round(float(shutil.disk_usage(db_path.parent).free) / (1024 ** 3), 2)
+    except Exception:
+        pass
+    raise sqlite3.OperationalError(
+        f"SQLite connect failed for '{db_path}' after retries; last_error={last_error!r}; free_disk_gb={free_gb}"
+    )
 
 
 def _now_utc() -> str:
@@ -130,7 +163,7 @@ def optimize_store_image_files(store_dir: Path, max_dimension: int = 1280, quali
 
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stores (
@@ -443,7 +476,7 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
 
 def create_user(db_path: Path, email: str, full_name: str, password: str, store_id: str = "", role_names: list[str] | None = None) -> int:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         normalized_roles = [r.strip().lower() for r in (role_names or ["store_user"]) if r.strip()]
         if not normalized_roles:
@@ -470,7 +503,7 @@ def create_user(db_path: Path, email: str, full_name: str, password: str, store_
 
 def set_user_password(db_path: Path, email: str, new_password: str) -> None:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute("UPDATE users SET password_hash=? WHERE lower(email)=lower(?)", (_hash_password(new_password), email.strip()))
         conn.commit()
@@ -480,7 +513,7 @@ def set_user_password(db_path: Path, email: str, new_password: str) -> None:
 
 def authenticate_user(db_path: Path, email: str, password: str) -> UserRecord | None:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute("SELECT user_id,email,full_name,password_hash,is_active,store_id,created_at FROM users WHERE lower(email)=lower(?)", (email.strip(),)).fetchone()
         if not row:
@@ -496,7 +529,7 @@ def authenticate_user(db_path: Path, email: str, password: str) -> UserRecord | 
 
 def list_users(db_path: Path) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         rows = conn.execute("SELECT user_id,email,full_name,is_active,store_id,created_at FROM users ORDER BY email").fetchall()
         out=[]
@@ -510,7 +543,7 @@ def list_users(db_path: Path) -> list[dict[str, Any]]:
 
 def create_role(db_path: Path, role_name: str, description: str = "") -> None:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         conn.execute("INSERT OR IGNORE INTO roles(role_name,description) VALUES(?,?)", (role_name.strip().lower(), description.strip()))
         conn.commit()
@@ -520,7 +553,7 @@ def create_role(db_path: Path, role_name: str, description: str = "") -> None:
 
 def set_role_permissions(db_path: Path, role_name: str, permissions: list[tuple[str, int, int]]) -> None:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         row=conn.execute("SELECT role_id FROM roles WHERE role_name=?", (role_name.strip().lower(),)).fetchone()
         if not row:
@@ -536,7 +569,7 @@ def set_role_permissions(db_path: Path, role_name: str, permissions: list[tuple[
 
 def list_roles(db_path: Path) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         rows=conn.execute("SELECT role_id,role_name,description FROM roles ORDER BY role_name").fetchall()
         out=[]
@@ -554,7 +587,7 @@ def list_role_names(db_path: Path) -> list[str]:
 
 def list_permission_codes(db_path: Path) -> list[str]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         rows = conn.execute(
             "SELECT DISTINCT permission_code FROM role_permissions ORDER BY permission_code"
@@ -573,7 +606,7 @@ def delete_role(db_path: Path, role_name: str) -> tuple[bool, str]:
         raise ValueError("role_name is required")
     if normalized_role == "admin":
         return False, "admin role is protected and cannot be deleted"
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             "SELECT role_id FROM roles WHERE role_name=?",
@@ -601,7 +634,7 @@ def delete_role(db_path: Path, role_name: str) -> tuple[bool, str]:
 
 def user_permissions(db_path: Path, email: str) -> dict[str, dict[str, bool]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         u=conn.execute("SELECT user_id FROM users WHERE lower(email)=lower(?)",(email.strip(),)).fetchone()
         if not u:
@@ -623,7 +656,7 @@ def user_permissions(db_path: Path, email: str) -> dict[str, dict[str, bool]]:
 
 def user_role_names(db_path: Path, email: str) -> list[str]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         rows = conn.execute(
             """
@@ -657,7 +690,7 @@ def upsert_user_account(
     normalized_roles = [r.strip().lower() for r in role_names if r.strip()]
     if not normalized_roles:
         raise ValueError("at least one role is required")
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         role_ids: list[int] = []
         for role_name in normalized_roles:
@@ -719,7 +752,7 @@ def upsert_user_account(
 def replace_user_store_access(db_path: Path, email: str, store_ids: list[str]) -> None:
     init_db(db_path)
     normalized_email = email.strip().lower()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             "SELECT user_id FROM users WHERE lower(email)=lower(?)",
@@ -760,7 +793,7 @@ def replace_user_store_access(db_path: Path, email: str, store_ids: list[str]) -
 
 def list_user_store_access(db_path: Path, email: str | None = None) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         base_query = (
             "SELECT users.email, users.full_name, stores.store_id, stores.store_name, usa.created_at "
@@ -793,7 +826,7 @@ def user_store_scope(db_path: Path, email: str) -> dict[str, Any]:
     normalized_email = email.strip().lower()
     if not normalized_email:
         return {"restricted": True, "store_ids": [], "roles": []}
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         user_row = conn.execute(
             "SELECT user_id, store_id FROM users WHERE lower(email)=lower(?)",
@@ -962,7 +995,7 @@ def create_user_session(db_path: Path, email: str, ttl_days: int = 14) -> str:
     now = datetime.now(timezone.utc)
     token = secrets.token_urlsafe(32)
     expires_at = (now + timedelta(days=max(1, ttl_days))).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             "INSERT INTO user_sessions(token,email,expires_at,created_at) VALUES(?,?,?,?)",
@@ -982,7 +1015,7 @@ def get_user_by_session_token(db_path: Path, token: str) -> UserRecord | None:
     tok = token.strip()
     if not tok:
         return None
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             "SELECT email, expires_at FROM user_sessions WHERE token=?",
@@ -1026,7 +1059,7 @@ def revoke_user_session(db_path: Path, token: str) -> None:
     tok = token.strip()
     if not tok:
         return
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute("DELETE FROM user_sessions WHERE token=?", (tok,))
         conn.commit()
@@ -1036,7 +1069,7 @@ def revoke_user_session(db_path: Path, token: str) -> None:
 
 def get_app_settings(db_path: Path) -> dict[str, str]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         rows = conn.execute(
             "SELECT setting_key, setting_value FROM app_settings ORDER BY setting_key"
@@ -1049,7 +1082,7 @@ def get_app_settings(db_path: Path) -> dict[str, str]:
 def upsert_app_settings(db_path: Path, settings: dict[str, str]) -> None:
     init_db(db_path)
     now = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         for key, value in settings.items():
             normalized_key = str(key).strip()
@@ -1100,7 +1133,7 @@ def add_qa_feedback(
     needs_review_value = 1 if bool(needs_review) else 0
     if status != "pending":
         needs_review_value = 0
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1145,7 +1178,7 @@ def list_qa_feedback(
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         query = (
             "SELECT id,store_id,capture_date,filename,camera_id,track_id,predicted_label,corrected_label,"
@@ -1204,7 +1237,7 @@ def update_qa_feedback_review(
     status = review_status.strip().lower()
     if status not in {"pending", "confirmed", "rejected"}:
         raise ValueError("review_status must be pending, confirmed, or rejected")
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1233,7 +1266,7 @@ def update_qa_feedback_entry(
     if status and status not in {"pending", "confirmed", "rejected"}:
         raise ValueError("review_status must be pending, confirmed, or rejected")
     reviewed_at = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         if status:
             conn.execute(
@@ -1286,7 +1319,7 @@ def add_false_positive_signature(
 ) -> int:
     init_db(db_path)
     now = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1324,7 +1357,7 @@ def list_false_positive_signatures(
     limit: int = 100000,
 ) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         query = (
             "SELECT id,store_id,camera_id,box_json,hash64,hash_size,hamming_threshold,"
@@ -1369,7 +1402,7 @@ def list_false_positive_signatures(
 
 def upsert_store_master_rows(db_path: Path, rows: list[dict[str, str]]) -> int:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         now=_now_utc()
         n=0
@@ -1406,7 +1439,7 @@ def upsert_store_master_rows(db_path: Path, rows: list[dict[str, str]]) -> int:
 
 def list_store_master(db_path: Path) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         cols=["store_id","short_code","gofrugal_name","outlet_id","city","state","zone","country","mobile_no","store_email","cluster_manager","area_manager","updated_at"]
         rows=conn.execute("SELECT store_id,short_code,gofrugal_name,outlet_id,city,state,zone,country,mobile_no,store_email,cluster_manager,area_manager,updated_at FROM store_master ORDER BY store_id").fetchall()
@@ -1420,7 +1453,7 @@ def get_store_master_by_id(db_path: Path, store_id: str) -> dict[str, Any] | Non
     sid = store_id.strip()
     if not sid:
         return None
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             """
@@ -1454,7 +1487,7 @@ def get_store_master_by_id(db_path: Path, store_id: str) -> dict[str, Any] | Non
 
 def create_license(db_path: Path, store_id: str, license_type: str, actor_email: str, metadata_json: str = "{}") -> str:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         lid=f"lic_{uuid4().hex[:12]}"
         now=_now_utc()
@@ -1469,7 +1502,7 @@ def create_license(db_path: Path, store_id: str, license_type: str, actor_email:
 def transition_license(db_path: Path, license_id: str, new_status: str, actor_email: str, note: str = "") -> None:
     allowed={"draft":{"review"},"review":{"approved","rejected"},"approved":{"expired"},"rejected":{"review"},"expired":set()}
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         row=conn.execute("SELECT status FROM licenses WHERE license_id=?", (license_id,)).fetchone()
         if not row:
@@ -1488,7 +1521,7 @@ def transition_license(db_path: Path, license_id: str, new_status: str, actor_em
 
 def list_licenses(db_path: Path, store_id: str | None = None) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         if store_id:
             rows=conn.execute("SELECT license_id,store_id,license_type,status,metadata_json,created_by,created_at,updated_at FROM licenses WHERE store_id=? ORDER BY updated_at DESC", (store_id,)).fetchall()
@@ -1502,7 +1535,7 @@ def list_licenses(db_path: Path, store_id: str | None = None) -> list[dict[str, 
 
 def list_license_audit(db_path: Path, license_id: str) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         rows=conn.execute("SELECT license_id,old_status,new_status,actor_email,note,created_at FROM license_audit WHERE license_id=? ORDER BY id", (license_id,)).fetchall()
         cols=["license_id","old_status","new_status","actor_email","note","created_at"]
@@ -1513,7 +1546,7 @@ def list_license_audit(db_path: Path, license_id: str) -> list[dict[str, Any]]:
 
 def upsert_alert_route(db_path: Path, store_id: str, channel: str, target: str, enabled: bool = True) -> None:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         conn.execute(
             "INSERT INTO alert_routes(store_id,channel,target,enabled,created_at) VALUES(?,?,?,?,?) ON CONFLICT(store_id,channel,target) DO UPDATE SET enabled=excluded.enabled",
@@ -1526,7 +1559,7 @@ def upsert_alert_route(db_path: Path, store_id: str, channel: str, target: str, 
 
 def list_alert_routes(db_path: Path, store_id: str) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         rows=conn.execute("SELECT channel,target,enabled,created_at FROM alert_routes WHERE store_id=? ORDER BY channel,target", (store_id,)).fetchall()
         return [{"channel":r[0],"target":r[1],"enabled":bool(r[2]),"created_at":r[3]} for r in rows]
@@ -1536,7 +1569,7 @@ def list_alert_routes(db_path: Path, store_id: str) -> list[dict[str, Any]]:
 
 def route_alert(db_path: Path, store_id: str, alert_type: str, payload_json: str) -> list[str]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     delivered=[]
     try:
         routes=conn.execute("SELECT channel,target FROM alert_routes WHERE store_id=? AND enabled=1", (store_id,)).fetchall()
@@ -1557,7 +1590,7 @@ def upsert_store(db_path: Path, store_id: str, store_name: str, email: str, driv
     if not sid or not sn or not em:
         raise ValueError("store_id, store_name, and email are required")
     now=_now_utc()
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         ex=conn.execute("SELECT store_id FROM stores WHERE lower(email)=lower(?) AND store_id!=?",(em,sid)).fetchone()
         if ex:
@@ -1574,7 +1607,7 @@ def upsert_store(db_path: Path, store_id: str, store_name: str, email: str, driv
 
 def delete_store(db_path: Path, store_id: str) -> None:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         sid = store_id.strip()
         conn.execute("DELETE FROM stores WHERE store_id=?", (sid,))
@@ -1589,7 +1622,7 @@ def delete_store(db_path: Path, store_id: str) -> None:
 
 def list_stores(db_path: Path) -> list[StoreRecord]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         rows=conn.execute("SELECT store_id,store_name,email,drive_folder_url,created_at,updated_at FROM stores ORDER BY store_id").fetchall()
         return [StoreRecord(*r) for r in rows]
@@ -1608,7 +1641,7 @@ def _upsert_store_sync_state(
 ) -> None:
     init_db(db_path)
     now = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1642,7 +1675,7 @@ def _upsert_store_sync_state(
 
 def list_synced_stores(db_path: Path, provider_filter: str | None = "gdrive") -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         query = (
             "SELECT s.store_id,s.store_name,s.email,s.drive_folder_url,s.created_at,s.updated_at,"
@@ -1675,7 +1708,7 @@ def list_synced_stores(db_path: Path, provider_filter: str | None = "gdrive") ->
 
 def get_store_by_email(db_path: Path, email: str) -> StoreRecord | None:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         row=conn.execute("SELECT store_id,store_name,email,drive_folder_url,created_at,updated_at FROM stores WHERE lower(email)=lower(?)", (email.strip(),)).fetchone()
         return StoreRecord(*row) if row else None
@@ -1698,7 +1731,7 @@ def add_employee_image(db_path: Path, employee_assets_root: Path, store_id: str,
         content_to_write = optimized_content
     else:
         content_to_write = content
-    conn_chk = sqlite3.connect(db_path)
+    conn_chk = _sqlite_connect(db_path)
     try:
         exists = conn_chk.execute("SELECT 1 FROM stores WHERE store_id=?", (sid,)).fetchone()
     finally:
@@ -1712,7 +1745,7 @@ def add_employee_image(db_path: Path, employee_assets_root: Path, store_id: str,
     store_dir.mkdir(parents=True, exist_ok=True)
     image_path = store_dir / unique_name
     image_path.write_bytes(content_to_write)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         now = _now_utc()
         conn.execute(
@@ -1727,7 +1760,7 @@ def add_employee_image(db_path: Path, employee_assets_root: Path, store_id: str,
 
 def list_employees(db_path: Path, store_id: str | None = None, include_inactive: bool = True) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         query = (
             "SELECT id,store_id,employee_name,image_path,is_active,created_at,updated_at "
@@ -1762,7 +1795,7 @@ def list_employees(db_path: Path, store_id: str | None = None, include_inactive:
 
 def set_employee_active(db_path: Path, employee_id: int, is_active: bool) -> None:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             "UPDATE employees SET is_active=?, updated_at=? WHERE id=?",
@@ -1775,7 +1808,7 @@ def set_employee_active(db_path: Path, employee_id: int, is_active: bool) -> Non
 
 def delete_employee(db_path: Path, employee_id: int, delete_file: bool = True) -> bool:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             "SELECT image_path FROM employees WHERE id=?",
@@ -1816,7 +1849,7 @@ def upsert_camera_config(
     x=float(entry_line_x)
     if x<0 or x>1:
         raise ValueError("entry_line_x must be between 0 and 1")
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1839,7 +1872,7 @@ def upsert_camera_config(
 
 def list_camera_configs(db_path: Path, store_id: str | None = None) -> list[CameraConfig]:
     init_db(db_path)
-    conn=sqlite3.connect(db_path)
+    conn=_sqlite_connect(db_path)
     try:
         if store_id:
             rows=conn.execute("SELECT store_id,camera_id,camera_role,floor_name,location_name,entry_line_x,entry_direction,updated_at FROM camera_configs WHERE store_id=? ORDER BY camera_id", (store_id,)).fetchall()
@@ -1879,7 +1912,7 @@ def _drive_item_dest_path(target_dir: Path, item: dict[str, str]) -> tuple[Path,
 
 def _list_indexed_source_file_ids(db_path: Path, store_id: str, source_provider: str) -> set[str]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         rows = conn.execute(
             """
@@ -1901,7 +1934,7 @@ def _upsert_source_index_rows(
     if not rows:
         return
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.executemany(
             """
@@ -1949,7 +1982,7 @@ def upsert_location_master(
     fname = floor_name.strip() or "Ground"
     if not sid or not lname:
         raise ValueError("store_id and location_name are required")
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -1975,7 +2008,7 @@ def delete_location_master(
     sid = store_id.strip()
     lname = location_name.strip()
     fname = floor_name.strip() or "Ground"
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         before = conn.total_changes
         conn.execute(
@@ -1990,7 +2023,7 @@ def delete_location_master(
 
 def list_location_master(db_path: Path, store_id: str | None = None) -> list[dict[str, str]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         if store_id:
             rows = conn.execute(
@@ -2427,7 +2460,7 @@ def sync_store_from_drive(store: StoreRecord, data_root: Path, db_path: Path | N
 
 def log_user_activity(db_path: Path, actor_email: str, action_code: str, store_id: str = "", payload_json: str = "{}") -> None:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             "INSERT INTO user_activity(actor_email, action_code, store_id, payload_json, created_at) VALUES(?,?,?,?,?)",
@@ -2440,7 +2473,7 @@ def log_user_activity(db_path: Path, actor_email: str, action_code: str, store_i
 
 def list_user_activity(db_path: Path, actor_email: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         if actor_email:
             rows = conn.execute(
@@ -2470,7 +2503,7 @@ def register_model_version(
     init_db(db_path)
     model_id = f"mdl_{uuid4().hex[:12]}"
     now = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             """
@@ -2498,7 +2531,7 @@ def register_model_version(
 def promote_model_version(db_path: Path, model_name: str, model_id: str) -> None:
     init_db(db_path)
     now = _now_utc()
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         conn.execute(
             "UPDATE model_versions SET status='archived', updated_at=? WHERE model_name=? AND status='active'",
@@ -2519,7 +2552,7 @@ def maybe_auto_rollback_model(
     max_error_rate: float = 0.35,
 ) -> tuple[bool, str]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         row = conn.execute(
             "SELECT model_id,metrics_json,rollback_target_model_id FROM model_versions WHERE model_name=? AND status='active' ORDER BY updated_at DESC LIMIT 1",
@@ -2545,7 +2578,7 @@ def maybe_auto_rollback_model(
 
 def list_model_versions(db_path: Path, model_name: str | None = None) -> list[dict[str, Any]]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = _sqlite_connect(db_path)
     try:
         if model_name:
             rows = conn.execute(

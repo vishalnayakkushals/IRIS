@@ -90,11 +90,13 @@ Invoke-Step -Name "Container Status" -Action {
 }
 
 Invoke-Step -Name "Recent Logs" -Action {
-    docker compose -f deploy/docker-compose.yml logs --tail=$LogTail iris
+    $sinceSec = [Math]::Max(60, [Math]::Min($TimeoutSec + 60, 900))
+    docker compose -f deploy/docker-compose.yml logs --since="${sinceSec}s" --tail=$LogTail iris
 }
 
 Invoke-Step -Name "Quick Error Scan" -Action {
-    $logText = docker compose -f deploy/docker-compose.yml logs --tail=$LogTail iris 2>&1 | Out-String
+    $sinceSec = [Math]::Max(60, [Math]::Min($TimeoutSec + 60, 900))
+    $logText = docker compose -f deploy/docker-compose.yml logs --since="${sinceSec}s" --tail=$LogTail iris 2>&1 | Out-String
     $fatalPatterns = @(
         "Traceback",
         "ModuleNotFoundError",
@@ -103,16 +105,21 @@ Invoke-Step -Name "Quick Error Scan" -Action {
         "No such file or directory",
         "streamlit.errors"
     )
-    $matches = @()
+    $errorMarkers = @()
     foreach ($pattern in $fatalPatterns) {
         if ($logText -match [regex]::Escape($pattern)) {
-            $matches += $pattern
+            $errorMarkers += $pattern
         }
     }
-    if ($matches.Count -gt 0) {
-        throw "Potential runtime error markers found in logs: $($matches -join ', ')"
+    if ($errorMarkers.Count -gt 0) {
+        throw "Potential runtime error markers found in logs: $($errorMarkers -join ', ')"
     }
     Write-Host "No fatal runtime markers found in recent logs." -ForegroundColor Green
+}
+
+Invoke-Step -Name "SQLite Probe" -Action {
+    docker compose -f deploy/docker-compose.yml exec iris python -c "import sqlite3; p='/app/data/store_registry.db'; conn=sqlite3.connect(p); cur=conn.cursor(); cur.execute('PRAGMA quick_check;'); print('quick_check:', cur.fetchone()[0]); conn.close()"
+    Assert-LastExitCode -Message "SQLite probe failed"
 }
 
 Write-Host ""

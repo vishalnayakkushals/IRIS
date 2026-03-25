@@ -54,6 +54,20 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Hardened SQLite access against transient host-volume I/O failures by introducing retried DB connection helper with busy-timeout and actionable disk-free diagnostics.
+  - Applied the resilient connection helper across registry DB operations (init/read/write paths) to reduce startup flakiness after Docker rebuild/restart on Windows.
+  - Fixed `refresh_and_check.ps1` log-scan crash (`$Matches` variable collision) and constrained log checks to recent startup window; added SQLite quick-check probe to validate runtime DB health.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `scripts/refresh_and_check.ps1`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Reduced Frame Review interaction latency by moving top-10 batch editor into a form so dropdown edits do not trigger full-page reruns on every change.
   - Added preview thumbnail session-cache for top-10 rows to avoid re-rendering overlays repeatedly during QA interactions.
   - Optimized save path by skipping no-op track updates and collapsing update+review-status into single DB writes; new inserts can now be created directly as `confirmed` when auto-confirm is enabled.
