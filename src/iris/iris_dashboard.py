@@ -87,7 +87,7 @@ from iris.store_registry import (
 
 NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Reports": {
-        "Business Health": ["Overview", "Store Detail", "Data Health", "Frame Review", "Customer Journeys"],
+        "Business Health": ["Overview", "Store Detail", "Report Module", "Frame Review", "Customer Journeys"],
     },
     "Access": {
         "Administration": [
@@ -137,7 +137,7 @@ LEGACY_PAGE_ALIAS = {
     "Camera Zones": "Store Camera Mapping",
     "Licenses": "Organisation",
     "Alert Routes": "Organisation",
-    "Quality": "Data Health",
+    "Quality": "Report Module",
     "QA Timeline": "Frame Review",
 }
 
@@ -2485,38 +2485,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.info("No validated visits yet. Raw detections are available, but session-validated visit metrics are N/A.")
 
     business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
-    st.markdown("**Customer Business Summary**")
-    business_conversion = business_kpi.get("conversion_rate")
-    business_bounce = business_kpi.get("bounce_rate")
-    business_conversion_text = (
-        f"{float(business_conversion):.2%}"
-        if business_conversion is not None and not pd.isna(business_conversion)
-        else "N/A"
-    )
-    business_bounce_text = (
-        f"{float(business_bounce):.2%}"
-        if business_bounce is not None and not pd.isna(business_bounce)
-        else "N/A"
-    )
-    kpi_cols = st.columns(6)
-    kpi_cols[0].metric("Total Entries", int(business_kpi["entries"]))
-    kpi_cols[1].metric("Closed Exits", int(business_kpi["closed_exits"]))
-    kpi_cols[2].metric("Converted", int(business_kpi["converted"]))
-    kpi_cols[3].metric("Bounced", int(business_kpi.get("bounced", 0)))
-    kpi_cols[4].metric("Conversion Rate", business_conversion_text)
-    kpi_cols[5].metric("Bounce Rate", business_bounce_text)
-    st.caption(
-        "Raw detections come from person detection. "
-        "Business metrics come from validated customer entries/sessions."
-    )
-
-    _render_validation_console(
-        image_df=image_df,
-        customer_sessions_df=customer_sessions_df,
-        selected_store=selected_store,
-        root_dir=root_dir,
-        auth_token=auth_token,
-    )
 
     gender_counts = business_kpi["gender_counts"] if isinstance(business_kpi.get("gender_counts"), dict) else {}
     gender_cols = st.columns(3)
@@ -2534,118 +2502,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     else:
         st.caption("Age group count not available (enable and configure age/gender model).")
 
-    if hasattr(store_result, "daily_report") and not store_result.daily_report.empty:
-        st.markdown("**Daily Walk-in & Conversion Report**")
-        st.dataframe(store_result.daily_report, use_container_width=True)
-
-    daily_proof_df = (
-        store_result.daily_proof.copy()
-        if hasattr(store_result, "daily_proof") and not store_result.daily_proof.empty
-        else pd.DataFrame()
-    )
-    if daily_proof_df.empty:
-        # Fallback proof view from frame-level data if proof export is not present.
-        fallback = (
-            image_df.groupby("capture_date", as_index=False)
-            .agg(
-                total_images=("filename", "count"),
-                valid_images=("is_valid", "sum"),
-                relevant_images=("relevant", "sum"),
-                total_detected_people=("person_count", "sum"),
-            )
-            .rename(columns={"capture_date": "date"})
-            .sort_values("date", ascending=False)
-        )
-        if not fallback.empty:
-            fallback["store_id"] = selected_store
-            fallback["folder_name"] = fallback["date"]
-            fallback["individual_people"] = 0
-            fallback["group_people"] = 0
-            fallback["converted"] = 0
-            fallback["conversion_rate"] = 0.0
-            daily_proof_df = fallback[
-                [
-                    "store_id",
-                    "date",
-                    "folder_name",
-                    "total_images",
-                    "valid_images",
-                    "relevant_images",
-                    "total_detected_people",
-                    "individual_people",
-                    "group_people",
-                    "converted",
-                    "conversion_rate",
-                ]
-            ]
-
-    if not daily_proof_df.empty:
-        st.markdown("**Daily Calculation Proof (Folder Date Based)**")
-        date_options = daily_proof_df["date"].astype(str).tolist()
-        selected_date = st.selectbox(
-            "Proof Date",
-            options=date_options,
-            index=0,
-            key=f"proof_date_{selected_store}",
-        )
-        proof_row = daily_proof_df[daily_proof_df["date"].astype(str) == str(selected_date)].iloc[0]
-        proof_cols = st.columns(4)
-        proof_cols[0].metric("Images", int(proof_row.get("total_images", 0)))
-        proof_cols[1].metric("Individual People", int(proof_row.get("individual_people", 0)))
-        proof_cols[2].metric("Group People", int(proof_row.get("group_people", 0)))
-        proof_cols[3].metric("Converted", int(proof_row.get("converted", 0)))
-        st.caption(
-            f"Folder: {proof_row.get('folder_name', selected_date)} | "
-            f"Detected People: {int(proof_row.get('total_detected_people', 0))} | "
-            f"Conversion Rate: {float(proof_row.get('conversion_rate', 0.0)):.2%}"
-        )
-        st.dataframe(daily_proof_df, use_container_width=True, hide_index=True)
-        proof_frames = image_df[image_df["capture_date"].astype(str) == str(selected_date)].copy()
-        if not proof_frames.empty:
-            st.markdown("**Frame-Level Proof for Selected Date**")
-            proof_frames = proof_frames.sort_values("timestamp").copy()
-            proof_frames["open_frame"] = proof_frames.apply(
-                lambda r: _row_image_hyperlink(
-                    r,
-                    store_id=selected_store,
-                    root_dir=root_dir,
-                    auth_token=auth_token,
-                ),
-                axis=1,
-            )
-            proof_columns = [
-                "capture_date",
-                "source_folder",
-                "timestamp",
-                "filename",
-                "open_frame",
-                "camera_id",
-                "floor_name",
-                "location_name",
-                "person_count",
-                "relevant",
-                "track_ids",
-                "group_ids",
-                "store_day_customer_ids",
-                "customer_ids",
-                "detection_error",
-            ]
-            try:
-                st.dataframe(
-                    proof_frames[proof_columns],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "open_frame": st.column_config.LinkColumn(
-                            "Open",
-                            help="Open this frame inside app for validation (no re-login).",
-                            display_text="Open",
-                        ),
-                    },
-                )
-            except Exception:
-                st.dataframe(proof_frames[proof_columns], use_container_width=True, hide_index=True)
-
     if not hotspot_df.empty:
         st.markdown("**Camera Hotspots**")
         hotspot_chart = px.bar(
@@ -2660,7 +2516,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
             },
         )
         st.plotly_chart(hotspot_chart, use_container_width=True)
-        st.dataframe(hotspot_df, use_container_width=True)
 
     location_hotspot_df = (
         store_result.location_hotspots.copy()
@@ -2682,7 +2537,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
             },
         )
         st.plotly_chart(loc_chart, use_container_width=True)
-        st.dataframe(location_hotspot_df, use_container_width=True, hide_index=True)
 
     relevant_df = image_df[image_df["relevant"]].copy()
     if "camera_id" not in relevant_df.columns:
@@ -2705,87 +2559,209 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         )
         st.plotly_chart(trend_chart, use_container_width=True)
 
-    st.markdown("**Data Quality Issues**")
-    quality_df = image_df[
-        (image_df["reject_reason"].fillna("") != "")
-        | (image_df["detection_error"].fillna("") != "")
-        | (~image_df["is_valid"])
-    ].copy()
-    if quality_df.empty:
-        st.success("No quality issues detected.")
-    else:
-        st.dataframe(
-            quality_df[
-                [
-                    "filename",
-                    "camera_id",
-                    "timestamp",
-                    "is_valid",
-                    "reject_reason",
-                    "detection_error",
-                ]
-            ],
-            use_container_width=True,
-        )
+    st.caption("Detailed proof tables and data-health exports are available under `Reports > Business Health > Report Module`.")
 
-    st.markdown("**Relevant Image Gallery**")
-    st.caption(
-        "Meaning: relevant = valid frame with at least one detected person. "
-        "Use this gallery for quick visual validation of crowd/customer activity by camera and time."
+
+def _build_daily_proof_df(image_df: pd.DataFrame, store_result: object, store_id: str) -> pd.DataFrame:
+    daily_proof_df = (
+        store_result.daily_proof.copy()
+        if hasattr(store_result, "daily_proof") and not store_result.daily_proof.empty
+        else pd.DataFrame()
     )
-    camera_options = sorted([camera for camera in image_df["camera_id"].dropna().unique() if camera])
-    selected_cameras = st.multiselect(
-        "Cameras",
-        options=camera_options,
-        default=camera_options,
-        key=f"camera_filter_{selected_store}",
+    if not daily_proof_df.empty:
+        return daily_proof_df
+    fallback = (
+        image_df.groupby("capture_date", as_index=False)
+        .agg(
+            total_images=("filename", "count"),
+            valid_images=("is_valid", "sum"),
+            relevant_images=("relevant", "sum"),
+            total_detected_people=("person_count", "sum"),
+        )
+        .rename(columns={"capture_date": "date"})
+        .sort_values("date", ascending=False)
     )
-    max_images = st.slider(
-        "Max gallery images",
-        min_value=6,
-        max_value=60,
-        value=24,
-        step=6,
-        key=f"gallery_limit_{selected_store}",
-    )
-    if "camera_id" in relevant_df.columns and selected_cameras:
-        gallery_df = relevant_df[relevant_df["camera_id"].isin(selected_cameras)].head(max_images)
-    else:
-        gallery_df = relevant_df.head(0)
-    if gallery_df.empty:
-        st.info("No relevant images for the selected camera filter.")
+    if fallback.empty:
+        return fallback
+    fallback["store_id"] = store_id
+    fallback["folder_name"] = fallback["date"]
+    fallback["individual_people"] = 0
+    fallback["group_people"] = 0
+    fallback["converted"] = 0
+    fallback["conversion_rate"] = 0.0
+    return fallback[
+        [
+            "store_id",
+            "date",
+            "folder_name",
+            "total_images",
+            "valid_images",
+            "relevant_images",
+            "total_detected_people",
+            "individual_people",
+            "group_people",
+            "converted",
+            "conversion_rate",
+        ]
+    ]
+
+
+def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
+    st.subheader("Report Module")
+    st.caption("Choose store/date and download report data for offline analysis.")
+    if not output.stores:
+        st.info("No store analysis loaded.")
         return
 
-    cols = st.columns(3)
-    for idx, row_image in gallery_df.iterrows():
-        col = cols[idx % 3]
-        ts_value = row_image.get("timestamp")
-        if pd.isna(ts_value):
-            ts_text = "NA"
-        else:
-            ts_text = ts_value.strftime('%H:%M:%S')
-        caption = (
-            f"{ts_text} "
-            f"{row_image.get('camera_id', 'UNKNOWN')} "
-            f"{row_image.get('location_name', '')} "
-            f"people={row_image.get('person_count', 0)}"
+    store_ids = sorted(output.stores.keys())
+    selected_store = st.selectbox("Store", options=store_ids, key="report_module_store")
+    store_result = output.stores[selected_store]
+    image_df = _normalize_image_df(store_result.image_insights)
+    customer_sessions_df = (
+        store_result.customer_sessions.copy()
+        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
+        else pd.DataFrame()
+    )
+    daily_proof_df = _build_daily_proof_df(image_df=image_df, store_result=store_result, store_id=selected_store)
+    summary_row = output.all_stores_summary[output.all_stores_summary["store_id"] == selected_store].iloc[0]
+    business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
+
+    date_options = ["All Dates"] + sorted(
+        [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()],
+        reverse=True,
+    )
+    selected_date = st.selectbox(
+        "Date",
+        options=date_options,
+        index=0,
+        key=f"report_module_date_{selected_store}",
+    )
+    selected_report = st.selectbox(
+        "Which report",
+        options=[
+            "Top Summary",
+            "Daily Walk-in & Conversion Report",
+            "Daily Calculation Proof (Folder Date Based)",
+            "Frame-Level Proof",
+            "Data Health",
+            "Camera Hotspots",
+            "Location Hotspots",
+        ],
+        key=f"report_module_type_{selected_store}",
+    )
+
+    report_df = pd.DataFrame()
+    if selected_report == "Top Summary":
+        report_df = pd.DataFrame(
+            [
+                {
+                    "store_id": selected_store,
+                    "total_images": int(summary_row.get("total_images", 0)),
+                    "valid_images": int(summary_row.get("valid_images", 0)),
+                    "relevant_images": int(summary_row.get("relevant_images", 0)),
+                    "total_people": int(summary_row.get("total_people", 0)),
+                    "estimated_visits": int(summary_row.get("estimated_visits", 0)),
+                    "avg_dwell_sec": float(summary_row.get("avg_dwell_sec", 0.0)),
+                    "bounce_rate": summary_row.get("bounce_rate", np.nan),
+                    "footfall": int(summary_row.get("footfall", 0)),
+                    "los_alerts": int(summary_row.get("loss_of_sale_alerts", 0)),
+                    "daily_walkins": int(summary_row.get("daily_walkins", 0)),
+                    "daily_conversions": int(summary_row.get("daily_conversions", 0)),
+                    "daily_conversion_rate": summary_row.get("daily_conversion_rate", np.nan),
+                    "entries": int(business_kpi.get("entries", 0)),
+                    "closed_exits": int(business_kpi.get("closed_exits", 0)),
+                    "converted": int(business_kpi.get("converted", 0)),
+                    "bounced": int(business_kpi.get("bounced", 0)),
+                    "conversion_rate": business_kpi.get("conversion_rate", np.nan),
+                }
+            ]
         )
-        with col:
-            resolved = _resolve_row_image_path(row=row_image, store_id=selected_store, root_dir=root_dir)
-            if resolved is not None:
-                try:
-                    st.image(str(resolved), caption=caption, use_container_width=True)
-                except Exception:
-                    st.caption(caption)
-            else:
-                st.caption(caption)
-            open_link = _frame_review_identity_link(
+    elif selected_report == "Daily Walk-in & Conversion Report":
+        report_df = (
+            store_result.daily_report.copy()
+            if hasattr(store_result, "daily_report") and not store_result.daily_report.empty
+            else pd.DataFrame()
+        )
+    elif selected_report == "Daily Calculation Proof (Folder Date Based)":
+        report_df = daily_proof_df.copy()
+    elif selected_report == "Frame-Level Proof":
+        report_df = image_df.copy()
+        report_df["open_frame"] = report_df.apply(
+            lambda r: _row_image_hyperlink(
+                r,
                 store_id=selected_store,
-                filename=str(row_image.get("filename", "")),
-                timestamp=str(row_image.get("timestamp", "")),
-                auth_token=auth_token,
-            )
-            st.markdown(f"[Open this frame for validation]({open_link})")
+                root_dir=root_dir,
+                auth_token=str(st.session_state.get("session_token", "")).strip(),
+            ),
+            axis=1,
+        )
+        proof_columns = [
+            "capture_date",
+            "source_folder",
+            "timestamp",
+            "filename",
+            "open_frame",
+            "camera_id",
+            "floor_name",
+            "location_name",
+            "person_count",
+            "relevant",
+            "track_ids",
+            "group_ids",
+            "store_day_customer_ids",
+            "customer_ids",
+            "drive_link",
+            "detection_error",
+        ]
+        report_df = report_df[[col for col in proof_columns if col in report_df.columns]].copy()
+    elif selected_report == "Data Health":
+        report_df = image_df[
+            [
+                "capture_date",
+                "filename",
+                "camera_id",
+                "is_valid",
+                "reject_reason",
+                "detection_error",
+            ]
+        ].copy()
+        report_df.insert(0, "store_id", selected_store)
+    elif selected_report == "Camera Hotspots":
+        report_df = (
+            store_result.camera_hotspots.copy()
+            if hasattr(store_result, "camera_hotspots") and not store_result.camera_hotspots.empty
+            else pd.DataFrame()
+        )
+    elif selected_report == "Location Hotspots":
+        report_df = (
+            store_result.location_hotspots.copy()
+            if hasattr(store_result, "location_hotspots") and not store_result.location_hotspots.empty
+            else pd.DataFrame()
+        )
+
+    date_filter_col = ""
+    if "date" in report_df.columns:
+        date_filter_col = "date"
+    elif "capture_date" in report_df.columns:
+        date_filter_col = "capture_date"
+    if date_filter_col and selected_date != "All Dates":
+        report_df = report_df[report_df[date_filter_col].astype(str) == str(selected_date)].copy()
+
+    if report_df.empty:
+        st.info("No rows available for this report with the selected filters.")
+        return
+
+    report_file_stub = re.sub(r"[^A-Za-z0-9_]+", "_", selected_report.strip().lower())
+    date_stub = "all_dates" if selected_date == "All Dates" else re.sub(r"[^0-9A-Za-z_-]+", "_", selected_date)
+    file_name = f"{selected_store}_{report_file_stub}_{date_stub}.csv"
+    csv_bytes = report_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download CSV",
+        data=csv_bytes,
+        file_name=file_name,
+        mime="text/csv",
+    )
+    st.dataframe(report_df.head(500), use_container_width=True, hide_index=True)
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str, root_dir: Path) -> None:
@@ -5958,8 +5934,8 @@ def main() -> None:
         _render_setup_help()
     elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes, root_dir=root_dir)
-    elif current_page == "Data Health":
-        _render_quality_summary(view_output)
+    elif current_page in {"Report Module", "Data Health"}:
+        _render_report_module(view_output, root_dir=root_dir)
     elif current_page == "Customer Journeys":
         _render_customer_journeys(view_output, root_dir=root_dir)
     elif current_page == "Store Mapping":

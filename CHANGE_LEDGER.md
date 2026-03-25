@@ -55,6 +55,20 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Simplified `Store Detail` for validation-first usage by removing embedded Validation Console, Data Quality Issues, Relevant Image Gallery, and in-page proof tables; kept only KPI summary + hotspot/trend visuals.
+  - Removed numeric hotspot tables from Store Detail, keeping camera/location hotspot graphs only.
+  - Added a dedicated `Report Module` page under `Reports > Business Health` with Store + Date selectors and CSV download for Top Summary, Daily Walk-in/Conversion, Daily Calculation Proof, Frame-Level Proof, Data Health, and hotspot data tables.
+  - Routed legacy `Data Health` navigation links to the new `Report Module` page for backward compatibility.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Moved `Run Mode` controls into its own Config module so run controls no longer render at the bottom for every other module.
   - Updated Config module selector list to include `Run Mode`; run/regenerate form now appears only when `Run Mode` is selected (or matched via setting search).
 - Changed Paths:
