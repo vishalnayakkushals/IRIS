@@ -16,6 +16,30 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     command: ["streamlit", "run", "src/run_dashboard.py", "--server.address=0.0.0.0", "--server.port=8765", "--browser.serverAddress=localhost"]
 
+  iris-scheduler:
+    image: iris-app:latest
+    restart: unless-stopped
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - IRIS_SCHEDULER_POLL_SECONDS=${IRIS_SCHEDULER_POLL_SECONDS:-10}
+    command:
+      [
+        "python",
+        "scripts/scheduler_worker.py",
+        "--db",
+        "/app/data/store_registry.db",
+        "--root",
+        "/app/data/stores",
+        "--out",
+        "/app/data/exports/current",
+        "--employee-assets-root",
+        "/app/data/employee_assets",
+        "--poll-seconds",
+        "${IRIS_SCHEDULER_POLL_SECONDS:-10}"
+      ]
+
   iris-sync:
     image: iris-app:latest
     profiles: ["sync"]

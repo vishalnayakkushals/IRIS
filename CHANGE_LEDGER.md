@@ -25,6 +25,7 @@ It records what changed, where it changed, and why.
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
+| `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
@@ -51,6 +52,21 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Completed phase-2 cleanup by removing unreachable legacy review/queue UI blocks from `Frame Review` (`_render_qa_timeline`) so only the current `Pending Review` and `Review History` workflow remains.
+  - Moved scheduler execution out of Streamlit request cycle: dashboard now only shows scheduler status, while a dedicated worker handles timed queue runs.
+  - Added always-on scheduler service (`iris-scheduler`) in Docker Compose, backed by new `scripts/scheduler_worker.py` that enforces minimum interval rules, executes scheduler tasks, and updates `cfg_scheduler_*` run metadata.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/scheduler_worker.py`
+  - `deploy/docker-compose.yml`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/scheduler_worker.py`
+- Infra/Config Impact:
+  - New always-on compose service: `iris-scheduler` (uses `IRIS_SCHEDULER_POLL_SECONDS`, default `10`).
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
