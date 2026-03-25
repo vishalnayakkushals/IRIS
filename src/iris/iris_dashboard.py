@@ -791,6 +791,8 @@ def _run_analysis(
     export_pilot_store_id: str,
     export_pilot_date: str,
     false_positive_signatures_by_store: dict[str, list[dict[str, object]]] | None = None,
+    use_parallel: bool = True,
+    use_streaming: bool = True,
 ) -> AnalysisOutput:
     output = analyze_root(
         root_dir=root_dir,
@@ -807,6 +809,8 @@ def _run_analysis(
         session_timeout_sec=int(session_timeout_sec),
         enable_age_gender=bool(enable_age_gender),
         false_positive_signatures_by_store=false_positive_signatures_by_store,
+        use_parallel=bool(use_parallel),
+        use_streaming=bool(use_streaming),
     )
     export_analysis(output, out_dir=out_dir, write_gzip_exports=write_gzip_exports, keep_plain_csv=keep_plain_csv)
     sid = export_pilot_store_id.strip()
@@ -5069,6 +5073,8 @@ def _run_scheduler_cycle(
             export_pilot_store_id="",
             export_pilot_date=capture_date_filter.isoformat() if capture_date_filter else "",
             false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
+            use_parallel=False,
+            use_streaming=False,
         )
         summary["predict_rerun"] = True
     summary["ended_at"] = datetime.now(tz=timezone.utc).isoformat()

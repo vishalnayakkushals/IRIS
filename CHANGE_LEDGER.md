@@ -53,6 +53,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Reduced scheduler resource spikes by forcing scheduler-triggered prediction cycles to run in single-process mode (`use_parallel=False`, `use_streaming=False`) while keeping model logic unchanged.
+  - Added CPU thread caps for `iris-scheduler` container (`OMP/OPENBLAS/MKL/NUMEXPR=1`) to prevent host-wide CPU saturation from numerical thread over-subscription.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `deploy/docker-compose.yml`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `iris-scheduler` now starts with constrained thread env vars; requires container recreate (`docker compose up -d --force-recreate iris-scheduler`) to apply.
+
 ### 2026-03-25 | Commit 27f0fdb
 - Summary:
   - Simplified Frame Review by removing the `Hide frames already reviewed` toggle from the page and enforcing that behavior from `Access > Config > Feedback` only.

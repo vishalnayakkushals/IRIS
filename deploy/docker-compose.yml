@@ -24,6 +24,10 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - IRIS_SCHEDULER_POLL_SECONDS=${IRIS_SCHEDULER_POLL_SECONDS:-10}
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
     command:
       [
         "python",
