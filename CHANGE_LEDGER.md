@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-25 | Commit <pending>
+### 2026-03-25 | Commit fbbcdc9
 - Summary:
   - Simplified `Store Detail` for validation-first usage by removing embedded Validation Console, Data Quality Issues, Relevant Image Gallery, and in-page proof tables; kept only KPI summary + hotspot/trend visuals.
   - Removed numeric hotspot tables from Store Detail, keeping camera/location hotspot graphs only.
