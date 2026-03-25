@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-25 | Commit <pending>
+### 2026-03-25 | Commit cf70559
 - Summary:
   - Restored thumbnail previews in Frame Review top-10 validation table by always showing the `Preview` column (independent of fast-edit setting) so feedback can be given with visual context.
   - Removed the extra frame-level raw data table above top-10 validation grid to reduce clutter in review flow.
