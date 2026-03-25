@@ -5191,7 +5191,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         upsert_app_settings(db_path=db_path, settings={"cfg_scheduler_interval_minutes": str(current_interval)})
         settings = _ensure_config_defaults(db_path)
 
-    config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Detection", "UI"]
+    config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Detection", "UI", "Run Mode"]
     discover_cols = st.columns([2, 2, 3])
     selected_module = discover_cols[0].selectbox(
         "Config Module",
@@ -5403,6 +5403,9 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
                 "- `Hide Reviewed Rows`: cleaner Pending view.\n"
                 "- `Re-run Analysis After Save`: immediate refresh vs speed."
             )
+    if not _show_module("Run Mode"):
+        return False
+
     bounce_options = [30, 60, 90, 120, 180, 240, 300]
     session_options = [10, 20, 30, 45, 60, 90, 120]
     timeout_options = [60, 120, 180, 240, 300, 600]

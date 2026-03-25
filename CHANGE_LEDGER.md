@@ -55,6 +55,18 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Moved `Run Mode` controls into its own Config module so run controls no longer render at the bottom for every other module.
+  - Updated Config module selector list to include `Run Mode`; run/regenerate form now appears only when `Run Mode` is selected (or matched via setting search).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Made source ingestion more universal for nested folders by switching Drive delta sync runs to full recursive listing on every cycle (not latest-date-only), so reorganized folders like `Test/Test1`, `Test/Test2`, etc. are picked up automatically.
   - Added validation accuracy reporting in Frame Review: match KPIs (predicted vs corrected), exportable model-version trend table, and accuracy trend graph to track quality after retrains.
   - Added `NO_CUSTOMER` feedback option (canonical `no_person`) for empty/no-customer frames, including a dedicated dropdown in top-10 validation table and retrain-label alias support.
