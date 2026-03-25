@@ -2728,7 +2728,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["capture_date"] = df["capture_date"].astype(str)
         df["timestamp"] = df["timestamp"].astype(str)
         df["predicted_label"] = df.apply(_predicted_label, axis=1).map(_label_to_display)
-        df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
+        if bool(fast_edit_mode):
+            df["preview_image"] = ""
+        else:
+            df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
         df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
         df["feedback_comment"] = ""
         df["selected"] = True
@@ -2814,7 +2817,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df = df.drop(columns=["track_ids_list", "staff_flags_list"], errors="ignore")
         return df
 
-    slot_default = min(max_track_slots, 6)
+    slot_default = min(max_track_slots, 4)
     visible_track_slots = st.slider(
         "Track columns (for multi-person frames)",
         min_value=1,
@@ -2822,9 +2825,15 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         value=slot_default,
         step=1,
         key=f"qa_track_slots_{sid}",
-        help="Increase this when a frame has more than 6 track IDs.",
+        help="Increase this when a frame has more than 4 track IDs.",
     )
     slot_numbers = list(range(1, int(visible_track_slots) + 1))
+    fast_edit_mode = st.checkbox(
+        "Fast edit mode (hide thumbnails)",
+        value=True,
+        key=f"qa_fast_edit_mode_{sid}",
+        help="Improves dropdown/save responsiveness on slower machines.",
+    )
 
     batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
     hide_reviewed = st.checkbox(
@@ -2838,30 +2847,26 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             st.info("All top 10 frames already have feedback. Turn off 'Hide frames already reviewed' to re-label.")
             batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
-    editor_columns = [
-        "selected",
-        "preview_image",
-        "capture_date",
-        "camera_id",
-        "filename",
-        "feedback_comment",
-        "track_ids",
-    ]
+    editor_columns = ["selected", "capture_date", "camera_id", "filename", "feedback_comment", "track_ids"]
+    if not bool(fast_edit_mode):
+        editor_columns.insert(1, "preview_image")
     disabled_columns = [
-        "preview_image",
         "capture_date",
         "camera_id",
         "filename",
         "track_ids",
         "drive_link",
     ]
+    if not bool(fast_edit_mode):
+        disabled_columns.insert(0, "preview_image")
     column_config: dict[str, object] = {
         "selected": st.column_config.CheckboxColumn("Select"),
-        "preview_image": st.column_config.ImageColumn("Preview"),
         "feedback_comment": st.column_config.TextColumn("Comment"),
         "track_ids": st.column_config.TextColumn("Track IDs"),
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
     }
+    if not bool(fast_edit_mode):
+        column_config["preview_image"] = st.column_config.ImageColumn("Preview")
     for slot in slot_numbers:
         editor_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_label"])
         disabled_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted"])
@@ -2890,6 +2895,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 value=0.9,
                 step=0.05,
                 key=f"qa_batch_conf_{sid}",
+            )
+        with batch_save_cols[2]:
+            rerun_after_save = st.checkbox(
+                "Re-run full analysis after save (slower)",
+                value=False,
+                key=f"qa_batch_rerun_after_save_{sid}",
+                help="Keep off for fast save. Turn on only when you need immediate full export refresh.",
             )
         try:
             edited_batch_df = st.data_editor(
@@ -3040,7 +3052,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 f"Auto-confirmed={confirmed} (track-level={track_confirmed}). "
                 f"Poster-signatures learned={relearned}."
             )
-            st.session_state["force_rerun_analysis"] = True
+            if bool(rerun_after_save):
+                st.session_state["force_rerun_analysis"] = True
             st.rerun()
 
     selector = image_df.head(500).copy()

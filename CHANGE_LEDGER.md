@@ -54,6 +54,19 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Improved top-10 Frame Review save responsiveness by making full analysis rerun optional on save (default off), avoiding heavy export regeneration on every feedback click.
+  - Added `Fast edit mode` (default on) to hide thumbnails and reduce table rendering overhead during dropdown-heavy QA edits.
+  - Reduced default visible track columns from 6 to 4 to lower initial grid render cost while keeping expandable track-slot slider for larger frames.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Hardened SQLite access against transient host-volume I/O failures by introducing retried DB connection helper with busy-timeout and actionable disk-free diagnostics.
   - Applied the resilient connection helper across registry DB operations (init/read/write paths) to reduce startup flakiness after Docker rebuild/restart on Windows.
   - Fixed `refresh_and_check.ps1` log-scan crash (`$Matches` variable collision) and constrained log checks to recent startup window; added SQLite quick-check probe to validate runtime DB health.
