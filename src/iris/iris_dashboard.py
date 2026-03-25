@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import html
 import importlib.util
 import io
@@ -91,7 +91,7 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Access": {
         "Administration": [
             "Organisation",
-            "Pipeline Configuration",
+            "Config",
             "Users",
             "Password Manager",
             "Role Permissions",
@@ -130,6 +130,7 @@ COLOR_PRESETS: dict[str, str] = {
 }
 
 LEGACY_PAGE_ALIAS = {
+    "Pipeline Configuration": "Config",
     "Store Admin": "Store Mapping",
     "Auth/RBAC": "Role Permissions",
     "Camera Zones": "Store Camera Mapping",
@@ -167,6 +168,98 @@ PIPELINE_PRESETS: dict[str, dict[str, object]] = {
     },
     "Custom": {},
 }
+
+CONFIG_DEFAULTS: dict[str, str] = {
+    "cfg_feedback_auto_confirm": "1",
+    "cfg_feedback_batch_confidence": "0.90",
+    "cfg_feedback_fast_edit_mode": "1",
+    "cfg_feedback_hide_reviewed": "1",
+    "cfg_feedback_rerun_after_save": "0",
+    "cfg_retrain_min_rows": "10",
+    "cfg_scheduler_enabled": "1",
+    "cfg_scheduler_interval_minutes": "30",
+    "cfg_scheduler_buffer_minutes": "5",
+    "cfg_scheduler_task_sync_enabled": "1",
+    "cfg_scheduler_task_feedback_enabled": "1",
+    "cfg_scheduler_task_retrain_enabled": "1",
+    "cfg_scheduler_task_predict_enabled": "1",
+    "cfg_scheduler_task_refresh_enabled": "1",
+    "cfg_scheduler_est_sync_minutes": "3",
+    "cfg_scheduler_est_feedback_minutes": "2",
+    "cfg_scheduler_est_retrain_minutes": "4",
+    "cfg_scheduler_est_predict_minutes": "4",
+    "cfg_scheduler_est_refresh_minutes": "2",
+    "cfg_scheduler_next_run_at": "",
+    "cfg_scheduler_last_run_at": "",
+    "cfg_scheduler_last_summary_json": "",
+}
+
+
+def _setting_bool(settings: dict[str, str], key: str, default: bool) -> bool:
+    raw = str(settings.get(key, "1" if default else "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _setting_int(settings: dict[str, str], key: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(float(str(settings.get(key, default) or default).strip()))
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def _setting_float(settings: dict[str, str], key: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(str(settings.get(key, default) or default).strip())
+    except Exception:
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return value
+
+
+def _scheduler_min_interval_minutes(settings: dict[str, str]) -> int:
+    task_pairs = [
+        ("cfg_scheduler_task_sync_enabled", "cfg_scheduler_est_sync_minutes"),
+        ("cfg_scheduler_task_feedback_enabled", "cfg_scheduler_est_feedback_minutes"),
+        ("cfg_scheduler_task_retrain_enabled", "cfg_scheduler_est_retrain_minutes"),
+        ("cfg_scheduler_task_predict_enabled", "cfg_scheduler_est_predict_minutes"),
+        ("cfg_scheduler_task_refresh_enabled", "cfg_scheduler_est_refresh_minutes"),
+    ]
+    total = 0
+    for enabled_key, estimate_key in task_pairs:
+        if _setting_bool(settings, enabled_key, True):
+            total += _setting_int(settings, estimate_key, 1, minimum=1, maximum=180)
+    buffer_minutes = _setting_int(settings, "cfg_scheduler_buffer_minutes", 5, minimum=0, maximum=120)
+    return int(total + buffer_minutes)
+
+
+def _parse_iso_utc(raw: object) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _ensure_config_defaults(db_path: Path) -> dict[str, str]:
+    settings = get_app_settings(db_path)
+    missing = {k: v for k, v in CONFIG_DEFAULTS.items() if str(settings.get(k, "")).strip() == ""}
+    if missing:
+        upsert_app_settings(db_path=db_path, settings=missing)
+        settings = get_app_settings(db_path)
+    return settings
 
 PAGE_TO_PATH: dict[str, tuple[str, str]] = {
     page: (module, section)
@@ -2543,6 +2636,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     preselected_store = _query_value("store", "").strip()
     default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
     sid = st.selectbox("Store", options=store_ids, index=default_index, key="qa_store")
+    runtime_settings = _ensure_config_defaults(db_path)
+    cfg_auto_confirm = _setting_bool(runtime_settings, "cfg_feedback_auto_confirm", True)
+    cfg_batch_confidence = _setting_float(runtime_settings, "cfg_feedback_batch_confidence", 0.9, minimum=0.0, maximum=1.0)
+    cfg_fast_edit_mode = _setting_bool(runtime_settings, "cfg_feedback_fast_edit_mode", True)
+    cfg_hide_reviewed = _setting_bool(runtime_settings, "cfg_feedback_hide_reviewed", True)
+    cfg_rerun_after_save = _setting_bool(runtime_settings, "cfg_feedback_rerun_after_save", False)
+    cfg_retrain_min_rows = _setting_int(runtime_settings, "cfg_retrain_min_rows", 10, minimum=1, maximum=100000)
     image_df = _normalize_image_df(output.stores[sid].image_insights)
     if image_df.empty:
         st.info("No image rows available for this store.")
@@ -2673,6 +2773,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             )
             if track_key not in latest_track_feedback_by_key:
                 latest_track_feedback_by_key[track_key] = feedback_row
+    reviewed_frame_keys = {
+        (d, c, f)
+        for (d, c, f, _tid) in latest_track_feedback_by_key.keys()
+    }
     preview_cache_key = f"qa_preview_cache_{sid}"
     preview_cache = st.session_state.get(preview_cache_key)
     if not isinstance(preview_cache, dict):
@@ -2736,17 +2840,15 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["feedback_comment"] = ""
         df["selected"] = True
         df["feedback_status"] = df.apply(
-            lambda r: str(
-                latest_feedback_by_key.get(
-                    (
-                        str(r.get("capture_date", "") or "").strip(),
-                        str(r.get("camera_id", "") or "").strip(),
-                        str(r.get("filename", "") or "").strip(),
-                    ),
-                    {},
-                ).get("review_status", "")
-                or ""
-            ).strip().lower(),
+            lambda r: (
+                "reviewed"
+                if (
+                    str(r.get("capture_date", "") or "").strip(),
+                    str(r.get("camera_id", "") or "").strip(),
+                    str(r.get("filename", "") or "").strip(),
+                ) in reviewed_frame_keys
+                else ""
+            ),
             axis=1,
         )
         df["last_feedback"] = df.apply(
@@ -2828,17 +2930,17 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         help="Increase this when a frame has more than 4 track IDs.",
     )
     slot_numbers = list(range(1, int(visible_track_slots) + 1))
-    fast_edit_mode = st.checkbox(
-        "Fast edit mode (hide thumbnails)",
-        value=True,
-        key=f"qa_fast_edit_mode_{sid}",
-        help="Improves dropdown/save responsiveness on slower machines.",
+    fast_edit_mode = bool(cfg_fast_edit_mode)
+    st.caption(
+        "Feedback settings are managed in `Access > Config > Feedback`. "
+        f"Current: auto_confirm={cfg_auto_confirm}, default_confidence={cfg_batch_confidence:.2f}, "
+        f"fast_edit={cfg_fast_edit_mode}, hide_reviewed={cfg_hide_reviewed}, rerun_after_save={cfg_rerun_after_save}."
     )
 
     batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
     hide_reviewed = st.checkbox(
         "Hide frames already reviewed",
-        value=True,
+        value=bool(cfg_hide_reviewed),
         key=f"qa_hide_reviewed_{sid}",
     )
     if hide_reviewed:
@@ -2879,30 +2981,22 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     editor_columns.extend(["drive_link"])
 
     with st.form(key=f"qa_batch_form_{sid}", clear_on_submit=False):
-        batch_save_cols = st.columns([1, 1, 2])
-        with batch_save_cols[0]:
-            auto_confirm_feedback = st.checkbox(
-                "Auto-confirm on save",
-                value=True,
-                key=f"qa_batch_auto_confirm_{sid}",
-                help="Recommended for test-store validation so retrain picks up new rows immediately.",
-            )
-        with batch_save_cols[1]:
-            batch_confidence = st.slider(
-                "Batch confidence",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.9,
-                step=0.05,
-                key=f"qa_batch_conf_{sid}",
-            )
-        with batch_save_cols[2]:
-            rerun_after_save = st.checkbox(
-                "Re-run full analysis after save (slower)",
-                value=False,
-                key=f"qa_batch_rerun_after_save_{sid}",
-                help="Keep off for fast save. Turn on only when you need immediate full export refresh.",
-            )
+        auto_confirm_feedback = bool(cfg_auto_confirm)
+        batch_confidence = float(cfg_batch_confidence)
+        rerun_after_save = bool(cfg_rerun_after_save)
+        pending_retrain_rows = 0
+        retrain_key = f"qa_last_retrain_feedback_id__{sid}"
+        try:
+            last_retrain_feedback_id = int(str(runtime_settings.get(retrain_key, "0") or "0"))
+        except Exception:
+            last_retrain_feedback_id = 0
+        confirmed_rows_for_store = [r for r in existing_feedback_rows if str(r.get("review_status", "")).strip().lower() == "confirmed"]
+        pending_retrain_rows = len([r for r in confirmed_rows_for_store if int(r.get("id", 0) or 0) > last_retrain_feedback_id])
+        st.caption(
+            f"Pending retrain rows: {pending_retrain_rows} | "
+            f"Retrain min rows: {cfg_retrain_min_rows} | "
+            f"Next scheduler run: {str(runtime_settings.get('cfg_scheduler_next_run_at', '') or 'Not scheduled')}"
+        )
         try:
             edited_batch_df = st.data_editor(
                 batch_rows[editor_columns],
@@ -3055,6 +3149,199 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             if bool(rerun_after_save):
                 st.session_state["force_rerun_analysis"] = True
             st.rerun()
+
+    st.markdown("**Review Workspace**")
+    feedback_rows = list_qa_feedback(
+        db_path=db_path,
+        store_id=sid,
+        review_status=None,
+        limit=5000,
+    )
+    feedback_df = pd.DataFrame(feedback_rows)
+    if feedback_df.empty:
+        st.info("No feedback rows yet. Use Pending Review table above and click Save.")
+        return
+
+    feedback_df["review_status"] = feedback_df["review_status"].astype(str).str.lower()
+    feedback_df["predicted_label"] = feedback_df["predicted_label"].map(_label_to_display)
+    feedback_df["corrected_label"] = feedback_df["corrected_label"].map(_label_to_display)
+    feedback_df["image_name"] = feedback_df["filename"].astype(str)
+    feedback_df["drive_link"] = feedback_df["drive_link"].map(_valid_link_or_empty)
+    image_lookup = {
+        (
+            str(r.get("capture_date", "") or "").strip(),
+            str(r.get("camera_id", "") or "").strip(),
+            str(r.get("filename", "") or "").strip(),
+        ): r
+        for _, r in image_df.iterrows()
+    }
+    feedback_df["thumbnail"] = feedback_df.apply(
+        lambda r: _preview_uri_cached(
+            image_lookup.get(
+                (
+                    str(r.get("capture_date", "") or "").strip(),
+                    str(r.get("camera_id", "") or "").strip(),
+                    str(r.get("filename", "") or "").strip(),
+                ),
+                pd.Series(dtype=object),
+            )
+        )
+        if (
+            str(r.get("capture_date", "") or "").strip(),
+            str(r.get("camera_id", "") or "").strip(),
+            str(r.get("filename", "") or "").strip(),
+        ) in image_lookup
+        else "",
+        axis=1,
+    )
+
+    pending_df = feedback_df[feedback_df["review_status"] == "pending"].copy()
+    history_df = feedback_df[feedback_df["review_status"].isin(["confirmed", "rejected"])].copy()
+
+    settings = _ensure_config_defaults(db_path)
+    retrain_key = f"qa_last_retrain_feedback_id__{sid}"
+    try:
+        last_retrain_feedback_id = int(str(settings.get(retrain_key, "0") or "0"))
+    except Exception:
+        last_retrain_feedback_id = 0
+    confirmed_df = feedback_df[feedback_df["review_status"] == "confirmed"].copy()
+    pending_retrain_rows = int(
+        len(
+            confirmed_df[
+                pd.to_numeric(confirmed_df.get("id", 0), errors="coerce").fillna(0).astype(int) > int(last_retrain_feedback_id)
+            ]
+        )
+    )
+    retrain_min_rows = _setting_int(settings, "cfg_retrain_min_rows", 10, minimum=1, maximum=100000)
+    next_run_dt = _parse_iso_utc(settings.get("cfg_scheduler_next_run_at", ""))
+    next_run_label = next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "Not scheduled"
+    active_model_key = f"qa_active_model_id__{sid}"
+    active_model_id = str(settings.get(active_model_key, "baseline_rules_v1") or "baseline_rules_v1")
+
+    center_cols = st.columns(5)
+    center_cols[0].metric("Current Model", active_model_id)
+    center_cols[1].metric("Last Retrain Marker", int(last_retrain_feedback_id))
+    center_cols[2].metric("Pending Retrain Rows", int(pending_retrain_rows))
+    center_cols[3].metric("Retrain Eligible", "YES" if pending_retrain_rows >= retrain_min_rows else "NO")
+    center_cols[4].metric("Next Scheduler Run", next_run_label)
+
+    tabs = st.tabs(["Pending Review", "Review History"])
+    with tabs[0]:
+        st.caption("Rows awaiting reviewer confirmation.")
+        if pending_df.empty:
+            st.success("No pending rows. New saved feedback is auto-confirmed as per Config.")
+        else:
+            try:
+                st.dataframe(
+                    pending_df[
+                        [
+                            "thumbnail",
+                            "image_name",
+                            "camera_id",
+                            "track_id",
+                            "predicted_label",
+                            "corrected_label",
+                            "confidence",
+                            "comment",
+                            "drive_link",
+                            "created_at",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=280,
+                    column_config={
+                        "thumbnail": st.column_config.ImageColumn("Thumbnail"),
+                        "drive_link": st.column_config.LinkColumn("Drive Link", display_text="Open"),
+                    },
+                )
+            except Exception:
+                st.dataframe(pending_df, use_container_width=True, hide_index=True, height=280)
+
+    with tabs[1]:
+        st.caption("Confirmed/rejected history. Select one row to edit.")
+        if history_df.empty:
+            st.info("No review history yet.")
+        else:
+            try:
+                st.dataframe(
+                    history_df[
+                        [
+                            "thumbnail",
+                            "image_name",
+                            "camera_id",
+                            "track_id",
+                            "review_status",
+                            "predicted_label",
+                            "corrected_label",
+                            "confidence",
+                            "comment",
+                            "drive_link",
+                            "reviewed_at",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=300,
+                    column_config={
+                        "thumbnail": st.column_config.ImageColumn("Thumbnail"),
+                        "drive_link": st.column_config.LinkColumn("Drive Link", display_text="Open"),
+                    },
+                )
+            except Exception:
+                st.dataframe(history_df, use_container_width=True, hide_index=True, height=300)
+
+            history_df = history_df.copy()
+            history_df["edit_label"] = history_df.apply(
+                lambda r: f"✎ #{int(r.get('id', 0))} | {str(r.get('image_name', ''))} | {str(r.get('corrected_label', ''))}",
+                axis=1,
+            )
+            selected_edit = st.selectbox(
+                "Edit History Row",
+                options=history_df["edit_label"].tolist(),
+                key=f"qa_feedback_edit_selector_{sid}",
+            )
+            edit_row = history_df[history_df["edit_label"] == selected_edit].iloc[0]
+            current_label = _label_to_display(edit_row.get("corrected_label", ""))
+            if current_label not in FEEDBACK_LABEL_OPTIONS:
+                current_label = "NOT_SURE"
+            h_cols = st.columns([2, 2, 1])
+            with h_cols[0]:
+                edited_label = st.selectbox(
+                    "Edit Feedback Label",
+                    options=FEEDBACK_LABEL_OPTIONS,
+                    index=FEEDBACK_LABEL_OPTIONS.index(current_label),
+                    key=f"qa_feedback_edit_label_{sid}",
+                )
+            with h_cols[1]:
+                edited_comment = st.text_input(
+                    "Edit Comment",
+                    value=str(edit_row.get("comment", "") or ""),
+                    key=f"qa_feedback_edit_comment_{sid}",
+                )
+            with h_cols[2]:
+                edited_confidence = st.slider(
+                    "Edit Confidence",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(pd.to_numeric([edit_row.get("confidence", 0.7)], errors="coerce")[0] or 0.7),
+                    step=0.05,
+                    key=f"qa_feedback_edit_conf_{sid}",
+                )
+            if st.button("Save Edit", key=f"qa_feedback_edit_save_{sid}"):
+                update_qa_feedback_entry(
+                    db_path=db_path,
+                    feedback_id=int(edit_row.get("id", 0) or 0),
+                    corrected_label=_label_to_canonical(edited_label),
+                    comment=str(edited_comment),
+                    confidence=float(edited_confidence),
+                    reviewer_email=(active_email or "system@local"),
+                    review_status=str(edit_row.get("review_status", "confirmed") or "confirmed").strip().lower(),
+                )
+                st.success(f"Feedback #{int(edit_row.get('id', 0) or 0)} updated.")
+                st.rerun()
+
+    return
 
     selector = image_df.head(500).copy()
     selector["row_label"] = selector.apply(
@@ -4860,7 +5147,7 @@ def _render_setup_help() -> None:
 3. `Access > Store Access Mapping`: map CM/AM emails to stores.
 4. `Access > Password Manager`: set final passwords.
 5. `Access > Bulk Access Upload`: use CSV for large updates.
-6. `Access > Pipeline Configuration`: run analysis and export updates.
+6. `Access > Config`: run analysis and export updates.
 
 ### Quick Hints
 - `manager_type=store_user` uses `store_id` or first value from `store_ids`.
@@ -4914,9 +5201,336 @@ def _confidence_help_text(conf: float) -> str:
     return f"{pct}%: Very strict; use only for clean close-range views."
 
 
+def _run_scheduler_cycle(
+    *,
+    db_path: Path,
+    root_dir: Path,
+    out_dir: Path,
+    employee_assets_root: Path,
+    conf_threshold: float,
+    detector_type: str,
+    time_bucket_minutes: int,
+    bounce_threshold_sec: int,
+    session_gap_sec: int,
+    session_timeout_sec: int,
+    capture_date_filter: date | None,
+    enable_age_gender: bool,
+    write_gzip_exports: bool,
+    keep_plain_csv: bool,
+) -> tuple[AnalysisOutput | None, dict[str, object]]:
+    settings = _ensure_config_defaults(db_path)
+    summary: dict[str, object] = {
+        "started_at": datetime.now(tz=timezone.utc).isoformat(),
+        "sync_runs": 0,
+        "sync_ok": 0,
+        "sync_warn": 0,
+        "pending_feedback_rows": 0,
+        "retrain_runs": 0,
+        "retrain_ok": 0,
+        "predict_rerun": False,
+        "message": "",
+    }
+    stores = list_stores(db_path=db_path)
+    scheduler_actor = "scheduler@local"
+
+    if _setting_bool(settings, "cfg_scheduler_task_sync_enabled", True):
+        for store in stores:
+            ok, _ = sync_store_from_drive(store, data_root=root_dir, db_path=db_path)
+            summary["sync_runs"] = int(summary.get("sync_runs", 0)) + 1
+            if ok:
+                summary["sync_ok"] = int(summary.get("sync_ok", 0)) + 1
+            else:
+                summary["sync_warn"] = int(summary.get("sync_warn", 0)) + 1
+
+    if _setting_bool(settings, "cfg_scheduler_task_feedback_enabled", True):
+        pending_rows = list_qa_feedback(db_path=db_path, store_id=None, review_status="pending", limit=200000)
+        summary["pending_feedback_rows"] = int(len(pending_rows))
+
+    if _setting_bool(settings, "cfg_scheduler_task_retrain_enabled", True):
+        min_rows = _setting_int(settings, "cfg_retrain_min_rows", 10, minimum=1, maximum=100000)
+        for store in stores:
+            ok, _, _ = _feedback_retrain_cycle(
+                db_path=db_path,
+                store_id=store.store_id,
+                actor_email=scheduler_actor,
+                min_new_rows=int(min_rows),
+                force_retrain=False,
+            )
+            summary["retrain_runs"] = int(summary.get("retrain_runs", 0)) + 1
+            if ok:
+                summary["retrain_ok"] = int(summary.get("retrain_ok", 0)) + 1
+
+    output: AnalysisOutput | None = None
+    if _setting_bool(settings, "cfg_scheduler_task_predict_enabled", True):
+        cfg_map_obj = camera_config_map(db_path=db_path)
+        cfg_map = {
+            sid: {
+                cid: {
+                    "camera_role": cfg.camera_role,
+                    "location_name": cfg.location_name,
+                    "floor_name": getattr(cfg, "floor_name", ""),
+                    "entry_line_x": cfg.entry_line_x,
+                    "entry_direction": cfg.entry_direction,
+                }
+                for cid, cfg in cams.items()
+            }
+            for sid, cams in cfg_map_obj.items()
+        }
+        output = _run_analysis(
+            root_dir=root_dir,
+            out_dir=out_dir,
+            employee_assets_root=employee_assets_root,
+            conf_threshold=float(conf_threshold),
+            detector_type=str(detector_type),
+            time_bucket_minutes=int(time_bucket_minutes),
+            bounce_threshold_sec=int(bounce_threshold_sec),
+            session_gap_sec=int(session_gap_sec),
+            write_gzip_exports=bool(write_gzip_exports),
+            keep_plain_csv=bool(keep_plain_csv),
+            camera_configs_by_store=cfg_map,
+            max_images_per_store=0,
+            store_filter=None,
+            capture_date_filter=capture_date_filter,
+            session_timeout_sec=int(session_timeout_sec),
+            enable_age_gender=bool(enable_age_gender),
+            export_pilot_store_id="",
+            export_pilot_date=capture_date_filter.isoformat() if capture_date_filter else "",
+            false_positive_signatures_by_store=_false_positive_signature_map(db_path=db_path),
+        )
+        summary["predict_rerun"] = True
+    summary["ended_at"] = datetime.now(tz=timezone.utc).isoformat()
+    summary["message"] = (
+        f"sync_ok={summary['sync_ok']}/{summary['sync_runs']}, "
+        f"pending_feedback={summary['pending_feedback_rows']}, "
+        f"retrain_ok={summary['retrain_ok']}/{summary['retrain_runs']}, "
+        f"predict_rerun={summary['predict_rerun']}"
+    )
+    return output, summary
+
+
 def _render_pipeline_configuration_controls(db_path: Path) -> bool:
-    st.subheader("Pipeline Configuration")
-    st.caption("Simple controls for run mode, source scope, and analysis behavior.")
+    st.subheader("Config")
+    st.caption("Single place for all run, feedback, retrain, scheduler, sync, detection, and UI settings.")
+    settings = _ensure_config_defaults(db_path)
+    min_interval = _scheduler_min_interval_minutes(settings)
+    current_interval = _setting_int(settings, "cfg_scheduler_interval_minutes", 30, minimum=1, maximum=1440)
+    if current_interval < min_interval:
+        current_interval = int(min_interval)
+        upsert_app_settings(db_path=db_path, settings={"cfg_scheduler_interval_minutes": str(current_interval)})
+        settings = _ensure_config_defaults(db_path)
+
+    config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Detection", "UI"]
+    discover_cols = st.columns([2, 2, 3])
+    selected_module = discover_cols[0].selectbox(
+        "Config Module",
+        options=config_modules,
+        index=0,
+        key="cfg_module_select",
+    )
+    module_search = discover_cols[1].text_input(
+        "Search Setting",
+        value="",
+        key="cfg_module_search",
+        placeholder="e.g. scheduler, feedback, confidence",
+    ).strip().lower()
+    discover_cols[2].caption(
+        "Each setting shows meaning, impact, recommended value, and editability. "
+        "Scheduler minimum interval is auto-protected."
+    )
+
+    show_all_modules = not module_search
+
+    def _show_module(name: str) -> bool:
+        if show_all_modules:
+            return selected_module == name
+        return module_search in name.lower()
+
+    if _show_module("Feedback"):
+        with st.expander("Feedback Settings", expanded=True):
+            st.caption("Meaning: controls how feedback is captured from Frame Review.")
+            f_cols = st.columns([1, 1, 1])
+            feedback_auto_confirm = f_cols[0].toggle(
+                "Auto-confirm on Save",
+                value=_setting_bool(settings, "cfg_feedback_auto_confirm", True),
+                help="Recommended: ON. Impact: saved feedback directly becomes retrain-eligible; no extra approve step.",
+                key="cfg_feedback_auto_confirm_toggle",
+            )
+            feedback_fast_edit = f_cols[1].toggle(
+                "Fast Edit Mode",
+                value=_setting_bool(settings, "cfg_feedback_fast_edit_mode", True),
+                help="Recommended: ON. Impact: faster table edits by hiding thumbnails in pending table.",
+                key="cfg_feedback_fast_edit_toggle",
+            )
+            feedback_hide_reviewed = f_cols[2].toggle(
+                "Hide Reviewed Rows",
+                value=_setting_bool(settings, "cfg_feedback_hide_reviewed", True),
+                help="Recommended: ON. Impact: rows already reviewed disappear from Pending tab.",
+                key="cfg_feedback_hide_reviewed_toggle",
+            )
+            f2_cols = st.columns([1, 1, 2])
+            feedback_confidence = f2_cols[0].slider(
+                "Default Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                value=float(_setting_float(settings, "cfg_feedback_batch_confidence", 0.9, minimum=0.0, maximum=1.0)),
+                key="cfg_feedback_batch_conf_slider",
+                help="Recommended: 0.90. Impact: default confidence for batch feedback rows.",
+            )
+            feedback_rerun = f2_cols[1].toggle(
+                "Re-run Analysis After Save",
+                value=_setting_bool(settings, "cfg_feedback_rerun_after_save", False),
+                help="Recommended: OFF for speed. ON gives immediate full refresh but slower save.",
+                key="cfg_feedback_rerun_toggle",
+            )
+            f2_cols[2].markdown(
+                "**Editable**: Yes  \n"
+                "**Manual Entry**: Confidence is manual; toggles are operational switches."
+            )
+            if st.button("Save Feedback Settings", key="cfg_save_feedback"):
+                upsert_app_settings(
+                    db_path=db_path,
+                    settings={
+                        "cfg_feedback_auto_confirm": "1" if feedback_auto_confirm else "0",
+                        "cfg_feedback_fast_edit_mode": "1" if feedback_fast_edit else "0",
+                        "cfg_feedback_hide_reviewed": "1" if feedback_hide_reviewed else "0",
+                        "cfg_feedback_batch_confidence": f"{float(feedback_confidence):.2f}",
+                        "cfg_feedback_rerun_after_save": "1" if feedback_rerun else "0",
+                    },
+                )
+                st.success("Feedback settings saved.")
+
+    if _show_module("Retrain"):
+        with st.expander("Retrain Settings", expanded=(selected_module == "Retrain")):
+            st.caption("Meaning: controls retrain eligibility thresholds.")
+            r_cols = st.columns([1, 2])
+            retrain_min_rows = r_cols[0].number_input(
+                "Minimum New Feedback Rows",
+                min_value=1,
+                max_value=100000,
+                step=1,
+                value=int(_setting_int(settings, "cfg_retrain_min_rows", 10, minimum=1, maximum=100000)),
+                key="cfg_retrain_min_rows_input",
+                help="Recommended: 10. Impact: retrain only runs after this many new confirmed rows.",
+            )
+            pending_confirmed = len(list_qa_feedback(db_path=db_path, store_id=None, review_status="confirmed", limit=200000))
+            r_cols[1].markdown(
+                f"**Current confirmed feedback rows**: `{pending_confirmed}`  \n"
+                f"**Recommended**: `10` for frequent iteration.  \n"
+                "**Editable**: Yes"
+            )
+            if st.button("Save Retrain Settings", key="cfg_save_retrain"):
+                upsert_app_settings(db_path=db_path, settings={"cfg_retrain_min_rows": str(int(retrain_min_rows))})
+                st.success("Retrain settings saved.")
+
+    if _show_module("Scheduler"):
+        with st.expander("Scheduler Settings", expanded=(selected_module == "Scheduler")):
+            st.caption("Meaning: always-on queue runner executes sync/feedback/retrain/prediction cycles.")
+            s_cols = st.columns([1, 1, 1])
+            scheduler_enabled = s_cols[0].toggle(
+                "Enable Scheduler",
+                value=_setting_bool(settings, "cfg_scheduler_enabled", True),
+                key="cfg_scheduler_enabled_toggle",
+                help="Recommended: ON. Impact: automatic queue execution every interval.",
+            )
+            scheduler_interval = s_cols[1].number_input(
+                "Interval (minutes)",
+                min_value=int(min_interval),
+                max_value=1440,
+                step=1,
+                value=int(max(current_interval, min_interval)),
+                key="cfg_scheduler_interval_input",
+                help="Minimum is auto-calculated from enabled task times + buffer.",
+            )
+            scheduler_buffer = s_cols[2].number_input(
+                "Buffer (minutes)",
+                min_value=0,
+                max_value=120,
+                step=1,
+                value=int(_setting_int(settings, "cfg_scheduler_buffer_minutes", 5, minimum=0, maximum=120)),
+                key="cfg_scheduler_buffer_input",
+                help="Recommended: 5. Impact: safety gap to prevent overlapping runs.",
+            )
+            t_cols = st.columns(5)
+            task_settings = [
+                ("sync", "Sync", "cfg_scheduler_task_sync_enabled", "cfg_scheduler_est_sync_minutes"),
+                ("feedback", "Feedback Queue", "cfg_scheduler_task_feedback_enabled", "cfg_scheduler_est_feedback_minutes"),
+                ("retrain", "Retrain", "cfg_scheduler_task_retrain_enabled", "cfg_scheduler_est_retrain_minutes"),
+                ("predict", "Predictions", "cfg_scheduler_task_predict_enabled", "cfg_scheduler_est_predict_minutes"),
+                ("refresh", "Refresh Output", "cfg_scheduler_task_refresh_enabled", "cfg_scheduler_est_refresh_minutes"),
+            ]
+            scheduler_payload: dict[str, str] = {}
+            for idx, (_slug, title, enabled_key, est_key) in enumerate(task_settings):
+                enabled_value = t_cols[idx].toggle(
+                    title,
+                    value=_setting_bool(settings, enabled_key, True),
+                    key=f"{enabled_key}_toggle",
+                )
+                est_value = t_cols[idx].number_input(
+                    f"{title} est (min)",
+                    min_value=1,
+                    max_value=180,
+                    step=1,
+                    value=int(_setting_int(settings, est_key, 2, minimum=1, maximum=180)),
+                    key=f"{est_key}_input",
+                )
+                scheduler_payload[enabled_key] = "1" if enabled_value else "0"
+                scheduler_payload[est_key] = str(int(est_value))
+            tmp_settings = dict(settings)
+            tmp_settings.update(scheduler_payload)
+            tmp_settings["cfg_scheduler_buffer_minutes"] = str(int(scheduler_buffer))
+            recalculated_min = _scheduler_min_interval_minutes(tmp_settings)
+            next_run_dt = _parse_iso_utc(settings.get("cfg_scheduler_next_run_at", ""))
+            next_run_label = next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "Not scheduled yet"
+            st.caption(
+                f"Minimum Allowed Interval: `{recalculated_min} min` | "
+                f"Current Interval: `{max(int(scheduler_interval), recalculated_min)} min` | "
+                f"Next Run: `{next_run_label}`"
+            )
+            if st.button("Save Scheduler Settings", key="cfg_save_scheduler"):
+                scheduler_payload.update(
+                    {
+                        "cfg_scheduler_enabled": "1" if scheduler_enabled else "0",
+                        "cfg_scheduler_buffer_minutes": str(int(scheduler_buffer)),
+                        "cfg_scheduler_interval_minutes": str(int(max(int(scheduler_interval), recalculated_min))),
+                    }
+                )
+                upsert_app_settings(db_path=db_path, settings=scheduler_payload)
+                st.success("Scheduler settings saved.")
+
+    if _show_module("Sync"):
+        with st.expander("Sync Settings", expanded=(selected_module == "Sync")):
+            st.caption("Meaning: source refresh behavior before/after analysis or mapping save.")
+            s_cols = st.columns([1, 1, 2])
+            auto_sync_linked = s_cols[0].toggle(
+                "Auto-Sync Sources",
+                value=bool(st.session_state.get("ctrl_auto_sync_linked_drives", True)),
+                key="cfg_sync_auto_linked",
+                help="Recommended: ON. Impact: pulls latest source files before analysis.",
+            )
+            auto_sync_on_save = s_cols[1].toggle(
+                "Auto-Sync On Save",
+                value=bool(st.session_state.get("ctrl_auto_sync_on_save", False)),
+                key="cfg_sync_auto_on_save",
+                help="Recommended: OFF during bulk edits. ON for immediate sync on mapping save.",
+            )
+            s_cols[2].markdown("**Editable**: Yes  \n**Manual Entry**: toggle switches only.")
+            st.session_state["ctrl_auto_sync_linked_drives"] = bool(auto_sync_linked)
+            st.session_state["ctrl_auto_sync_on_save"] = bool(auto_sync_on_save)
+
+    if _show_module("Detection"):
+        with st.expander("Detection Settings", expanded=(selected_module == "Detection")):
+            st.caption("Meaning: detector, confidence, and runtime thresholds. Use Run controls below.")
+            st.info("Detection settings are managed in the run controls form below for immediate apply behavior.")
+
+    if _show_module("UI"):
+        with st.expander("UI Settings", expanded=(selected_module == "UI")):
+            st.caption("Meaning: dashboard experience controls.")
+            st.markdown(
+                "- `Fast Edit Mode`: better responsiveness in feedback tables.\n"
+                "- `Hide Reviewed Rows`: cleaner Pending view.\n"
+                "- `Re-run Analysis After Save`: immediate refresh vs speed."
+            )
     bounce_options = [30, 60, 90, 120, 180, 240, 300]
     session_options = [10, 20, 30, 45, 60, 90, 120]
     timeout_options = [60, 120, 180, 240, 300, 600]
@@ -5219,7 +5833,7 @@ def main() -> None:
         st.query_params["auth"] = auth_token
 
     rerun_clicked = False
-    if current_page == "Pipeline Configuration":
+    if current_page == "Config":
         rerun_clicked = _render_pipeline_configuration_controls(db_path=db_path)
     if bool(st.session_state.pop("force_rerun_analysis", False)):
         rerun_clicked = True
@@ -5253,6 +5867,65 @@ def main() -> None:
     keep_plain_csv = bool(st.session_state["ctrl_keep_plain_csv"])
     auto_sync_linked_drives = bool(st.session_state["ctrl_auto_sync_linked_drives"])
     auto_sync_on_save = bool(st.session_state["ctrl_auto_sync_on_save"])
+
+    scheduler_settings = _ensure_config_defaults(db_path)
+    scheduler_enabled = _setting_bool(scheduler_settings, "cfg_scheduler_enabled", True)
+    scheduler_min_interval = _scheduler_min_interval_minutes(scheduler_settings)
+    scheduler_interval = _setting_int(
+        scheduler_settings,
+        "cfg_scheduler_interval_minutes",
+        30,
+        minimum=scheduler_min_interval,
+        maximum=1440,
+    )
+    if scheduler_interval != _setting_int(scheduler_settings, "cfg_scheduler_interval_minutes", 30, minimum=1, maximum=1440):
+        upsert_app_settings(db_path=db_path, settings={"cfg_scheduler_interval_minutes": str(int(scheduler_interval))})
+        scheduler_settings = _ensure_config_defaults(db_path)
+
+    next_run_dt = _parse_iso_utc(scheduler_settings.get("cfg_scheduler_next_run_at", ""))
+    now_utc = datetime.now(tz=timezone.utc)
+    scheduler_due = bool(scheduler_enabled and (next_run_dt is None or now_utc >= next_run_dt))
+    st.session_state["scheduler_next_run_at"] = next_run_dt.isoformat() if next_run_dt else ""
+    st.session_state["scheduler_interval_minutes"] = int(scheduler_interval)
+    st.session_state["scheduler_min_interval_minutes"] = int(scheduler_min_interval)
+    if scheduler_due and not bool(st.session_state.get("_scheduler_running", False)):
+        st.session_state["_scheduler_running"] = True
+        try:
+            with st.spinner("Scheduler cycle running..."):
+                scheduler_output, scheduler_summary = _run_scheduler_cycle(
+                    db_path=db_path,
+                    root_dir=root_dir,
+                    out_dir=out_dir,
+                    employee_assets_root=employee_assets_root,
+                    conf_threshold=conf_threshold,
+                    detector_type=detector_type,
+                    time_bucket_minutes=time_bucket_minutes,
+                    bounce_threshold_sec=bounce_threshold_sec,
+                    session_gap_sec=session_gap_sec,
+                    session_timeout_sec=session_timeout_sec,
+                    capture_date_filter=capture_date_filter,
+                    enable_age_gender=enable_age_gender,
+                    write_gzip_exports=write_gzip_exports,
+                    keep_plain_csv=keep_plain_csv,
+                )
+            next_run_after = datetime.now(tz=timezone.utc) + timedelta(minutes=int(scheduler_interval))
+            upsert_app_settings(
+                db_path=db_path,
+                settings={
+                    "cfg_scheduler_last_run_at": datetime.now(tz=timezone.utc).isoformat(),
+                    "cfg_scheduler_next_run_at": next_run_after.isoformat(),
+                    "cfg_scheduler_last_summary_json": json.dumps(scheduler_summary, separators=(",", ":")),
+                },
+            )
+            st.session_state["scheduler_last_summary"] = scheduler_summary
+            st.session_state["scheduler_next_run_at"] = next_run_after.isoformat()
+            if scheduler_output is not None:
+                st.session_state["analysis_output"] = scheduler_output
+                st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
+                output = scheduler_output
+        finally:
+            st.session_state["_scheduler_running"] = False
+
     st.caption("Live mode: full-folder scan is always enabled.")
 
     if rerun_clicked:
@@ -5422,7 +6095,7 @@ def main() -> None:
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
-    if current_page == "Pipeline Configuration":
+    if current_page == "Config":
         st.caption("Use the configuration form above to run analysis.")
     elif current_page == "Overview":
         _render_overview(view_output)

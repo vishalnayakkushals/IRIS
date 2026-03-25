@@ -54,6 +54,20 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Refactored Access configuration UX by renaming `Pipeline Configuration` to `Config` and adding module-wise setting sections (`Feedback`, `Retrain`, `Scheduler`, `Sync`, `Detection`, `UI`) with searchable discovery and plain-language guidance.
+  - Wired Frame Review feedback behavior to Config settings (auto-confirm, confidence, fast edit, hide reviewed, rerun-after-save), added visible `Pending retrain rows` indicator near save, and improved reviewed-row hiding using track-level feedback state.
+  - Simplified Review area to `Pending Review` and `Review History` workspace with thumbnails, editable history rows, and retrain/scheduler status cards; removed confusing legacy feedback queue/forms from visible path.
+  - Added in-app scheduler cycle orchestration (interval, minimum interval guard from enabled task estimates + buffer, next-run tracking, queue tasks for sync/feedback/retrain/prediction/export refresh).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New app settings keys under `cfg_*` namespace for feedback/retrain/scheduler behavior.
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Improved top-10 Frame Review save responsiveness by making full analysis rerun optional on save (default off), avoiding heavy export regeneration on every feedback click.
   - Added `Fast edit mode` (default on) to hide thumbnails and reduce table rendering overhead during dropdown-heavy QA edits.
   - Reduced default visible track columns from 6 to 4 to lower initial grid render cost while keeping expandable track-slot slider for larger frames.
