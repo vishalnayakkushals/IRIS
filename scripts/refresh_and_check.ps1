@@ -8,6 +8,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ComposeFile = "deploy/docker-compose.yml"
+$UiService = "iris"
+$SchedulerService = "iris-scheduler"
+$UiContainer = "deploy-iris-1"
+$SchedulerContainer = "deploy-iris-scheduler-1"
 
 function Invoke-Step {
     param(
@@ -40,32 +45,38 @@ if (-not $SkipPull) {
 
 if ($Mode -eq "rebuild") {
     Invoke-Step -Name "Docker Build (iris)" -Action {
-        docker compose -f deploy/docker-compose.yml build iris
+        docker compose -f $ComposeFile build $UiService
         Assert-LastExitCode -Message "docker build failed"
     }
 
-    Invoke-Step -Name "Docker Recreate (iris)" -Action {
-        docker compose -f deploy/docker-compose.yml up -d --no-deps --force-recreate iris
+    Invoke-Step -Name "Docker Recreate (iris + scheduler)" -Action {
+        docker compose -f $ComposeFile up -d --no-deps --force-recreate $UiService $SchedulerService
         Assert-LastExitCode -Message "docker up failed"
     }
 } else {
-    Invoke-Step -Name "Docker Restart (iris)" -Action {
-        docker restart deploy-iris-1 | Out-Null
+    Invoke-Step -Name "Docker Restart (iris + scheduler)" -Action {
+        docker compose -f $ComposeFile restart $UiService $SchedulerService
         Assert-LastExitCode -Message "docker restart failed"
     }
 }
 
-Invoke-Step -Name "Wait For Container + URL" -Action {
+Invoke-Step -Name "Wait For Containers + URL" -Action {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $isReady = $false
     do {
-        $state = ""
+        $uiState = ""
+        $schedulerState = ""
         try {
-            $state = (docker inspect -f "{{.State.Status}}" deploy-iris-1 2>$null).Trim()
+            $uiState = (docker inspect -f "{{.State.Status}}" $UiContainer 2>$null).Trim()
         } catch {
-            $state = ""
+            $uiState = ""
         }
-        if ($state -eq "running") {
+        try {
+            $schedulerState = (docker inspect -f "{{.State.Status}}" $SchedulerContainer 2>$null).Trim()
+        } catch {
+            $schedulerState = ""
+        }
+        if ($uiState -eq "running" -and $schedulerState -eq "running") {
             try {
                 $resp = Invoke-WebRequest "http://localhost:8765" -UseBasicParsing -TimeoutSec 5
                 if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
@@ -82,21 +93,21 @@ Invoke-Step -Name "Wait For Container + URL" -Action {
     if (-not $isReady) {
         throw "Container did not become ready within $TimeoutSec seconds."
     }
-    Write-Host "Service is ready on http://localhost:8765" -ForegroundColor Green
+    Write-Host "Services are ready on http://localhost:8765" -ForegroundColor Green
 }
 
 Invoke-Step -Name "Container Status" -Action {
-    docker compose -f deploy/docker-compose.yml ps
+    docker compose -f $ComposeFile ps
 }
 
 Invoke-Step -Name "Recent Logs" -Action {
     $sinceSec = [Math]::Max(60, [Math]::Min($TimeoutSec + 60, 900))
-    docker compose -f deploy/docker-compose.yml logs --since="${sinceSec}s" --tail=$LogTail iris
+    docker compose -f $ComposeFile logs --since="${sinceSec}s" --tail=$LogTail $UiService $SchedulerService
 }
 
 Invoke-Step -Name "Quick Error Scan" -Action {
     $sinceSec = [Math]::Max(60, [Math]::Min($TimeoutSec + 60, 900))
-    $logText = docker compose -f deploy/docker-compose.yml logs --since="${sinceSec}s" --tail=$LogTail iris 2>&1 | Out-String
+    $logText = docker compose -f $ComposeFile logs --since="${sinceSec}s" --tail=$LogTail $UiService $SchedulerService 2>&1 | Out-String
     $fatalPatterns = @(
         "Traceback",
         "ModuleNotFoundError",
@@ -118,7 +129,7 @@ Invoke-Step -Name "Quick Error Scan" -Action {
 }
 
 Invoke-Step -Name "SQLite Probe" -Action {
-    docker compose -f deploy/docker-compose.yml exec iris python -c "import sqlite3; p='/app/data/store_registry.db'; conn=sqlite3.connect(p); cur=conn.cursor(); cur.execute('PRAGMA quick_check;'); print('quick_check:', cur.fetchone()[0]); conn.close()"
+    docker compose -f $ComposeFile exec $UiService python -c "import sqlite3; p='/app/data/store_registry.db'; conn=sqlite3.connect(p); cur=conn.cursor(); cur.execute('PRAGMA quick_check;'); print('quick_check:', cur.fetchone()[0]); conn.close()"
     Assert-LastExitCode -Message "SQLite probe failed"
 }
 

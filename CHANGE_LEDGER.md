@@ -55,6 +55,19 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Hardened local refresh automation to include both runtime services (`iris`, `iris-scheduler`) so restart/rebuild no longer leaves scheduler out-of-sync with dashboard code.
+  - Updated readiness checks to wait for both containers plus UI URL before completing, reducing false “stuck” runs.
+  - Expanded log/error scan coverage to include scheduler logs for faster diagnosis when background cycles fail.
+- Changed Paths:
+  - `scripts/refresh_and_check.ps1`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `run_iris.bat` now indirectly refreshes both services through updated PowerShell flow.
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Completed phase-2 cleanup by removing unreachable legacy review/queue UI blocks from `Frame Review` (`_render_qa_timeline`) so only the current `Pending Review` and `Review History` workflow remains.
   - Moved scheduler execution out of Streamlit request cycle: dashboard now only shows scheduler status, while a dedicated worker handles timed queue runs.
   - Added always-on scheduler service (`iris-scheduler`) in Docker Compose, backed by new `scripts/scheduler_worker.py` that enforces minimum interval rules, executes scheduler tasks, and updates `cfg_scheduler_*` run metadata.
