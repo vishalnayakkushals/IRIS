@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-25 | Commit <pending>
+### 2026-03-25 | Commit 27f0fdb
 - Summary:
   - Simplified Frame Review by removing the `Hide frames already reviewed` toggle from the page and enforcing that behavior from `Access > Config > Feedback` only.
   - Removed the inline image-wise validation CSV section/table from Frame Review to reduce clutter and avoid showing non-actionable file paths in UI.
