@@ -83,7 +83,7 @@ def _sqlite_connect(db_path: Path, timeout: float = 30.0, retries: int = 6) -> s
     for attempt in range(1, max(1, int(retries)) + 1):
         try:
             conn = sqlite3.connect(db_path, timeout=float(timeout))
-            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA busy_timeout=30000")
             return conn
         except sqlite3.OperationalError as exc:
             last_error = exc
@@ -450,7 +450,17 @@ def init_db(db_path: Path) -> None:
         if "drive_link" not in qa_feedback_cols:
             conn.execute("ALTER TABLE qa_feedback ADD COLUMN drive_link TEXT NOT NULL DEFAULT ''")
         _seed_defaults(conn)
-        conn.commit()
+        for commit_attempt in range(1, 8):
+            try:
+                conn.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                text = str(exc).lower()
+                transient = any(token in text for token in _SQLITE_TRANSIENT_ERRORS)
+                if transient and commit_attempt < 7:
+                    time.sleep(0.2 * commit_attempt)
+                    continue
+                raise
     finally:
         conn.close()
 

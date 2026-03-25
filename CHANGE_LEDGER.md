@@ -55,6 +55,18 @@ Use this template for each new change:
 
 ### 2026-03-25 | Commit <pending>
 - Summary:
+  - Fixed startup `sqlite3.OperationalError: database is locked` race between UI and scheduler services by hardening DB lock handling during schema/init commit.
+  - Increased SQLite busy timeout window and added transient-lock retry loop around `init_db` commit to absorb short write-lock contention safely.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-03-25 | Commit <pending>
+- Summary:
   - Hardened local refresh automation to include both runtime services (`iris`, `iris-scheduler`) so restart/rebuild no longer leaves scheduler out-of-sync with dashboard code.
   - Updated readiness checks to wait for both containers plus UI URL before completing, reducing false “stuck” runs.
   - Expanded log/error scan coverage to include scheduler logs for faster diagnosis when background cycles fail.
