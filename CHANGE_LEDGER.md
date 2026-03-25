@@ -53,6 +53,20 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-25 | Commit <pending>
+- Summary:
+  - Restored thumbnail previews in Frame Review top-10 validation table by always showing the `Preview` column (independent of fast-edit setting) so feedback can be given with visual context.
+  - Removed the extra frame-level raw data table above top-10 validation grid to reduce clutter in review flow.
+  - Expanded `run_iris.bat` into a broader command wrapper with `restart`, `rebuild`, `status`, `logs`, `start`, `stop`, `scheduler-start`, `scheduler-stop`, `pull`, and `health`.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `run_iris.bat` now supports multiple operational commands from CMD/PowerShell.
+
 ### 2026-03-25 | Commit b99a8eb
 - Summary:
   - Reduced scheduler resource spikes by forcing scheduler-triggered prediction cycles to run in single-process mode (`use_parallel=False`, `use_streaming=False`) while keeping model logic unchanged.

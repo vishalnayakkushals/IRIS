@@ -2811,43 +2811,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             pass
         st.dataframe(accuracy_trend_df, use_container_width=True, hide_index=True, height=220)
 
-    table_cols = [
-        "timestamp",
-        "capture_date",
-        "camera_id",
-        "floor_name",
-        "location_name",
-        "filename",
-        "person_count",
-        "staff_count",
-        "customer_count",
-        "store_day_customer_ids",
-        "predicted_label",
-        "track_ids",
-        "drive_link",
-        "detection_error",
-    ]
-    auth_token = str(st.session_state.get("session_token", "")).strip()
-    preview_df = image_df[table_cols].head(500).copy()
-    preview_df["frame_idx"] = preview_df.index.astype(int)
-    preview_df["frame_link"] = preview_df["frame_idx"].map(
-        lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
-    )
-    preview_df["timestamp"] = preview_df["timestamp"].astype(str)
-    preview_df["predicted_label"] = preview_df["predicted_label"].map(_label_to_display)
-    try:
-        st.dataframe(
-            preview_df,
-            use_container_width=True,
-            height=360,
-            hide_index=True,
-            column_config={
-                "frame_link": st.column_config.LinkColumn("Image Link", display_text="Open"),
-                "drive_link": st.column_config.LinkColumn("Drive Image", display_text="Open")
-            },
-        )
-    except Exception:
-        st.dataframe(preview_df, use_container_width=True, height=360, hide_index=True)
     st.markdown("**Validation Table (Top 10 Frames)**")
     st.caption(
         "Use this single table to review images, assign feedback labels, and save in bulk. "
@@ -2943,10 +2906,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["capture_date"] = df["capture_date"].astype(str)
         df["timestamp"] = df["timestamp"].astype(str)
         df["predicted_label"] = df.apply(_predicted_label, axis=1).map(_label_to_display)
-        if bool(fast_edit_mode):
-            df["preview_image"] = ""
-        else:
-            df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
+        df["preview_image"] = df.apply(_preview_uri_cached, axis=1)
         df["feedback_label"] = df.apply(_feedback_label_default, axis=1).astype(str)
         df["feedback_comment"] = ""
         df["frame_no_customer_label"] = df.apply(
@@ -3065,7 +3025,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         help="Increase this when a frame has more than 4 track IDs.",
     )
     slot_numbers = list(range(1, int(visible_track_slots) + 1))
-    fast_edit_mode = bool(cfg_fast_edit_mode)
     st.caption(
         "Feedback settings are managed in `Access > Config > Feedback`. "
         f"Current: auto_confirm={cfg_auto_confirm}, default_confidence={cfg_batch_confidence:.2f}, "
@@ -3083,27 +3042,23 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             )
             batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
-    editor_columns = ["selected", "capture_date", "camera_id", "filename", "frame_no_customer_label", "feedback_comment", "track_ids"]
-    if not bool(fast_edit_mode):
-        editor_columns.insert(1, "preview_image")
+    editor_columns = ["selected", "preview_image", "capture_date", "camera_id", "filename", "frame_no_customer_label", "feedback_comment", "track_ids"]
     disabled_columns = [
+        "preview_image",
         "capture_date",
         "camera_id",
         "filename",
         "track_ids",
         "drive_link",
     ]
-    if not bool(fast_edit_mode):
-        disabled_columns.insert(0, "preview_image")
     column_config: dict[str, object] = {
         "selected": st.column_config.CheckboxColumn("Select"),
+        "preview_image": st.column_config.ImageColumn("Preview"),
         "frame_no_customer_label": st.column_config.SelectboxColumn("No Customer", options=["", "NO_CUSTOMER"]),
         "feedback_comment": st.column_config.TextColumn("Comment"),
         "track_ids": st.column_config.TextColumn("Track IDs"),
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
     }
-    if not bool(fast_edit_mode):
-        column_config["preview_image"] = st.column_config.ImageColumn("Preview")
     for slot in slot_numbers:
         editor_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_label"])
         disabled_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted"])
