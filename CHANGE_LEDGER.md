@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-26 | Commit <pending>
+### 2026-03-26 | Commit b53abfa
 - Summary:
   - Fixed Pending Review behavior when `Hide Reviewed Rows In Pending` is ON: reviewed top-10 rows now remain hidden instead of being auto-repopulated back into the table.
   - Added clearer save guidance that with `Auto-confirm=ON`, saved rows move directly to `Review History`.
