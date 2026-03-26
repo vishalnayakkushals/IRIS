@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-26 | Commit <pending>
+### 2026-03-26 | Commit 3c55f53
 - Summary:
   - Added `Model Accuracy` page under `Reports > Business Health` with weighted current accuracy KPI, daily trend graph, latest model/store table, queued-for-retrain KPI, and next scheduler run visibility.
   - Added persistent daily accuracy history (`data/exports/current/model_accuracy_history.csv`) generated on each analysis run/scheduler prediction cycle using confirmed+pending feedback comparisons.
