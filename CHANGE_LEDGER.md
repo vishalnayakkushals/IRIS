@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-26 | Commit <pending>
+### 2026-03-26 | Commit 9c0eeb9
 - Summary:
   - Fixed Frame Review crash (`NameError: auth_token`) in top-10 feedback table preparation by removing unused frame-link generation from batch row builder.
   - This restores stable table render, thumbnail preview visibility path, and feedback save interaction (UI no longer aborts before save action).
