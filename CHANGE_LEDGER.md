@@ -53,6 +53,18 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-26 | Commit <pending>
+- Summary:
+  - Fixed Frame Review crash (`NameError: auth_token`) in top-10 feedback table preparation by removing unused frame-link generation from batch row builder.
+  - This restores stable table render, thumbnail preview visibility path, and feedback save interaction (UI no longer aborts before save action).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-26 | Commit b3197ba
 - Summary:
   - Stabilized Frame Review top-10 editor state by versioning form/editor widget keys and clearing legacy state keys after schema changes.

@@ -2899,10 +2899,6 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["staff_flags_list"] = df["staff_flags"].map(
             lambda raw: [bool(x) for x in _safe_json_list(raw)]
         )
-        df["frame_idx"] = df.index.astype(int)
-        df["frame_link"] = df["frame_idx"].map(
-            lambda idx: _frame_review_link(store_id=sid, frame_idx=int(idx), auth_token=auth_token)
-        )
         df["capture_date"] = df["capture_date"].astype(str)
         df["timestamp"] = df["timestamp"].astype(str)
         df["predicted_label"] = df.apply(_predicted_label, axis=1).map(_label_to_display)
