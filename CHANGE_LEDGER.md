@@ -1174,3 +1174,15 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-26 | Commit pending
+- Summary:
+  - Removed the separate `Edit History Row` panel from Review History because it was confusing and not reliable for your workflow.
+  - Kept Review History as a clean read-only audit view and directed all corrections through Pending Review (single-table correction path).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+

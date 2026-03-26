@@ -3774,55 +3774,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             except Exception:
                 st.dataframe(history_df, use_container_width=True, hide_index=True, height=300)
 
-            history_df = history_df.copy()
-            history_df["edit_label"] = history_df.apply(
-                lambda r: f"✎ #{int(r.get('id', 0))} | {str(r.get('image_name', ''))} | {str(r.get('corrected_label', ''))}",
-                axis=1,
+            st.caption(
+                "History is read-only for now. To correct an old row, set `Hide Reviewed Rows In Pending` = OFF "
+                "in Access > Config > Feedback, relabel it in Pending Review, and save."
             )
-            selected_edit = st.selectbox(
-                "Edit History Row",
-                options=history_df["edit_label"].tolist(),
-                key=f"qa_feedback_edit_selector_{sid}",
-            )
-            edit_row = history_df[history_df["edit_label"] == selected_edit].iloc[0]
-            current_label = _label_to_display(edit_row.get("corrected_label", ""))
-            if current_label not in FEEDBACK_LABEL_OPTIONS:
-                current_label = "NOT_SURE"
-            h_cols = st.columns([2, 2, 1])
-            with h_cols[0]:
-                edited_label = st.selectbox(
-                    "Edit Feedback Label",
-                    options=FEEDBACK_LABEL_OPTIONS,
-                    index=FEEDBACK_LABEL_OPTIONS.index(current_label),
-                    key=f"qa_feedback_edit_label_{sid}",
-                )
-            with h_cols[1]:
-                edited_comment = st.text_input(
-                    "Edit Comment",
-                    value=str(edit_row.get("comment", "") or ""),
-                    key=f"qa_feedback_edit_comment_{sid}",
-                )
-            with h_cols[2]:
-                edited_confidence = st.slider(
-                    "Edit Confidence",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=float(pd.to_numeric([edit_row.get("confidence", 0.7)], errors="coerce")[0] or 0.7),
-                    step=0.05,
-                    key=f"qa_feedback_edit_conf_{sid}",
-                )
-            if st.button("Save Edit", key=f"qa_feedback_edit_save_{sid}"):
-                update_qa_feedback_entry(
-                    db_path=db_path,
-                    feedback_id=int(edit_row.get("id", 0) or 0),
-                    corrected_label=_label_to_canonical(edited_label),
-                    comment=str(edited_comment),
-                    confidence=float(edited_confidence),
-                    reviewer_email=(active_email or "system@local"),
-                    review_status=str(edit_row.get("review_status", "confirmed") or "confirmed").strip().lower(),
-                )
-                st.success(f"Feedback #{int(edit_row.get('id', 0) or 0)} updated.")
-                st.rerun()
 
     return
 
