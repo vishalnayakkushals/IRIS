@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-26 | Commit <pending>
+### 2026-03-26 | Commit b3197ba
 - Summary:
   - Stabilized Frame Review top-10 editor state by versioning form/editor widget keys and clearing legacy state keys after schema changes.
   - This restores thumbnail preview visibility in the validation grid for users carrying old session-state schema.
