@@ -2011,6 +2011,19 @@ FEEDBACK_LABEL_OPTIONS = [
 TRACK_FEEDBACK_OPTIONS = [""] + FEEDBACK_LABEL_OPTIONS
 
 
+def _normalize_capture_date_key(raw: object) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.notna(parsed):
+        return str(parsed.date())
+    parsed_dayfirst = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.notna(parsed_dayfirst):
+        return str(parsed_dayfirst.date())
+    return text
+
+
 def _feedback_label_default(row: pd.Series) -> str:
     predicted = str(_predicted_label(row)).strip().lower()
     event_label = str(row.get("event_label", "") or "").strip().upper()
@@ -2079,7 +2092,7 @@ def _build_feedback_accuracy_report(
     feedback_df["review_status"] = feedback_df.get("review_status", "").astype(str).str.lower()
     image_lookup = {
         (
-            str(r.get("capture_date", "") or "").strip(),
+            _normalize_capture_date_key(r.get("capture_date", "")),
             str(r.get("camera_id", "") or "").strip(),
             str(r.get("filename", "") or "").strip(),
         ): r
@@ -2088,7 +2101,7 @@ def _build_feedback_accuracy_report(
 
     def _resolved_predicted_label(row: pd.Series) -> str:
         key = (
-            str(row.get("capture_date", "") or "").strip(),
+            _normalize_capture_date_key(row.get("capture_date", "")),
             str(row.get("camera_id", "") or "").strip(),
             str(row.get("filename", "") or "").strip(),
         )
@@ -2945,6 +2958,16 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     if save_notice:
         st.info(save_notice)
 
+    def _frame_key(capture_date: object, camera_id: object, filename: object) -> tuple[str, str, str]:
+        return (
+            _normalize_capture_date_key(capture_date),
+            str(camera_id or "").strip(),
+            str(filename or "").strip(),
+        )
+
+    def _track_key(capture_date: object, camera_id: object, filename: object, track_id: object) -> tuple[str, str, str, str]:
+        return (*_frame_key(capture_date, camera_id, filename), str(track_id or "").strip())
+
     image_df = image_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
     image_df["predicted_label"] = image_df.apply(_predicted_label, axis=1)
     image_df["track_count"] = image_df["track_ids"].map(lambda x: len(_safe_json_list(x)))
@@ -3028,10 +3051,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         key=lambda r: int(r.get("id", 0) or 0),
         reverse=True,
     ):
-        key = (
-            str(feedback_row.get("capture_date", "") or "").strip(),
-            str(feedback_row.get("camera_id", "") or "").strip(),
-            str(feedback_row.get("filename", "") or "").strip(),
+        key = _frame_key(
+            feedback_row.get("capture_date", ""),
+            feedback_row.get("camera_id", ""),
+            feedback_row.get("filename", ""),
         )
         if key not in latest_feedback_by_key:
             latest_feedback_by_key[key] = feedback_row
@@ -3039,10 +3062,10 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         if not track_id and key not in latest_frame_feedback_by_key:
             latest_frame_feedback_by_key[key] = feedback_row
         if track_id:
-            track_key = (
-                str(feedback_row.get("capture_date", "") or "").strip(),
-                str(feedback_row.get("camera_id", "") or "").strip(),
-                str(feedback_row.get("filename", "") or "").strip(),
+            track_key = _track_key(
+                feedback_row.get("capture_date", ""),
+                feedback_row.get("camera_id", ""),
+                feedback_row.get("filename", ""),
                 track_id,
             )
             if track_key not in latest_track_feedback_by_key:
@@ -3114,11 +3137,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["feedback_status"] = df.apply(
             lambda r: (
                 "reviewed"
-                if (
-                    str(r.get("capture_date", "") or "").strip(),
-                    str(r.get("camera_id", "") or "").strip(),
-                    str(r.get("filename", "") or "").strip(),
-                ) in reviewed_frame_keys
+                if _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")) in reviewed_frame_keys
                 else ""
             ),
             axis=1,
@@ -3126,11 +3145,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         df["last_feedback"] = df.apply(
             lambda r: str(
                 latest_feedback_by_key.get(
-                    (
-                        str(r.get("capture_date", "") or "").strip(),
-                        str(r.get("camera_id", "") or "").strip(),
-                        str(r.get("filename", "") or "").strip(),
-                    ),
+                    _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
                     {},
                 ).get("corrected_label", "")
                 or ""
@@ -3142,11 +3157,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 "NO_CUSTOMER"
                 if _label_to_canonical(
                     latest_frame_feedback_by_key.get(
-                        (
-                            str(r.get("capture_date", "") or "").strip(),
-                            str(r.get("camera_id", "") or "").strip(),
-                            str(r.get("filename", "") or "").strip(),
-                        ),
+                        _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
                         {},
                     ).get("corrected_label", "")
                     or ""
@@ -3185,11 +3196,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 lambda r: (
                     _label_to_display(
                         latest_track_feedback_by_key.get(
-                            (
-                                str(r.get("capture_date", "") or "").strip(),
-                                str(r.get("camera_id", "") or "").strip(),
-                                str(r.get("filename", "") or "").strip(),
-                                str(r.get(f"track_{slot}_id", "") or "").strip(),
+                            _track_key(
+                                r.get("capture_date", ""),
+                                r.get("camera_id", ""),
+                                r.get("filename", ""),
+                                r.get(f"track_{slot}_id", ""),
                             ),
                             {},
                         ).get("corrected_label", "")
@@ -3320,23 +3331,19 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         frame_created = 0
         relearned = 0
         source_lookup = {
-            (
-                str(r.get("capture_date", "") or "").strip(),
-                str(r.get("camera_id", "") or "").strip(),
-                str(r.get("filename", "") or "").strip(),
-            ): r
+            _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")): r
             for _, r in image_df.iterrows()
         }
         for _, row in edited_batch_df.iterrows():
             if not bool(row.get("selected", False)):
                 continue
-            capture_date = str(row.get("capture_date", "") or "").strip()
+            capture_date = _normalize_capture_date_key(row.get("capture_date", ""))
             camera_id = str(row.get("camera_id", "") or "").strip()
             filename = str(row.get("filename", "") or "").strip()
             if not filename:
                 continue
             comment = str(row.get("feedback_comment", "") or "").strip()
-            source_key = (capture_date, camera_id, filename)
+            source_key = _frame_key(capture_date, camera_id, filename)
             source_row = source_lookup.get(source_key)
             if source_row is None:
                 matched = image_df[
@@ -3346,13 +3353,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 if matched.empty:
                     continue
                 source_row = matched.iloc[0]
-                capture_date = str(source_row.get("capture_date", "") or capture_date).strip()
+                capture_date = _normalize_capture_date_key(source_row.get("capture_date", "") or capture_date)
             banner_relearned_for_row = False
             desired_status = "confirmed" if bool(auto_confirm_feedback) else "pending"
             desired_confidence = float(batch_confidence)
             frame_feedback_value = str(row.get("frame_no_customer_label", "") or "").strip().upper()
             if frame_feedback_value == "NO_CUSTOMER":
-                frame_key = (capture_date, camera_id, filename)
+                frame_key = _frame_key(capture_date, camera_id, filename)
                 frame_label_canonical = _label_to_canonical(frame_feedback_value)
                 frame_predicted_canonical = _label_to_canonical(_predicted_label(source_row))
                 existing_frame_feedback = latest_frame_feedback_by_key.get(frame_key)
@@ -3435,7 +3442,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 track_predicted_canonical = _label_to_canonical(str(row.get(f"track_{slot}_predicted", "") or ""))
                 if not track_predicted_canonical:
                     track_predicted_canonical = _label_to_canonical(_predicted_label(source_row))
-                track_key = (capture_date, camera_id, filename, track_id_value)
+                track_key = _track_key(capture_date, camera_id, filename, track_id_value)
                 existing_track_feedback = latest_track_feedback_by_key.get(track_key)
                 existing_track_id = int(existing_track_feedback.get("id", 0) or 0) if isinstance(existing_track_feedback, dict) else 0
                 if existing_track_id > 0:
@@ -3553,34 +3560,34 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         return
 
     feedback_df["review_status"] = feedback_df["review_status"].astype(str).str.lower()
-    feedback_df["predicted_label"] = feedback_df["predicted_label"].map(_label_to_display)
+    def _feedback_predicted_display(row: pd.Series) -> str:
+        key = _frame_key(row.get("capture_date", ""), row.get("camera_id", ""), row.get("filename", ""))
+        track_id = str(row.get("track_id", "") or "").strip()
+        source_row = image_lookup.get(key)
+        if source_row is not None:
+            if track_id:
+                track_pred = _resolve_track_prediction_from_source_row(source_row, track_id=track_id)
+                if track_pred:
+                    return _label_to_display(track_pred)
+            return _label_to_display(_predicted_label(source_row))
+        return _label_to_display(row.get("predicted_label", ""))
+
     feedback_df["corrected_label"] = feedback_df["corrected_label"].map(_label_to_display)
     feedback_df["image_name"] = feedback_df["filename"].astype(str)
     feedback_df["drive_link"] = feedback_df["drive_link"].map(_valid_link_or_empty)
     image_lookup = {
-        (
-            str(r.get("capture_date", "") or "").strip(),
-            str(r.get("camera_id", "") or "").strip(),
-            str(r.get("filename", "") or "").strip(),
-        ): r
+        _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")): r
         for _, r in image_df.iterrows()
     }
+    feedback_df["predicted_label"] = feedback_df.apply(_feedback_predicted_display, axis=1)
     feedback_df["thumbnail"] = feedback_df.apply(
         lambda r: _preview_uri_cached(
             image_lookup.get(
-                (
-                    str(r.get("capture_date", "") or "").strip(),
-                    str(r.get("camera_id", "") or "").strip(),
-                    str(r.get("filename", "") or "").strip(),
-                ),
+                _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
                 pd.Series(dtype=object),
             )
         )
-        if (
-            str(r.get("capture_date", "") or "").strip(),
-            str(r.get("camera_id", "") or "").strip(),
-            str(r.get("filename", "") or "").strip(),
-        ) in image_lookup
+        if _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")) in image_lookup
         else "",
         axis=1,
     )
@@ -3676,10 +3683,69 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 st.dataframe(pending_df, use_container_width=True, hide_index=True, height=280)
 
     with tabs[1]:
-        st.caption("Confirmed/rejected history. Select one row to edit.")
+        st.caption("Confirmed/rejected history. Image-level report first, then detailed row edit.")
         if history_df.empty:
             st.info("No review history yet.")
         else:
+            history_rollup = history_df.copy()
+            history_rollup["track_id"] = history_rollup["track_id"].astype(str).str.strip()
+            history_rollup["track_slot"] = history_rollup["track_id"].apply(
+                lambda t: f"T{t}" if t else "FRAME"
+            )
+            history_rollup["predicted_item"] = history_rollup.apply(
+                lambda r: f"{str(r.get('track_slot', 'FRAME'))}:{str(r.get('predicted_label', '') or '').strip()}",
+                axis=1,
+            )
+            history_rollup["corrected_item"] = history_rollup.apply(
+                lambda r: f"{str(r.get('track_slot', 'FRAME'))}:{str(r.get('corrected_label', '') or '').strip()}",
+                axis=1,
+            )
+            grouped_history = (
+                history_rollup.groupby(
+                    ["capture_date", "camera_id", "image_name", "review_status"],
+                    as_index=False,
+                )
+                .agg(
+                    thumbnail=("thumbnail", "first"),
+                    predicted_feedback=("predicted_item", lambda s: " | ".join([str(x) for x in s if str(x).strip()])),
+                    corrected_feedback=("corrected_item", lambda s: " | ".join([str(x) for x in s if str(x).strip()])),
+                    confidence=("confidence", "max"),
+                    comments=("comment", lambda s: " | ".join(sorted({str(x).strip() for x in s if str(x).strip()}))),
+                    drive_link=("drive_link", "first"),
+                    reviewed_at=("reviewed_at", "max"),
+                )
+                .sort_values(by=["reviewed_at", "capture_date", "camera_id", "image_name"], ascending=[False, False, True, True])
+            )
+            st.markdown("**Image-Level Feedback Report**")
+            try:
+                st.dataframe(
+                    grouped_history[
+                        [
+                            "thumbnail",
+                            "capture_date",
+                            "camera_id",
+                            "image_name",
+                            "review_status",
+                            "predicted_feedback",
+                            "corrected_feedback",
+                            "confidence",
+                            "comments",
+                            "drive_link",
+                            "reviewed_at",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=280,
+                    column_config={
+                        "thumbnail": st.column_config.ImageColumn("Thumbnail"),
+                        "drive_link": st.column_config.LinkColumn("Drive Link", display_text="Open"),
+                    },
+                )
+            except Exception:
+                st.dataframe(grouped_history, use_container_width=True, hide_index=True, height=280)
+
+            st.markdown("**Detailed Feedback Rows**")
             try:
                 st.dataframe(
                     history_df[

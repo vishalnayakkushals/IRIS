@@ -1161,3 +1161,16 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-26 | Commit pending
+- Summary:
+  - Fixed QA feedback history prediction resolution to handle mixed `capture_date` formats (e.g., `YYYY-MM-DD` and `DD-MM-YYYY`) so per-track predicted labels are matched correctly instead of showing stale/`UNKNOWN`.
+  - Normalized frame/track feedback key matching across pending table, save/update flow, retrain-queue lookup, and history rendering for stable feedback visibility.
+  - Added image-level Review History rollup showing combined per-image predicted/corrected track feedback (`Tn:LABEL`) so multi-label feedback is visible in one report row.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
