@@ -53,6 +53,20 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-26 | Commit <pending>
+- Summary:
+  - Added `Model Accuracy` page under `Reports > Business Health` with weighted current accuracy KPI, daily trend graph, latest model/store table, queued-for-retrain KPI, and next scheduler run visibility.
+  - Added persistent daily accuracy history (`data/exports/current/model_accuracy_history.csv`) generated on each analysis run/scheduler prediction cycle using confirmed+pending feedback comparisons.
+  - Improved Frame Review post-save clarity by showing queued retrain + next scheduler run notice and keeping auto-confirm behavior explicit.
+  - Added immediate save feedback guidance banner after rerun (`Queued for retrain: X | Next scheduler run: ...`).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New export artifact: `data/exports/current/model_accuracy_history.csv`.
+
 ### 2026-03-26 | Commit 26e900a
 - Summary:
   - Removed `Detection` and `UI` modules from Access Config module selector to reduce unused settings clutter.

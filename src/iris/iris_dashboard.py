@@ -87,7 +87,7 @@ from iris.store_registry import (
 
 NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Reports": {
-        "Business Health": ["Overview", "Store Detail", "Report Module", "Frame Review", "Customer Journeys"],
+        "Business Health": ["Overview", "Model Accuracy", "Store Detail", "Report Module", "Frame Review", "Customer Journeys"],
     },
     "Access": {
         "Administration": [
@@ -139,6 +139,7 @@ LEGACY_PAGE_ALIAS = {
     "Alert Routes": "Organisation",
     "Quality": "Report Module",
     "QA Timeline": "Frame Review",
+    "Model QA": "Model Accuracy",
 }
 
 PIPELINE_PRESET_DEFAULT = "Full Scan (Dev)"
@@ -772,6 +773,7 @@ def _render_login_gate(db_path: Path) -> None:
 
 
 def _run_analysis(
+    db_path: Path,
     root_dir: Path,
     out_dir: Path,
     employee_assets_root: Path,
@@ -824,7 +826,110 @@ def _run_analysis(
             write_gzip_exports=write_gzip_exports,
             keep_plain_csv=keep_plain_csv,
         )
+    _persist_model_accuracy_snapshot(db_path=db_path, out_dir=out_dir, output=output, source="analysis_run")
     return output
+
+
+def _model_accuracy_history_path(out_dir: Path) -> Path:
+    return out_dir / "model_accuracy_history.csv"
+
+
+def _pending_retrain_rows_for_store(db_path: Path, store_id: str, settings: dict[str, str]) -> int:
+    retrain_key = f"qa_last_retrain_feedback_id__{store_id}"
+    try:
+        last_retrain_feedback_id = int(str(settings.get(retrain_key, "0") or "0"))
+    except Exception:
+        last_retrain_feedback_id = 0
+    confirmed_rows = list_qa_feedback(db_path=db_path, store_id=store_id, review_status="confirmed", limit=200000)
+    return int(len([r for r in confirmed_rows if int(r.get("id", 0) or 0) > last_retrain_feedback_id]))
+
+
+def _persist_model_accuracy_snapshot(
+    *,
+    db_path: Path,
+    out_dir: Path,
+    output: AnalysisOutput,
+    source: str,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    history_path = _model_accuracy_history_path(out_dir=out_dir)
+    settings = get_app_settings(db_path)
+    now_utc = datetime.now(tz=timezone.utc)
+    snapshot_date = now_utc.date().isoformat()
+    rows: list[dict[str, object]] = []
+    for store_id, result in output.stores.items():
+        feedback_rows = list_qa_feedback(db_path=db_path, store_id=store_id, review_status=None, limit=200000)
+        image_df = _normalize_image_df(result.image_insights)
+        summary, _trend = _build_feedback_accuracy_report(
+            feedback_rows=feedback_rows,
+            image_df=image_df,
+            db_path=db_path,
+            store_id=store_id,
+        )
+        model_key = f"qa_active_model_id__{store_id}"
+        active_model_id = str(settings.get(model_key, "baseline_rules_v1") or "baseline_rules_v1")
+        rows.append(
+            {
+                "snapshot_date": snapshot_date,
+                "snapshot_ts_utc": now_utc.isoformat(),
+                "store_id": store_id,
+                "model_id": active_model_id,
+                "accuracy_pct": float(summary.get("accuracy_pct", 0.0)),
+                "scored_rows": int(summary.get("scored_rows", 0.0)),
+                "matched_rows": int(summary.get("matched_rows", 0.0)),
+                "mismatch_rows": int(summary.get("mismatch_rows", 0.0)),
+                "considered_rows": int(summary.get("considered_rows", 0.0)),
+                "pending_retrain_rows": int(_pending_retrain_rows_for_store(db_path=db_path, store_id=store_id, settings=settings)),
+                "source": str(source or "unknown"),
+            }
+        )
+    if not rows:
+        return history_path
+
+    new_df = pd.DataFrame(rows)
+    if history_path.exists():
+        try:
+            old_df = pd.read_csv(history_path)
+        except Exception:
+            old_df = pd.DataFrame()
+    else:
+        old_df = pd.DataFrame()
+    merged = pd.concat([old_df, new_df], ignore_index=True)
+    key_cols = ["snapshot_date", "store_id", "model_id"]
+    merged = merged.drop_duplicates(subset=key_cols, keep="last")
+    merged = merged.sort_values(by=["snapshot_date", "store_id", "snapshot_ts_utc"], ascending=[True, True, True]).reset_index(drop=True)
+    merged.to_csv(history_path, index=False)
+    return history_path
+
+
+def _load_model_accuracy_history(out_dir: Path) -> pd.DataFrame:
+    history_path = _model_accuracy_history_path(out_dir=out_dir)
+    if not history_path.exists():
+        return pd.DataFrame(
+            columns=[
+                "snapshot_date",
+                "snapshot_ts_utc",
+                "store_id",
+                "model_id",
+                "accuracy_pct",
+                "scored_rows",
+                "matched_rows",
+                "mismatch_rows",
+                "considered_rows",
+                "pending_retrain_rows",
+                "source",
+            ]
+        )
+    try:
+        df = pd.read_csv(history_path)
+    except Exception:
+        return pd.DataFrame()
+    if "snapshot_date" in df.columns:
+        df["snapshot_date"] = df["snapshot_date"].astype(str)
+    for col in ["accuracy_pct", "scored_rows", "matched_rows", "mismatch_rows", "considered_rows", "pending_retrain_rows"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
 
 
 def _filter_output_to_store(output: AnalysisOutput, store_id: str) -> AnalysisOutput:
@@ -2381,6 +2486,99 @@ def _render_overview(output: AnalysisOutput) -> None:
             f"Estimated Visits: {total_visits} | "
             f"Avg Bounce Rate: {bounce_text}"
         )
+    history_df = _load_model_accuracy_history(out_dir=Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))))
+    if not history_df.empty:
+        latest = history_df.sort_values(by=["snapshot_date", "snapshot_ts_utc"]).groupby("store_id", as_index=False).tail(1)
+        scored = float(pd.to_numeric(latest.get("scored_rows", 0), errors="coerce").fillna(0).sum())
+        matched = float(pd.to_numeric(latest.get("matched_rows", 0), errors="coerce").fillna(0).sum())
+        overall_acc = (matched * 100.0 / scored) if scored > 0 else 0.0
+        st.caption(f"Current Model Accuracy (feedback-based): {overall_acc:.2f}%  |  Open `Model Accuracy` page for trend.")
+
+
+def _render_model_accuracy_overview(output: AnalysisOutput, db_path: Path, out_dir: Path) -> None:
+    st.subheader("Model Accuracy Overview")
+    st.caption(
+        "This page tracks how model accuracy improves from your feedback. "
+        "Your confirmed feedback is treated as ground truth."
+    )
+    history_df = _load_model_accuracy_history(out_dir=out_dir)
+    if history_df.empty:
+        try:
+            _persist_model_accuracy_snapshot(db_path=db_path, out_dir=out_dir, output=output, source="ui_snapshot")
+            history_df = _load_model_accuracy_history(out_dir=out_dir)
+        except Exception:
+            history_df = pd.DataFrame()
+    if history_df.empty:
+        st.info("No accuracy history yet. Save some feedback and run analysis/retrain cycle.")
+        return
+
+    settings = get_app_settings(db_path)
+    scheduler_enabled = _setting_bool(settings, "cfg_scheduler_enabled", True)
+    interval_minutes = _setting_int(settings, "cfg_scheduler_interval_minutes", 30, minimum=1, maximum=1440)
+    next_run_dt = _parse_iso_utc(settings.get("cfg_scheduler_next_run_at", ""))
+    if next_run_dt is None and scheduler_enabled:
+        next_run_dt = datetime.now(tz=timezone.utc) + timedelta(minutes=int(interval_minutes))
+    next_run_label = next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "Not scheduled"
+
+    latest_by_store = (
+        history_df.sort_values(by=["snapshot_date", "snapshot_ts_utc"])
+        .groupby("store_id", as_index=False)
+        .tail(1)
+        .reset_index(drop=True)
+    )
+    weighted_scored = float(pd.to_numeric(latest_by_store.get("scored_rows", 0), errors="coerce").fillna(0).sum())
+    weighted_matched = float(pd.to_numeric(latest_by_store.get("matched_rows", 0), errors="coerce").fillna(0).sum())
+    weighted_accuracy = (weighted_matched * 100.0 / weighted_scored) if weighted_scored > 0 else 0.0
+    total_pending_retrain = int(pd.to_numeric(latest_by_store.get("pending_retrain_rows", 0), errors="coerce").fillna(0).sum())
+
+    kpi_cols = st.columns(5)
+    kpi_cols[0].metric("Current Accuracy", f"{weighted_accuracy:.2f}%" if weighted_scored > 0 else "N/A")
+    kpi_cols[1].metric("Scored Feedback Rows", int(weighted_scored))
+    kpi_cols[2].metric("Matched Rows", int(weighted_matched))
+    kpi_cols[3].metric("Queued For Retrain", int(total_pending_retrain))
+    kpi_cols[4].metric("Next Scheduler Run", next_run_label)
+    st.caption("`Queued For Retrain` shows confirmed rows not yet consumed by the latest promoted model.")
+
+    trend_df = history_df.copy()
+    trend_df["snapshot_date_dt"] = pd.to_datetime(trend_df["snapshot_date"], errors="coerce")
+    trend_df = trend_df.dropna(subset=["snapshot_date_dt"]).copy()
+    if trend_df.empty:
+        st.info("No valid trend dates found yet.")
+        return
+    trend_df = trend_df.sort_values(by=["snapshot_date_dt", "store_id"])
+    try:
+        chart = px.line(
+            trend_df,
+            x="snapshot_date_dt",
+            y="accuracy_pct",
+            color="store_id",
+            markers=True,
+            hover_data=["model_id", "scored_rows", "matched_rows", "mismatch_rows", "pending_retrain_rows"],
+            labels={"snapshot_date_dt": "Date", "accuracy_pct": "Accuracy (%)", "store_id": "Store"},
+            title="Daily Model Accuracy Trend",
+        )
+        st.plotly_chart(chart, use_container_width=True)
+    except Exception:
+        pass
+
+    st.markdown("**Latest Accuracy By Store**")
+    st.dataframe(
+        latest_by_store[
+            [
+                "snapshot_date",
+                "store_id",
+                "model_id",
+                "accuracy_pct",
+                "scored_rows",
+                "matched_rows",
+                "mismatch_rows",
+                "pending_retrain_rows",
+                "source",
+            ]
+        ].sort_values(by=["snapshot_date", "store_id"], ascending=[False, True]),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_dir: Path) -> None:
@@ -2743,6 +2941,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     notice = str(st.session_state.pop("feedback_relearn_notice", "") or "").strip()
     if notice:
         st.success(notice)
+    save_notice = str(st.session_state.pop("feedback_save_notice", "") or "").strip()
+    if save_notice:
+        st.info(save_notice)
 
     image_df = image_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
     image_df["predicted_label"] = image_df.apply(_predicted_label, axis=1)
@@ -3324,6 +3525,16 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 f"created={frame_created + track_created}, updated={frame_updated + track_updated}). "
                 f"Auto-confirmed={confirmed} (frame-level={frame_confirmed}, track-level={track_confirmed}). "
                 f"Poster-signatures learned={relearned}."
+            )
+            latest_settings = _ensure_config_defaults(db_path)
+            queue_count = _pending_retrain_rows_for_store(db_path=db_path, store_id=sid, settings=latest_settings)
+            next_run_dt = _parse_iso_utc(latest_settings.get("cfg_scheduler_next_run_at", ""))
+            if next_run_dt is None and _setting_bool(latest_settings, "cfg_scheduler_enabled", True):
+                interval_minutes = _setting_int(latest_settings, "cfg_scheduler_interval_minutes", 30, minimum=1, maximum=1440)
+                next_run_dt = datetime.now(tz=timezone.utc) + timedelta(minutes=int(interval_minutes))
+            next_run_label = next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "Not scheduled"
+            st.session_state["feedback_save_notice"] = (
+                f"Queued for retrain: {int(queue_count)} rows | Next scheduler run: {next_run_label}"
             )
             if bool(rerun_after_save):
                 st.session_state["force_rerun_analysis"] = True
@@ -5043,6 +5254,7 @@ def _run_scheduler_cycle(
             for sid, cams in cfg_map_obj.items()
         }
         output = _run_analysis(
+            db_path=db_path,
             root_dir=root_dir,
             out_dir=out_dir,
             employee_assets_root=employee_assets_root,
@@ -5672,6 +5884,7 @@ def main() -> None:
                 for sid, cams in cfg_map_obj.items()
             }
             output = _run_analysis(
+                db_path=db_path,
                 root_dir=root_dir,
                 out_dir=out_dir,
                 employee_assets_root=employee_assets_root,
@@ -5739,6 +5952,7 @@ def main() -> None:
                         for sid, cams in cfg_map_obj.items()
                     }
                     output = _run_analysis(
+                        db_path=db_path,
                         root_dir=root_dir,
                         out_dir=out_dir,
                         employee_assets_root=employee_assets_root,
@@ -5817,6 +6031,8 @@ def main() -> None:
         st.caption("Use the configuration form above to run analysis.")
     elif current_page == "Overview":
         _render_overview(view_output)
+    elif current_page == "Model Accuracy":
+        _render_model_accuracy_overview(view_output, db_path=db_path, out_dir=out_dir)
     elif current_page == "Organisation":
         _render_organisation(db_path=db_path, data_dir=data_dir)
     elif current_page == "Users":
