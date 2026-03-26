@@ -3069,8 +3069,13 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             options=TRACK_FEEDBACK_OPTIONS,
         )
     editor_columns.extend(["drive_link"])
+    editor_state_key = f"qa_batch_editor_v2_{sid}"
+    form_state_key = f"qa_batch_form_v2_{sid}"
+    # Reset legacy editor state after schema changes so columns/edits stay stable.
+    for legacy_key in (f"qa_batch_editor_{sid}", f"qa_batch_form_{sid}"):
+        st.session_state.pop(legacy_key, None)
 
-    with st.form(key=f"qa_batch_form_{sid}", clear_on_submit=False):
+    with st.form(key=form_state_key, clear_on_submit=False):
         auto_confirm_feedback = bool(cfg_auto_confirm)
         batch_confidence = float(cfg_batch_confidence)
         rerun_after_save = bool(cfg_rerun_after_save)
@@ -3093,7 +3098,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 use_container_width=True,
                 hide_index=True,
                 height=420,
-                key=f"qa_batch_editor_{sid}",
+                key=editor_state_key,
                 disabled=disabled_columns,
                 column_config=column_config,
             )
@@ -3309,8 +3314,14 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                         feedback_id=int(track_feedback_id),
                     )
                     banner_relearned_for_row = True
-        if saved <= 0:
+        selected_count = int(pd.to_numeric(edited_batch_df.get("selected", False), errors="coerce").fillna(0).astype(int).sum())
+        if selected_count <= 0:
             st.info("No rows were selected to save.")
+        elif saved <= 0:
+            st.warning(
+                "Rows were selected, but no feedback label changed. "
+                "Pick at least one `Tn Feedback` value (or `No Customer`) and click save again."
+            )
         else:
             st.success(
                 f"Saved {saved} feedback rows (frame-level={frame_saved}, track-level={track_saved}, "

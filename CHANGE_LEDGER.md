@@ -53,6 +53,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-26 | Commit <pending>
+- Summary:
+  - Stabilized Frame Review top-10 editor state by versioning form/editor widget keys and clearing legacy state keys after schema changes.
+  - This restores thumbnail preview visibility in the validation grid for users carrying old session-state schema.
+  - Improved save feedback UX by distinguishing `no row selected` vs `rows selected but no feedback label changed`, reducing false “not saved” confusion.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-25 | Commit cf70559
 - Summary:
   - Restored thumbnail previews in Frame Review top-10 validation table by always showing the `Preview` column (independent of fast-edit setting) so feedback can be given with visual context.
