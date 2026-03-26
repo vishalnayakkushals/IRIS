@@ -53,6 +53,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-26 | Commit <pending>
+- Summary:
+  - Fixed Pending Review behavior when `Hide Reviewed Rows In Pending` is ON: reviewed top-10 rows now remain hidden instead of being auto-repopulated back into the table.
+  - Added clearer save guidance that with `Auto-confirm=ON`, saved rows move directly to `Review History`.
+  - Added visible `Retrain Queue (Confirmed And Waiting)` table so users can see exactly which confirmed feedback rows are queued for next retrain cycle.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-26 | Commit 9c0eeb9
 - Summary:
   - Fixed Frame Review crash (`NameError: auth_token`) in top-10 feedback table preparation by removing unused frame-link generation from batch row builder.

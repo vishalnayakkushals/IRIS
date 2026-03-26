@@ -3033,10 +3033,9 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         batch_rows = batch_rows[batch_rows["feedback_status"] == ""].copy()
         if batch_rows.empty:
             st.info(
-                "All top 10 frames are already reviewed. "
-                "To re-label old rows, change `Access > Config > Feedback > Hide Reviewed Rows In Pending` and refresh."
+                "All top 10 frames are already reviewed and hidden. "
+                "To re-label old rows, set `Access > Config > Feedback > Hide Reviewed Rows In Pending = OFF` and refresh."
             )
-            batch_rows = _prepare_batch_rows(image_df.head(10), slot_numbers=slot_numbers)
 
     editor_columns = ["selected", "preview_image", "capture_date", "camera_id", "filename", "frame_no_customer_label", "feedback_comment", "track_ids"]
     disabled_columns = [
@@ -3088,6 +3087,7 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             f"Retrain min rows: {cfg_retrain_min_rows} | "
             f"Next scheduler run: {str(runtime_settings.get('cfg_scheduler_next_run_at', '') or 'Not scheduled')}"
         )
+        st.caption("If Auto-confirm is ON, saved feedback moves to Review History directly.")
         try:
             edited_batch_df = st.data_editor(
                 batch_rows[editor_columns],
@@ -3403,6 +3403,33 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
     center_cols[2].metric("Pending Retrain Rows", int(pending_retrain_rows))
     center_cols[3].metric("Retrain Eligible", "YES" if pending_retrain_rows >= retrain_min_rows else "NO")
     center_cols[4].metric("Next Scheduler Run", next_run_label)
+
+    retrain_queue_df = confirmed_df[
+        pd.to_numeric(confirmed_df.get("id", 0), errors="coerce").fillna(0).astype(int) > int(last_retrain_feedback_id)
+    ].copy()
+    if not retrain_queue_df.empty:
+        st.markdown("**Retrain Queue (Confirmed And Waiting)**")
+        st.caption("These confirmed feedback rows will be consumed by next retrain cycle.")
+        try:
+            st.dataframe(
+                retrain_queue_df[
+                    [
+                        "id",
+                        "capture_date",
+                        "camera_id",
+                        "filename",
+                        "track_id",
+                        "corrected_label",
+                        "confidence",
+                        "reviewed_at",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                height=180,
+            )
+        except Exception:
+            st.dataframe(retrain_queue_df, use_container_width=True, hide_index=True, height=180)
 
     tabs = st.tabs(["Pending Review", "Review History"])
     with tabs[0]:
