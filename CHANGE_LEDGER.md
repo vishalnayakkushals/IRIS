@@ -53,7 +53,7 @@ Use this template for each new change:
 
 ## Change Entries
 
-### 2026-03-26 | Commit <pending>
+### 2026-03-26 | Commit 26e900a
 - Summary:
   - Removed `Detection` and `UI` modules from Access Config module selector to reduce unused settings clutter.
   - Removed static `Detection Settings` and `UI Settings` informational panels from Config page.
