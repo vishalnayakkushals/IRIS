@@ -5078,7 +5078,7 @@ def _run_scheduler_cycle(
 
 def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     st.subheader("Config")
-    st.caption("Single place for all run, feedback, retrain, scheduler, sync, detection, and UI settings.")
+    st.caption("Single place for run, feedback, retrain, scheduler, and sync settings.")
     settings = _ensure_config_defaults(db_path)
     min_interval = _scheduler_min_interval_minutes(settings)
     current_interval = _setting_int(settings, "cfg_scheduler_interval_minutes", 30, minimum=1, maximum=1440)
@@ -5087,7 +5087,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         upsert_app_settings(db_path=db_path, settings={"cfg_scheduler_interval_minutes": str(current_interval)})
         settings = _ensure_config_defaults(db_path)
 
-    config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Detection", "UI", "Run Mode"]
+    config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Run Mode"]
     discover_cols = st.columns([2, 2, 3])
     selected_module = discover_cols[0].selectbox(
         "Config Module",
@@ -5286,19 +5286,6 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             st.session_state["ctrl_auto_sync_linked_drives"] = bool(auto_sync_linked)
             st.session_state["ctrl_auto_sync_on_save"] = bool(auto_sync_on_save)
 
-    if _show_module("Detection"):
-        with st.expander("Detection Settings", expanded=(selected_module == "Detection")):
-            st.caption("Meaning: detector, confidence, and runtime thresholds. Use Run controls below.")
-            st.info("Detection settings are managed in the run controls form below for immediate apply behavior.")
-
-    if _show_module("UI"):
-        with st.expander("UI Settings", expanded=(selected_module == "UI")):
-            st.caption("Meaning: dashboard experience controls.")
-            st.markdown(
-                "- `Fast Edit Mode`: better responsiveness in feedback tables.\n"
-                "- `Hide Reviewed Rows`: cleaner Pending view.\n"
-                "- `Re-run Analysis After Save`: immediate refresh vs speed."
-            )
     if not _show_module("Run Mode"):
         return False
 

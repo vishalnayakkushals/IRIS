@@ -53,6 +53,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-03-26 | Commit <pending>
+- Summary:
+  - Removed `Detection` and `UI` modules from Access Config module selector to reduce unused settings clutter.
+  - Removed static `Detection Settings` and `UI Settings` informational panels from Config page.
+  - Kept operational controls in active modules (`Feedback`, `Retrain`, `Scheduler`, `Sync`, `Run Mode`) unchanged.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-26 | Commit b53abfa
 - Summary:
   - Fixed Pending Review behavior when `Hide Reviewed Rows In Pending` is ON: reviewed top-10 rows now remain hidden instead of being auto-repopulated back into the table.
