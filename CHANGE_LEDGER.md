@@ -68,6 +68,18 @@ Use this template for each new change:
   - Requires `OPENAI_API_KEY` at runtime.
   - Uses existing Google Drive sync path (`sync_store_from_source`) and optional `GOOGLE_API_KEY` for scalable Drive API sync.
 
+### 2026-03-27 | Commit pending
+- Summary:
+  - Improved ChatGPT vision batch script error handling for missing ground-truth path by adding `--create-ground-truth-template`.
+  - Script can now generate a fillable CSV template from selected images and exit cleanly, then rerun for full evaluation.
+- Changed Paths:
+  - `scripts/evaluate_chatgpt_vision_batch.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New optional CLI flag: `--create-ground-truth-template`.
+
 ### 2026-03-26 | Commit 3c55f53
 - Summary:
   - Added `Model Accuracy` page under `Reports > Business Health` with weighted current accuracy KPI, daily trend graph, latest model/store table, queued-for-retrain KPI, and next scheduler run visibility.

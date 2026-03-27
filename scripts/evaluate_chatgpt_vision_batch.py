@@ -72,6 +72,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="Optional JSON config overrides.")
     parser.add_argument("--skip-sync", action="store_true", help="Use already-downloaded local images, skip gdrive sync.")
     parser.add_argument("--save-json", action="store_true", help="Also write JSON outputs in addition to CSV.")
+    parser.add_argument(
+        "--create-ground-truth-template",
+        action="store_true",
+        help="Create a ground-truth CSV template from selected images and exit.",
+    )
     return parser.parse_args()
 
 
@@ -464,6 +469,25 @@ def _apply_staff_repeat_pattern(rows: list[dict[str, Any]], cfg: EvalConfig) -> 
             row["excluded_reason"] = "staff_repeat_pattern"
 
 
+def _write_ground_truth_template(path: Path, image_paths: list[Path]) -> None:
+    rows = []
+    for image_path in image_paths:
+        rows.append(
+            {
+                "image_name": image_path.name,
+                "customer_count": "",
+                "purchased_count": "",
+                "gender": "",
+                "age_band": "",
+                "final_label": "",
+                "final_labels": "",
+                "notes": "",
+            }
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).drop_duplicates(subset=["image_name"], keep="first").to_csv(path, index=False)
+
+
 def _load_ground_truth(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"Ground truth file not found: {path}")
@@ -723,7 +747,26 @@ def main() -> None:
     if not image_paths:
         raise RuntimeError(f"No images found under: {local_store_dir}")
 
-    gt_map = _load_ground_truth(Path(args.ground_truth).expanduser().resolve())
+    gt_path = Path(args.ground_truth).expanduser().resolve()
+    if not gt_path.exists():
+        if bool(args.create_ground_truth_template):
+            _write_ground_truth_template(gt_path, image_paths)
+            print(
+                json.dumps(
+                    {
+                        "status": "template_created",
+                        "ground_truth_template": str(gt_path),
+                        "images_in_template": len(image_paths),
+                    },
+                    indent=2,
+                )
+            )
+            return
+        raise FileNotFoundError(
+            f"Ground truth file not found: {gt_path}. "
+            "Run once with --create-ground-truth-template to generate a fillable CSV."
+        )
+    gt_map = _load_ground_truth(gt_path)
 
     entity_rows: list[dict[str, Any]] = []
     for seq, image_path in enumerate(image_paths, start=1):
