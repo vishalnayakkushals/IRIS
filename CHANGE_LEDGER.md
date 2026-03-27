@@ -24,6 +24,7 @@ It records what changed, where it changed, and why.
 | `src/run_dashboard.py` | Streamlit entrypoint for package-safe execution in Docker/local. |
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
+| `scripts/evaluate_chatgpt_vision_batch.py` | Batch ChatGPT vision evaluator: GDrive sync, structured JSON inference, business-rule filtering, and accuracy/mismatch/confusion exports vs ground truth. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
@@ -52,6 +53,20 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-27 | Commit pending
+- Summary:
+  - Added a new CLI pipeline to evaluate retail images using ChatGPT vision calls (instead of YOLO) with strict structured JSON output per image/entity.
+  - Implemented post-inference business-rule filtering for customer/staff/pedestrian/banner/product exclusions, red-bag purchased count, and best-effort per-camera sequential customer IDs.
+  - Added ground-truth comparison outputs: field-level accuracy summary, mismatch report, confusion-style label breakdown, plus markdown run report.
+- Changed Paths:
+  - `scripts/evaluate_chatgpt_vision_batch.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/evaluate_chatgpt_vision_batch.py`
+- Infra/Config Impact:
+  - Requires `OPENAI_API_KEY` at runtime.
+  - Uses existing Google Drive sync path (`sync_store_from_source`) and optional `GOOGLE_API_KEY` for scalable Drive API sync.
 
 ### 2026-03-26 | Commit 3c55f53
 - Summary:
