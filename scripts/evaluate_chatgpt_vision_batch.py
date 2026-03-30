@@ -10,11 +10,16 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import time
 from typing import Any
 
 import pandas as pd
 import requests
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from iris.store_registry import StoreRecord, sync_store_from_source
 
@@ -60,14 +65,21 @@ class EvalConfig:
 
 
 def _parse_args() -> argparse.Namespace:
+    default_model = str(os.getenv("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    try:
+        default_limit = int(str(os.getenv("GPT_VISION_MAX_IMAGES", "30") or "30"))
+    except Exception:
+        default_limit = 30
+    if default_limit <= 0:
+        default_limit = 30
     parser = argparse.ArgumentParser(description="Batch retail evaluation using ChatGPT vision + business rules.")
     parser.add_argument("--gdrive-url", required=True, help="Google Drive folder URL (root folder, recursive sync).")
     parser.add_argument("--ground-truth", type=Path, required=True, help="Path to manual ground truth CSV/JSON.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--store-id", default="TEST_STORE_D07")
-    parser.add_argument("--limit", type=int, default=30, help="Number of images to evaluate after sorting.")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI vision-capable model.")
+    parser.add_argument("--limit", type=int, default=default_limit, help="Number of images to evaluate after sorting.")
+    parser.add_argument("--model", default=default_model, help="OpenAI vision-capable model.")
     parser.add_argument("--api-base", default="https://api.openai.com/v1")
     parser.add_argument("--config", type=Path, default=None, help="Optional JSON config overrides.")
     parser.add_argument("--skip-sync", action="store_true", help="Use already-downloaded local images, skip gdrive sync.")
@@ -725,6 +737,9 @@ def main() -> None:
     data_root.mkdir(parents=True, exist_ok=True)
 
     store_id = str(args.store_id).strip()
+    if out_dir.name.strip().lower() != store_id.lower():
+        out_dir = out_dir / store_id
+    out_dir.mkdir(parents=True, exist_ok=True)
     now = _now_utc()
     store_record = StoreRecord(
         store_id=store_id,

@@ -24,6 +24,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - IRIS_SCHEDULER_POLL_SECONDS=${IRIS_SCHEDULER_POLL_SECONDS:-10}
+      - YOLO_ENABLED=${YOLO_ENABLED:-1}
       - OMP_NUM_THREADS=1
       - OPENBLAS_NUM_THREADS=1
       - MKL_NUM_THREADS=1
@@ -42,6 +43,38 @@ services:
         "/app/data/employee_assets",
         "--poll-seconds",
         "${IRIS_SCHEDULER_POLL_SECONDS:-10}"
+      ]
+
+  iris-gpt-scheduler:
+    image: iris-app:latest
+    profiles: ["gpt"]
+    restart: unless-stopped
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GPT_VISION_ENABLED=${GPT_VISION_ENABLED:-0}
+      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
+      - GPT_VISION_MAX_IMAGES=${GPT_VISION_MAX_IMAGES:-100}
+      - GPT_TEST_STORE_ID=${GPT_TEST_STORE_ID:-TEST_STORE_D07}
+      - GPT_TEST_GDRIVE_URL=${GPT_TEST_GDRIVE_URL:-}
+      - GPT_TEST_GROUND_TRUTH=${GPT_TEST_GROUND_TRUTH:-/app/data/exports/gpt_eval/TEST_STORE_D07/ground_truth_template.csv}
+      - GPT_TEST_OUTPUT_ROOT=${GPT_TEST_OUTPUT_ROOT:-/app/data/exports/gpt_eval}
+      - GPT_TEST_DATA_ROOT=${GPT_TEST_DATA_ROOT:-/app/data/test_stores}
+      - GPT_DAILY_RUN_AT=${GPT_DAILY_RUN_AT:-02:30}
+      - GPT_TZ=${GPT_TZ:-Asia/Kolkata}
+      - GPT_SAVE_JSON=${GPT_SAVE_JSON:-1}
+      - GPT_SKIP_SYNC=${GPT_SKIP_SYNC:-0}
+      - IRIS_GPT_SCHEDULER_POLL_SECONDS=${IRIS_GPT_SCHEDULER_POLL_SECONDS:-20}
+    command:
+      [
+        "python",
+        "scripts/gpt_eval_scheduler.py",
+        "--db",
+        "/app/data/store_registry.db",
+        "--poll-seconds",
+        "${IRIS_GPT_SCHEDULER_POLL_SECONDS:-20}"
       ]
 
   iris-sync:

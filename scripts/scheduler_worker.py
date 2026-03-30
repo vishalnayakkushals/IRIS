@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import date, datetime, timedelta, timezone
+import os
 from pathlib import Path
 import sys
 import time
@@ -120,6 +121,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _run_due_cycle(args: argparse.Namespace) -> tuple[bool, int]:
+    yolo_enabled = _truthy(os.getenv("YOLO_ENABLED", "1"), default=True)
     settings = _ensure_config_defaults(args.db)
     scheduler_enabled = _setting_bool(settings, "cfg_scheduler_enabled", True)
     min_interval = _scheduler_min_interval_minutes(settings)
@@ -142,6 +144,11 @@ def _run_due_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         if next_run_dt is not None:
             upsert_app_settings(args.db, {"cfg_scheduler_next_run_at": ""})
         return False, max(5, int(args.poll_seconds))
+
+    if not yolo_enabled:
+        next_run_after = now_utc + timedelta(minutes=int(interval_minutes))
+        upsert_app_settings(args.db, {"cfg_scheduler_next_run_at": next_run_after.isoformat()})
+        return False, min(max(1, int(args.poll_seconds)), max(1, int((next_run_after - now_utc).total_seconds())))
 
     if next_run_dt is not None and now_utc < next_run_dt:
         seconds_until_due = max(1, int((next_run_dt - now_utc).total_seconds()))
@@ -214,7 +221,8 @@ def main() -> None:
 
     print(
         "[scheduler] worker-start "
-        f"db={args.db} root={args.root} out={args.out} poll_seconds={int(args.poll_seconds)}"
+        f"db={args.db} root={args.root} out={args.out} poll_seconds={int(args.poll_seconds)} "
+        f"yolo_enabled={_truthy(os.getenv('YOLO_ENABLED', '1'), default=True)}"
     )
     try:
         while True:

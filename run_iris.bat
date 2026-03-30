@@ -20,6 +20,9 @@ if /I "%ACTION%"=="start" goto :do_start
 if /I "%ACTION%"=="stop" goto :do_stop
 if /I "%ACTION%"=="scheduler-stop" goto :do_scheduler_stop
 if /I "%ACTION%"=="scheduler-start" goto :do_scheduler_start
+if /I "%ACTION%"=="gpt-scheduler-start" goto :do_gpt_scheduler_start
+if /I "%ACTION%"=="gpt-scheduler-stop" goto :do_gpt_scheduler_stop
+if /I "%ACTION%"=="gpt-scheduler-logs" goto :do_gpt_scheduler_logs
 if /I "%ACTION%"=="pull" goto :do_pull
 if /I "%ACTION%"=="health" goto :do_health
 
@@ -64,6 +67,21 @@ echo [IRIS] Starting scheduler only
 docker compose -f %COMPOSE_FILE% up -d iris-scheduler
 goto :exit_with_code
 
+:do_gpt_scheduler_start
+echo [IRIS] Starting GPT scheduler (profile gpt)
+docker compose -f %COMPOSE_FILE% --profile gpt up -d iris-gpt-scheduler
+goto :exit_with_code
+
+:do_gpt_scheduler_stop
+echo [IRIS] Stopping GPT scheduler
+docker compose -f %COMPOSE_FILE% stop iris-gpt-scheduler
+goto :exit_with_code
+
+:do_gpt_scheduler_logs
+echo [IRIS] GPT scheduler logs (tail 120)
+docker compose -f %COMPOSE_FILE% logs --tail=120 iris-gpt-scheduler
+goto :exit_with_code
+
 :do_status
 echo [IRIS] docker compose ps
 docker compose -f %COMPOSE_FILE% ps
@@ -100,6 +118,9 @@ echo   run_iris.bat start
 echo   run_iris.bat stop
 echo   run_iris.bat scheduler-stop
 echo   run_iris.bat scheduler-start
+echo   run_iris.bat gpt-scheduler-start
+echo   run_iris.bat gpt-scheduler-stop
+echo   run_iris.bat gpt-scheduler-logs
 echo   run_iris.bat pull
 echo   run_iris.bat health
 echo.
@@ -116,4 +137,3 @@ if not "%EXIT_CODE%"=="0" (
 )
 echo [OK] Done.
 exit /b 0
-

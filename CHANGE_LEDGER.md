@@ -25,6 +25,7 @@ It records what changed, where it changed, and why.
 | `scripts/drive_delta_sync_scheduler.py` | Daily 6 AM scheduler wrapper for autonomous sync execution. |
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
 | `scripts/evaluate_chatgpt_vision_batch.py` | Batch ChatGPT vision evaluator: GDrive sync, structured JSON inference, business-rule filtering, and accuracy/mismatch/confusion exports vs ground truth. |
+| `scripts/gpt_eval_scheduler.py` | Dedicated daily GPT-eval scheduler for TEST_STORE-style capped runs, isolated from YOLO scheduler cycles. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
@@ -91,6 +92,27 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - None
+
+### 2026-03-30 | Commit pending
+- Summary:
+  - Added config-driven GPT-vs-YOLO separation controls:
+    - `YOLO_ENABLED` gate in existing scheduler worker.
+    - Dedicated GPT scheduler service/script for daily capped TEST_STORE evaluation runs.
+  - Added separate GPT scheduler runtime (`scripts/gpt_eval_scheduler.py`) with env-driven store/model/path/time config and persisted run summaries in `app_settings`.
+  - Updated GPT batch evaluator defaults to support env-driven model/limit, self-bootstrap `PYTHONPATH`, and per-store output folder isolation.
+  - Added `run_iris.bat` commands to start/stop/log GPT scheduler independently.
+- Changed Paths:
+  - `scripts/evaluate_chatgpt_vision_batch.py`
+  - `scripts/scheduler_worker.py`
+  - `scripts/gpt_eval_scheduler.py`
+  - `deploy/docker-compose.yml`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/gpt_eval_scheduler.py`
+- Infra/Config Impact:
+  - New optional compose profile/service: `iris-gpt-scheduler` (`--profile gpt`).
+  - New env flags: `YOLO_ENABLED`, `GPT_VISION_ENABLED`, `OPENAI_VISION_MODEL`, `GPT_VISION_MAX_IMAGES`, `GPT_TEST_*`, `GPT_DAILY_RUN_AT`, `GPT_TZ`.
 
 ### 2026-03-26 | Commit 3c55f53
 - Summary:
