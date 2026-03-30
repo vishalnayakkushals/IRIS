@@ -280,7 +280,7 @@ def _call_openai_vision(
                 ],
             }
         ],
-        "text": {"format": {"type": "json_schema", "json_schema": _json_schema()}},
+        "text": {"format": {"type": "json_schema", **_json_schema()}},
         "max_output_tokens": int(cfg.max_output_tokens),
     }
     headers = {
@@ -293,6 +293,8 @@ def _call_openai_vision(
         try:
             resp = requests.post(url, headers=headers, json=body, timeout=int(cfg.request_timeout_seconds))
             if resp.status_code >= 400:
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise RuntimeError(f"OpenAI client error {resp.status_code}: {resp.text[:500]}")
                 raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text[:500]}")
             payload = resp.json()
             text = _extract_output_text(payload)

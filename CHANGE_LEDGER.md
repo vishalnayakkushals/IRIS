@@ -80,6 +80,18 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New optional CLI flag: `--create-ground-truth-template`.
 
+### 2026-03-30 | Commit pending
+- Summary:
+  - Fixed ChatGPT vision response payload format to match Responses API JSON-schema contract (`text.format` now includes required `name`/`schema` keys directly).
+  - Reduced unnecessary retry load for client-side request errors (`4xx` except `429`) to avoid repeated failed billing attempts.
+- Changed Paths:
+  - `scripts/evaluate_chatgpt_vision_batch.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
 ### 2026-03-26 | Commit 3c55f53
 - Summary:
   - Added `Model Accuracy` page under `Reports > Business Health` with weighted current accuracy KPI, daily trend graph, latest model/store table, queued-for-retrain KPI, and next scheduler run visibility.
