@@ -77,6 +77,39 @@ services:
         "${IRIS_GPT_SCHEDULER_POLL_SECONDS:-20}"
       ]
 
+  iris-yolo-relevance-scheduler:
+    image: iris-app:latest
+    profiles: ["stage1"]
+    restart: unless-stopped
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    environment:
+      - YOLO_RELEVANCE_ENABLED=${YOLO_RELEVANCE_ENABLED:-1}
+      - YOLO_RELEVANCE_DAILY_RUN_AT=${YOLO_RELEVANCE_DAILY_RUN_AT:-15:00}
+      - YOLO_RELEVANCE_TZ=${YOLO_RELEVANCE_TZ:-Asia/Kolkata}
+      - YOLO_RELEVANCE_ROOT=${YOLO_RELEVANCE_ROOT:-/app/data/test_stores}
+      - YOLO_RELEVANCE_OUT_ROOT=${YOLO_RELEVANCE_OUT_ROOT:-/app/data/exports/current/stage1_relevance}
+      - YOLO_RELEVANCE_STORE_ID=${YOLO_RELEVANCE_STORE_ID:-TEST_STORE_D07}
+      - YOLO_RELEVANCE_CONF=${YOLO_RELEVANCE_CONF:-0.18}
+      - YOLO_RELEVANCE_MAX_IMAGES=${YOLO_RELEVANCE_MAX_IMAGES:-0}
+      - YOLO_RELEVANCE_ALLOW_FALLBACK=${YOLO_RELEVANCE_ALLOW_FALLBACK:-0}
+      - YOLO_RELEVANCE_GZIP_EXPORTS=${YOLO_RELEVANCE_GZIP_EXPORTS:-1}
+      - YOLO_RELEVANCE_DROP_PLAIN_CSV=${YOLO_RELEVANCE_DROP_PLAIN_CSV:-1}
+      - IRIS_STAGE1_SCHEDULER_POLL_SECONDS=${IRIS_STAGE1_SCHEDULER_POLL_SECONDS:-20}
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+    command:
+      [
+        "python",
+        "scripts/yolo_relevance_scheduler.py",
+        "--db",
+        "/app/data/store_registry.db",
+        "--poll-seconds",
+        "${IRIS_STAGE1_SCHEDULER_POLL_SECONDS:-20}"
+      ]
+
   iris-sync:
     image: iris-app:latest
     profiles: ["sync"]

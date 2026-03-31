@@ -23,6 +23,10 @@ if /I "%ACTION%"=="scheduler-start" goto :do_scheduler_start
 if /I "%ACTION%"=="gpt-scheduler-start" goto :do_gpt_scheduler_start
 if /I "%ACTION%"=="gpt-scheduler-stop" goto :do_gpt_scheduler_stop
 if /I "%ACTION%"=="gpt-scheduler-logs" goto :do_gpt_scheduler_logs
+if /I "%ACTION%"=="stage1-scheduler-start" goto :do_stage1_scheduler_start
+if /I "%ACTION%"=="stage1-scheduler-stop" goto :do_stage1_scheduler_stop
+if /I "%ACTION%"=="stage1-scheduler-logs" goto :do_stage1_scheduler_logs
+if /I "%ACTION%"=="stage1-scan-now" goto :do_stage1_scan_now
 if /I "%ACTION%"=="pull" goto :do_pull
 if /I "%ACTION%"=="health" goto :do_health
 
@@ -82,6 +86,26 @@ echo [IRIS] GPT scheduler logs (tail 120)
 docker compose -f %COMPOSE_FILE% logs --tail=120 iris-gpt-scheduler
 goto :exit_with_code
 
+:do_stage1_scheduler_start
+echo [IRIS] Starting Stage-1 YOLO relevance scheduler (profile stage1)
+docker compose -f %COMPOSE_FILE% --profile stage1 up -d iris-yolo-relevance-scheduler
+goto :exit_with_code
+
+:do_stage1_scheduler_stop
+echo [IRIS] Stopping Stage-1 YOLO relevance scheduler
+docker compose -f %COMPOSE_FILE% stop iris-yolo-relevance-scheduler
+goto :exit_with_code
+
+:do_stage1_scheduler_logs
+echo [IRIS] Stage-1 scheduler logs (tail 120)
+docker compose -f %COMPOSE_FILE% logs --tail=120 iris-yolo-relevance-scheduler
+goto :exit_with_code
+
+:do_stage1_scan_now
+echo [IRIS] Running Stage-1 YOLO relevance scan now (inside container)
+docker compose -f %COMPOSE_FILE% exec iris python scripts/yolo_relevance_scan.py --root /app/data/test_stores --out-dir /app/data/exports/current/stage1_relevance --store-id TEST_STORE_D07 --detector yolo --conf 0.18 --gzip-exports --drop-plain-csv
+goto :exit_with_code
+
 :do_status
 echo [IRIS] docker compose ps
 docker compose -f %COMPOSE_FILE% ps
@@ -121,6 +145,10 @@ echo   run_iris.bat scheduler-start
 echo   run_iris.bat gpt-scheduler-start
 echo   run_iris.bat gpt-scheduler-stop
 echo   run_iris.bat gpt-scheduler-logs
+echo   run_iris.bat stage1-scheduler-start
+echo   run_iris.bat stage1-scheduler-stop
+echo   run_iris.bat stage1-scheduler-logs
+echo   run_iris.bat stage1-scan-now
 echo   run_iris.bat pull
 echo   run_iris.bat health
 echo.

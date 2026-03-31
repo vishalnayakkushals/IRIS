@@ -26,6 +26,8 @@ It records what changed, where it changed, and why.
 | `scripts/daily_feedback_reprocess.py` | Daily feedback-aware retrain/reprocess runner with end-of-day summary JSON export. |
 | `scripts/evaluate_chatgpt_vision_batch.py` | Batch ChatGPT vision evaluator: GDrive sync, structured JSON inference, business-rule filtering, and accuracy/mismatch/confusion exports vs ground truth. |
 | `scripts/gpt_eval_scheduler.py` | Dedicated daily GPT-eval scheduler for TEST_STORE-style capped runs, isolated from YOLO scheduler cycles. |
+| `scripts/yolo_relevance_scan.py` | Stage-1 local relevance filter: counts images, runs YOLO person detection, and exports relevant/irrelevant lists for downstream GPT scan. |
+| `scripts/yolo_relevance_scheduler.py` | Daily Stage-1 scheduler wrapper that runs YOLO relevance scan at configured local time and stores cycle status in app settings. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
@@ -54,6 +56,24 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-03-31 | Commit pending
+- Summary:
+  - Implemented Stage-1 pipeline (`YOLO relevance scan`) to count local test images, classify each frame as relevant/irrelevant based on person presence, and export downstream-ready artifacts for Stage-2 ChatGPT ingestion.
+  - Added daily Stage-1 scheduler worker (default `15:00` Asia/Kolkata) with isolated runtime/app-setting keys so relevance scan scheduling stays separate from GPT and overnight YOLO analytics cycles.
+  - Added operational commands in `run_iris.bat` to start/stop/log Stage-1 scheduler and trigger immediate Stage-1 scan inside container.
+- Changed Paths:
+  - `scripts/yolo_relevance_scan.py`
+  - `scripts/yolo_relevance_scheduler.py`
+  - `deploy/docker-compose.yml`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/yolo_relevance_scan.py`
+  - `scripts/yolo_relevance_scheduler.py`
+- Infra/Config Impact:
+  - New compose profile/service: `iris-yolo-relevance-scheduler` (`--profile stage1`).
+  - New env controls: `YOLO_RELEVANCE_ENABLED`, `YOLO_RELEVANCE_DAILY_RUN_AT`, `YOLO_RELEVANCE_TZ`, `YOLO_RELEVANCE_ROOT`, `YOLO_RELEVANCE_OUT_ROOT`, `YOLO_RELEVANCE_STORE_ID`, `YOLO_RELEVANCE_CONF`, `YOLO_RELEVANCE_MAX_IMAGES`, `YOLO_RELEVANCE_ALLOW_FALLBACK`, `YOLO_RELEVANCE_GZIP_EXPORTS`, `YOLO_RELEVANCE_DROP_PLAIN_CSV`.
 
 ### 2026-03-27 | Commit pending
 - Summary:
