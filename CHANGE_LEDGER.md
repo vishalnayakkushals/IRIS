@@ -39,6 +39,11 @@ It records what changed, where it changed, and why.
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
+| `release-notes/2026-04-01-onfly-pipeline.md` | Release-note summary for the on-fly pipeline rollout and deprecation note for bulk upload nav. |
+| `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
+| `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
+| `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
+| `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
 
 ## Change Entry Template
 Use this template for each new change:
@@ -57,6 +62,37 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+
+### 2026-04-01 | Commit pending
+- Summary:
+  - Added a lightweight on-the-fly pipeline (`source URL -> YOLO relevance -> optional GPT for relevant-only`) with SQLite-backed idempotent state to skip already processed images.
+  - Added dedicated hourly+nightly on-fly scheduler and compose profile (`iris-onfly-scheduler`) so URL-first evaluation flow runs independently from existing overnight analytics services.
+  - Added benchmark runner for 3x before/after timing, report artifacts for slowness diagnostics, and store/date flat output (`onfly_store_date_report.csv`) for dashboard readiness.
+  - Hid `Bulk Access Upload` from Access navigation (kept a deprecated fallback route message) to simplify the lightweight ops path.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/run_onfly_pipeline.py`
+  - `scripts/onfly_scheduler.py`
+  - `scripts/benchmark_onfly_pipeline.py`
+  - `deploy/docker-compose.yml`
+  - `run_iris.bat`
+  - `src/iris/iris_dashboard.py`
+  - `README.md`
+  - `docs/business/iris-brd.md`
+  - `docs/prd/iris-platform-prd-v1.md`
+  - `release-notes/2026-04-01-onfly-pipeline.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/run_onfly_pipeline.py`
+  - `scripts/onfly_scheduler.py`
+  - `scripts/benchmark_onfly_pipeline.py`
+  - `release-notes/2026-04-01-onfly-pipeline.md`
+- Infra/Config Impact:
+  - New compose profile/service: `iris-onfly-scheduler` (`--profile onfly`).
+  - New env controls: `ONFLY_ENABLED`, `ONFLY_STORE_ID`, `ONFLY_SOURCE_URL`, `ONFLY_OUT_DIR`, `ONFLY_HOURLY_MINUTES`, `ONFLY_NIGHTLY_RUN_AT`, `ONFLY_TZ`, `ONFLY_MAX_IMAGES`, `ONFLY_PIPELINE_VERSION`, `ONFLY_DETECTOR`, `ONFLY_CONF`, `IRIS_ONFLY_POLL_SECONDS`.
+  - New outputs under `data/exports/current/onfly/` including run summaries and benchmark artifacts.
 
 ### 2026-03-31 | Commit pending
 - Summary:

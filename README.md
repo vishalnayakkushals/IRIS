@@ -359,3 +359,24 @@ run_iris.bat restart
 run_iris.bat rebuild
 run_iris.bat restart --skip-pull
 ```
+
+
+## On-The-Fly Vision Pipeline (Lightweight)
+
+IRIS now supports a lightweight URL-first pipeline for evaluation and staged production rollout:
+
+1. Source ingestion from URL (`Google Drive` today, `S3` adapter path reserved)
+2. YOLO relevance filter (human presence)
+3. ChatGPT analysis only for relevant images (optional toggle)
+4. Idempotent state in SQLite (`onfly_image_state`) to skip already processed images
+5. Hourly + nightly scheduler (`scripts/onfly_scheduler.py`)
+
+Key artifacts:
+- `data/exports/current/onfly/<STORE_ID>/onfly_image_results.csv`
+- `data/exports/current/onfly/onfly_store_date_report.csv`
+- `data/exports/current/onfly/onfly_run_summary_<run_id>.json`
+
+Quick run (container):
+- `run_iris.bat onfly-run-now`
+- `run_iris.bat onfly-benchmark`
+- `run_iris.bat onfly-scheduler-start`

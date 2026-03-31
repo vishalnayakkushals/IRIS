@@ -10,6 +10,10 @@ if /I "%~2"=="--skip-pull" set "EXTRA=-SkipPull"
 set "SCRIPT_DIR=%~dp0"
 set "PS_SCRIPT=%SCRIPT_DIR%scripts\refresh_and_check.ps1"
 set "COMPOSE_FILE=deploy/docker-compose.yml"
+set "ONFLY_STORE_ID=%ONFLY_STORE_ID%"
+if /I "%ONFLY_STORE_ID%"=="" set "ONFLY_STORE_ID=TEST_STORE_D07"
+set "ONFLY_SOURCE_URL=%ONFLY_SOURCE_URL%"
+if /I "%ONFLY_SOURCE_URL%"=="" set "ONFLY_SOURCE_URL=/app/data/test_stores/TEST_STORE_D07"
 
 if /I "%ACTION%"=="help" goto :usage
 if /I "%ACTION%"=="restart" goto :do_restart
@@ -28,6 +32,11 @@ if /I "%ACTION%"=="stage1-scheduler-stop" goto :do_stage1_scheduler_stop
 if /I "%ACTION%"=="stage1-scheduler-logs" goto :do_stage1_scheduler_logs
 if /I "%ACTION%"=="stage1-scan-now" goto :do_stage1_scan_now
 if /I "%ACTION%"=="stage1-report-now" goto :do_stage1_report_now
+if /I "%ACTION%"=="onfly-run-now" goto :do_onfly_run_now
+if /I "%ACTION%"=="onfly-benchmark" goto :do_onfly_benchmark
+if /I "%ACTION%"=="onfly-scheduler-start" goto :do_onfly_scheduler_start
+if /I "%ACTION%"=="onfly-scheduler-stop" goto :do_onfly_scheduler_stop
+if /I "%ACTION%"=="onfly-scheduler-logs" goto :do_onfly_scheduler_logs
 if /I "%ACTION%"=="pull" goto :do_pull
 if /I "%ACTION%"=="health" goto :do_health
 
@@ -112,6 +121,32 @@ echo [IRIS] Building Stage-1 store report now (from Stage-1 output)
 docker compose -f %COMPOSE_FILE% exec iris python scripts/stage1_store_report.py --stage1-all /app/data/exports/current/stage1_relevance/stage1_relevance_all.csv.gz --out /app/data/exports/current/vision_eval/store_report.csv
 goto :exit_with_code
 
+
+:do_onfly_run_now
+echo [IRIS] Running on-the-fly pipeline now (YOLO relevance + optional GPT)
+docker compose -f %COMPOSE_FILE% exec iris python scripts/run_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --detector yolo --conf 0.18 --max-images 100 --run-mode manual --allow-detector-fallback
+goto :exit_with_code
+
+:do_onfly_benchmark
+echo [IRIS] Benchmarking on-the-fly pipeline (3x before/after)
+docker compose -f %COMPOSE_FILE% exec iris python scripts/benchmark_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --limit 30 --runs 3 --detector yolo --conf 0.18 --allow-detector-fallback
+goto :exit_with_code
+
+:do_onfly_scheduler_start
+echo [IRIS] Starting on-fly scheduler (profile onfly)
+docker compose -f %COMPOSE_FILE% --profile onfly up -d iris-onfly-scheduler
+goto :exit_with_code
+
+:do_onfly_scheduler_stop
+echo [IRIS] Stopping on-fly scheduler
+docker compose -f %COMPOSE_FILE% stop iris-onfly-scheduler
+goto :exit_with_code
+
+:do_onfly_scheduler_logs
+echo [IRIS] On-fly scheduler logs (tail 120)
+docker compose -f %COMPOSE_FILE% logs --tail=120 iris-onfly-scheduler
+goto :exit_with_code
+
 :do_status
 echo [IRIS] docker compose ps
 docker compose -f %COMPOSE_FILE% ps
@@ -156,6 +191,11 @@ echo   run_iris.bat stage1-scheduler-stop
 echo   run_iris.bat stage1-scheduler-logs
 echo   run_iris.bat stage1-scan-now
 echo   run_iris.bat stage1-report-now
+echo   run_iris.bat onfly-run-now
+echo   run_iris.bat onfly-benchmark
+echo   run_iris.bat onfly-scheduler-start
+echo   run_iris.bat onfly-scheduler-stop
+echo   run_iris.bat onfly-scheduler-logs
 echo   run_iris.bat pull
 echo   run_iris.bat health
 echo.

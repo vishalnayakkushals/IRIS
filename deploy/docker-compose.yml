@@ -110,6 +110,45 @@ services:
         "${IRIS_STAGE1_SCHEDULER_POLL_SECONDS:-20}"
       ]
 
+
+  iris-onfly-scheduler:
+    image: iris-app:latest
+    profiles: ["onfly"]
+    restart: unless-stopped
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GPT_VISION_ENABLED=${GPT_VISION_ENABLED:-0}
+      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
+      - ONFLY_ENABLED=${ONFLY_ENABLED:-1}
+      - ONFLY_STORE_ID=${ONFLY_STORE_ID:-TEST_STORE_D07}
+      - ONFLY_SOURCE_URL=${ONFLY_SOURCE_URL:-}
+      - ONFLY_OUT_DIR=${ONFLY_OUT_DIR:-/app/data/exports/current/onfly}
+      - ONFLY_HOURLY_MINUTES=${ONFLY_HOURLY_MINUTES:-60}
+      - ONFLY_NIGHTLY_RUN_AT=${ONFLY_NIGHTLY_RUN_AT:-03:00}
+      - ONFLY_TZ=${ONFLY_TZ:-Asia/Kolkata}
+      - ONFLY_MAX_IMAGES=${ONFLY_MAX_IMAGES:-100}
+      - ONFLY_PIPELINE_VERSION=${ONFLY_PIPELINE_VERSION:-onfly_v1}
+      - ONFLY_DETECTOR=${ONFLY_DETECTOR:-yolo}
+      - ONFLY_CONF=${ONFLY_CONF:-0.18}
+      - ONFLY_ALLOW_DETECTOR_FALLBACK=${ONFLY_ALLOW_DETECTOR_FALLBACK:-0}
+      - IRIS_ONFLY_POLL_SECONDS=${IRIS_ONFLY_POLL_SECONDS:-30}
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+    command:
+      [
+        "python",
+        "scripts/onfly_scheduler.py",
+        "--db",
+        "/app/data/store_registry.db",
+        "--poll-seconds",
+        "${IRIS_ONFLY_POLL_SECONDS:-30}"
+      ]
+
   iris-sync:
     image: iris-app:latest
     profiles: ["sync"]

@@ -97,7 +97,6 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
             "Password Manager",
             "Role Permissions",
             "Store Access Mapping",
-            "Bulk Access Upload",
             "Setup Help",
             "Activity Logs",
         ],
@@ -5144,7 +5143,7 @@ def _render_setup_help() -> None:
 2. Store login is auto-created using Organisation Default User Password.
 3. `Access > Store Access Mapping`: map CM/AM emails to stores.
 4. `Access > Password Manager`: set final passwords.
-5. `Access > Bulk Access Upload`: use CSV for large updates.
+5. Bulk CSV access upload is deprecated in lightweight mode. Use Store Access Mapping for controlled updates.
 6. `Access > Config`: run analysis and export updates.
 
 ### Quick Hints
@@ -6069,11 +6068,7 @@ def main() -> None:
             active_email=active_email,
         )
     elif current_page == "Bulk Access Upload":
-        _render_bulk_access_upload(
-            db_path=db_path,
-            default_user_password=default_user_password,
-            active_email=active_email,
-        )
+        st.info("Bulk Access Upload is deprecated for the lightweight pipeline mode.")
     elif current_page == "Setup Help":
         _render_setup_help()
     elif current_page == "Store Detail":

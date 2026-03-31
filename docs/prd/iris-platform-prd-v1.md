@@ -70,3 +70,5 @@ Retail operations need consistent, privacy-safe, near-real-time store intelligen
 - Added alert route registry and event logs.
 - Added QA timeline and multi-camera baseline stitching support.
 - Added store-master import and DB persistence for scalable operations.
+
+- Lightweight on-the-fly pipeline path: URL ingestion -> YOLO relevance -> optional GPT analysis (relevant-only) with idempotent state and scheduler separation.

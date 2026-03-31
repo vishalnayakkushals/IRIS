@@ -30,3 +30,5 @@ Retail teams need reliable store-level insights (footfall, dwell, hotspots, loss
 - Clear done vs pipeline status each sprint.
 - Release notes per agreed template.
 - Operational usability for store-level review.
+
+- Lightweight on-the-fly pipeline path: URL ingestion -> YOLO relevance -> optional GPT analysis (relevant-only) with idempotent state and scheduler separation.
