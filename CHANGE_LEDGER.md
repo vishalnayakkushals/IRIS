@@ -92,6 +92,23 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New output artifact path default: `data/exports/current/vision_eval/store_report.csv` (+ `store_report.json`).
 
+### 2026-03-31 | Commit pending
+- Summary:
+  - Added date-wise store summary export table with folder-derived `Date` bucket formatting:
+    - valid folder dates (`YYYY-MM-DD` / `YYYYMMDD`) now display as `DD-MM-YYYY`
+    - non-date folder names (e.g., `Test1`, `Test2`, `Test`) are preserved as-is.
+  - Kept existing store-level summary intact and added separate flat date-wise output schema for reporting/dashboard ingestion.
+  - Added `daily_conversions` in date-wise export schema (defaults safely to `0` when unavailable).
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New export artifacts:
+    - `all_stores_summary_datewise.csv` (+ optional gzip)
+    - `store_<store_id>_summary_datewise.csv` (+ optional gzip)
+
 ### 2026-03-27 | Commit pending
 - Summary:
   - Added a new CLI pipeline to evaluate retail images using ChatGPT vision calls (instead of YOLO) with strict structured JSON output per image/entity.

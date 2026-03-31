@@ -79,6 +79,7 @@ class StoreAnalysisResult:
     location_hotspots: pd.DataFrame
     customer_sessions: pd.DataFrame
     summary_row: pd.DataFrame
+    summary_by_date: pd.DataFrame
     alerts: pd.DataFrame
     daily_report: pd.DataFrame
     daily_proof: pd.DataFrame
@@ -2856,6 +2857,156 @@ def build_store_summary(
     )
 
 
+def _try_parse_bucket_date(raw_value: object) -> date | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    if re.fullmatch(r"\d{8}", text):
+        try:
+            return date.fromisoformat(f"{text[0:4]}-{text[4:6]}-{text[6:8]}")
+        except ValueError:
+            return None
+    return None
+
+
+def _folder_bucket_from_row(row: pd.Series) -> str:
+    source_folder = str(row.get("source_folder", "") or "").strip().replace("\\", "/")
+    if source_folder:
+        for part in source_folder.split("/"):
+            token = str(part).strip()
+            if token:
+                return token
+    capture_date = str(row.get("capture_date", "") or "").strip()
+    if capture_date:
+        return capture_date
+    ts = row.get("timestamp", pd.NaT)
+    if not pd.isna(ts):
+        try:
+            return pd.Timestamp(ts).date().isoformat()
+        except Exception:
+            pass
+    return "Unknown"
+
+
+def _format_bucket_display(raw_bucket: str) -> str:
+    parsed = _try_parse_bucket_date(raw_bucket)
+    if parsed is not None:
+        return parsed.strftime("%d-%m-%Y")
+    return str(raw_bucket or "").strip() or "Unknown"
+
+
+def _bucket_sort_key(raw_bucket: str) -> tuple[int, int, str]:
+    parsed = _try_parse_bucket_date(raw_bucket)
+    if parsed is not None:
+        return (0, -int(parsed.toordinal()), "")
+    return (1, 0, str(raw_bucket or "").strip().lower())
+
+
+def build_store_summary_by_date(
+    store_id: str,
+    image_insights: pd.DataFrame,
+    customer_sessions: pd.DataFrame,
+    camera_configs: dict[str, dict[str, object]] | None,
+    time_bucket_minutes: int,
+    bounce_threshold_sec: int = 120,
+    session_gap_sec: int = 30,
+    engaged_dwell_threshold_sec: int = 180,
+) -> pd.DataFrame:
+    columns = [
+        "store_id",
+        "Date",
+        "total_images",
+        "valid_images",
+        "relevant_images",
+        "total_people",
+        "estimated_visits",
+        "avg_dwell_sec",
+        "bounce_rate",
+        "footfall",
+        "los_alerts",
+        "daily_walkins",
+        "daily_conversions",
+    ]
+    if image_insights.empty:
+        return pd.DataFrame(columns=columns)
+    if camera_configs is None:
+        camera_configs = {}
+
+    scoped = image_insights.copy()
+    scoped["__bucket_raw"] = scoped.apply(_folder_bucket_from_row, axis=1)
+    bucket_values = sorted({str(v).strip() or "Unknown" for v in scoped["__bucket_raw"].tolist()}, key=_bucket_sort_key)
+    rows: list[dict[str, object]] = []
+
+    for raw_bucket in bucket_values:
+        bucket_df = scoped[scoped["__bucket_raw"].astype(str).str.strip().eq(raw_bucket)].copy()
+        if bucket_df.empty:
+            continue
+        camera_hotspots = build_camera_hotspots(bucket_df, store_id=store_id)
+        summary = build_store_summary(
+            store_id=store_id,
+            image_insights=bucket_df,
+            camera_hotspots=camera_hotspots,
+            time_bucket_minutes=time_bucket_minutes,
+            bounce_threshold_sec=bounce_threshold_sec,
+            session_gap_sec=session_gap_sec,
+        )
+        footfall, alerts_df = compute_footfall_and_alerts(
+            image_insights=bucket_df,
+            camera_configs=camera_configs,
+            engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+        )
+        summary["footfall"] = int(footfall)
+        summary["loss_of_sale_alerts"] = int(len(alerts_df))
+
+        if customer_sessions.empty:
+            bucket_sessions = customer_sessions
+        else:
+            capture_dates = {
+                str(v).strip()
+                for v in bucket_df.get("capture_date", pd.Series([], dtype=str)).astype(str).tolist()
+                if str(v).strip()
+            }
+            if capture_dates and "capture_date" in customer_sessions.columns:
+                bucket_sessions = customer_sessions[
+                    customer_sessions["capture_date"].astype(str).isin(capture_dates)
+                ].copy()
+            else:
+                bucket_sessions = customer_sessions.iloc[0:0].copy()
+        summary = _apply_session_metrics_to_summary(
+            summary_row=summary,
+            customer_sessions=bucket_sessions,
+            bounce_threshold_sec=bounce_threshold_sec,
+        )
+        row = summary.iloc[0]
+        rows.append(
+            {
+                "store_id": store_id,
+                "Date": _format_bucket_display(raw_bucket),
+                "total_images": int(row.get("total_images", 0) or 0),
+                "valid_images": int(row.get("valid_images", 0) or 0),
+                "relevant_images": int(row.get("relevant_images", 0) or 0),
+                "total_people": int(row.get("total_people", 0) or 0),
+                "estimated_visits": int(row.get("estimated_visits", 0) or 0),
+                "avg_dwell_sec": float(row.get("avg_dwell_sec", 0.0) or 0.0),
+                "bounce_rate": float(row.get("bounce_rate", 0.0) or 0.0) if not pd.isna(row.get("bounce_rate", 0.0)) else np.nan,
+                "footfall": int(row.get("footfall", 0) or 0),
+                "los_alerts": int(row.get("loss_of_sale_alerts", 0) or 0),
+                "daily_walkins": int(row.get("daily_walkins", 0) or 0),
+                "daily_conversions": int(row.get("daily_conversions", 0) or 0),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(rows)
+    return out[columns]
+
+
 def _cosine_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
     if a is None or b is None:
         return 1.0
@@ -3822,6 +3973,16 @@ def analyze_store(
         customer_sessions=customer_sessions,
         bounce_threshold_sec=bounce_threshold_sec,
     )
+    summary_by_date = build_store_summary_by_date(
+        store_id=store_id,
+        image_insights=image_insights,
+        customer_sessions=customer_sessions,
+        camera_configs=camera_configs,
+        time_bucket_minutes=time_bucket_minutes,
+        bounce_threshold_sec=bounce_threshold_sec,
+        session_gap_sec=session_gap_sec,
+        engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+    )
 
     return StoreAnalysisResult(
         image_insights=image_insights,
@@ -3829,6 +3990,7 @@ def analyze_store(
         location_hotspots=location_hotspots,
         customer_sessions=customer_sessions,
         summary_row=summary_row,
+        summary_by_date=summary_by_date,
         alerts=alerts_df,
         daily_report=daily_report,
         daily_proof=daily_proof,
@@ -4048,6 +4210,16 @@ def analyze_store_streaming(
         customer_sessions=customer_sessions,
         bounce_threshold_sec=bounce_threshold_sec,
     )
+    summary_by_date = build_store_summary_by_date(
+        store_id=store_id,
+        image_insights=image_insights,
+        customer_sessions=customer_sessions,
+        camera_configs=camera_configs,
+        time_bucket_minutes=time_bucket_minutes,
+        bounce_threshold_sec=bounce_threshold_sec,
+        session_gap_sec=session_gap_sec,
+        engaged_dwell_threshold_sec=engaged_dwell_threshold_sec,
+    )
 
     return StoreAnalysisResult(
         image_insights=image_insights,
@@ -4055,6 +4227,7 @@ def analyze_store_streaming(
         location_hotspots=location_hotspots,
         customer_sessions=customer_sessions,
         summary_row=summary_row,
+        summary_by_date=summary_by_date,
         alerts=alerts_df,
         daily_report=daily_report,
         daily_proof=daily_proof,
@@ -4200,6 +4373,22 @@ def export_analysis(
         if col not in summary_export.columns:
             summary_export[col] = "" if col in {"store_id", "top_camera_hotspot", "peak_time_bucket"} else np.nan
     _write(summary_export[summary_columns], out_dir / "all_stores_summary.csv")
+    summary_by_date_cols = [
+        "store_id",
+        "Date",
+        "total_images",
+        "valid_images",
+        "relevant_images",
+        "total_people",
+        "estimated_visits",
+        "avg_dwell_sec",
+        "bounce_rate",
+        "footfall",
+        "los_alerts",
+        "daily_walkins",
+        "daily_conversions",
+    ]
+    datewise_frames: list[pd.DataFrame] = []
     for store_id, store_result in output.stores.items():
         image_path = out_dir / f"store_{store_id}_image_insights.csv"
         hotspot_path = out_dir / f"store_{store_id}_camera_hotspots.csv"
@@ -4321,12 +4510,32 @@ def export_analysis(
             store_result.customer_sessions[available_session_cols],
             sessions_path,
         )
+        summary_by_date_path = out_dir / f"store_{store_id}_summary_datewise.csv"
+        store_summary_by_date = (
+            store_result.summary_by_date.copy()
+            if hasattr(store_result, "summary_by_date") and not store_result.summary_by_date.empty
+            else pd.DataFrame(columns=summary_by_date_cols)
+        )
+        for col in summary_by_date_cols:
+            if col not in store_summary_by_date.columns:
+                if col in {"Date", "store_id"}:
+                    store_summary_by_date[col] = ""
+                else:
+                    store_summary_by_date[col] = 0
+        store_summary_by_date = store_summary_by_date[summary_by_date_cols]
+        datewise_frames.append(store_summary_by_date.copy())
+        _write(store_summary_by_date, summary_by_date_path)
         if not store_result.daily_report.empty:
             _write(store_result.daily_report, out_dir / f"store_{store_id}_daily_report.csv")
         if not store_result.daily_proof.empty:
             _write(store_result.daily_proof, out_dir / f"store_{store_id}_daily_proof.csv")
         if not store_result.alerts.empty:
             _write(store_result.alerts, out_dir / f"store_{store_id}_alerts.csv")
+    if datewise_frames:
+        all_summary_by_date = pd.concat(datewise_frames, ignore_index=True)
+    else:
+        all_summary_by_date = pd.DataFrame(columns=summary_by_date_cols)
+    _write(all_summary_by_date[summary_by_date_cols], out_dir / "all_stores_summary_datewise.csv")
 
 
 def export_store_day_artifacts(
@@ -4470,6 +4679,29 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
             daily_proof_df = pd.read_csv(
                 daily_proof_path if daily_proof_path.exists() else daily_proof_gz_path
             )
+        summary_by_date_path = out_dir / f"store_{store_id}_summary_datewise.csv"
+        summary_by_date_gz_path = summary_by_date_path.with_suffix(summary_by_date_path.suffix + ".gz")
+        summary_by_date_df = pd.DataFrame(
+            columns=[
+                "store_id",
+                "Date",
+                "total_images",
+                "valid_images",
+                "relevant_images",
+                "total_people",
+                "estimated_visits",
+                "avg_dwell_sec",
+                "bounce_rate",
+                "footfall",
+                "los_alerts",
+                "daily_walkins",
+                "daily_conversions",
+            ]
+        )
+        if summary_by_date_path.exists() or summary_by_date_gz_path.exists():
+            summary_by_date_df = pd.read_csv(
+                summary_by_date_path if summary_by_date_path.exists() else summary_by_date_gz_path
+            )
 
         stores[store_id] = StoreAnalysisResult(
             image_insights=image_df,
@@ -4477,6 +4709,7 @@ def load_exports(out_dir: Path) -> AnalysisOutput:
             location_hotspots=location_hotspots_df,
             customer_sessions=customer_sessions_df,
             summary_row=summary_row,
+            summary_by_date=summary_by_date_df,
             alerts=alerts_df,
             daily_report=daily_df,
             daily_proof=daily_proof_df,
