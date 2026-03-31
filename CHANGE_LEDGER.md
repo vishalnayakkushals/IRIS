@@ -1247,3 +1247,22 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
+### 2026-03-30 | Commit pending
+- Summary:
+  - Added feedback-aware override memory for strict gate/session classification using confirmed QA feedback with hybrid keys:
+    - exact frame-track key: `(capture_date, camera_id, filename, track_id)`
+    - day-track key: `(capture_date, camera_id, track_id)`
+  - Integrated conservative override resolution into D07 role decisions so reviewed `BANNER` / `PEDESTRIAN` / `STAFF` corrections suppress repeat false positives without broadly forcing unrelated customer promotions.
+  - Strengthened short-window static/banner detection to reduce banner-heavy false positives (especially low-motion short tracks).
+  - Added regression coverage to ensure exact frame-track override takes precedence over broader day-track override and maps to `INVALID_STATIC_OBJECT` reliably.
+- Changed Paths:
+  - `src/iris/iris_analysis.py`
+  - `tests/test_iris_analysis.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New optional runtime flags:
+    - `IRIS_FEEDBACK_OVERRIDE_ENABLED` (default `1`)
+    - `IRIS_STORE_REGISTRY_DB` (optional explicit DB path; defaults to inferred `data/store_registry.db`)
+

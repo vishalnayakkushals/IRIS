@@ -756,6 +756,79 @@ def test_d07_outside_passer_does_not_open_customer_session() -> None:
     assert all(str(v).strip() == "[]" for v in image_out["store_day_customer_ids"].tolist())
 
 
+def test_feedback_override_marks_known_banner_track_as_static_object() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:00"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([15]),
+                "person_centroids": json.dumps([(0.61, 0.50)]),
+                "person_boxes": json.dumps([(0.56, 0.15, 0.70, 0.88)]),
+                "person_confidences": json.dumps([0.91]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps([""]),
+                "box_labels": json.dumps(["pending"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-00_D07-1.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-12 09:00:07"),
+                "capture_date": "2026-03-12",
+                "camera_id": "D07",
+                "track_ids": json.dumps([15]),
+                "person_centroids": json.dumps([(0.62, 0.50)]),
+                "person_boxes": json.dumps([(0.56, 0.15, 0.70, 0.88)]),
+                "person_confidences": json.dumps([0.92]),
+                "staff_flags": json.dumps([False]),
+                "staff_scores": json.dumps([0.0]),
+                "ignore_reasons": json.dumps([""]),
+                "box_labels": json.dumps(["pending"]),
+                "person_count": 1,
+                "customer_count": 1,
+                "staff_count": 0,
+                "is_valid": True,
+                "detection_error": "",
+                "reject_reason": "",
+                "filename": "09-00-07_D07-2.jpg",
+                "path": "",
+                "location_name": "D07",
+                "floor_name": "Ground",
+            },
+        ]
+    )
+    override_memory = {
+        "exact_frame_track": {
+            ("2026-03-12", "D07", "09-00-07_d07-2.jpg", "15"): "banner",
+        },
+        "day_track": {
+            ("2026-03-12", "D07", "15"): "staff",
+        },
+    }
+    image_out, sessions = build_store_day_customer_sessions(
+        image_insights=df,
+        store_id="BLRJAY",
+        camera_configs={"D07": {"camera_role": "ENTRANCE", "entry_line_x": 0.5, "entry_direction": "OUTSIDE_TO_INSIDE"}},
+        feedback_override_memory=override_memory,
+    )
+    assert not sessions.empty
+    session_row = sessions.iloc[0]
+    assert str(session_row.get("status", "")) == "INVALID_STATIC_OBJECT"
+    assert str(session_row.get("session_class", "")) == "STATIC_OBJECT"
+    assert str(session_row.get("invalid_reason", "")) == "static_object"
+    assert str(image_out.iloc[-1].get("event_label", "")) == "STATIC_OBJECT"
+
+
 def test_session_metrics_show_nan_rates_when_no_valid_entries() -> None:
     summary = pd.DataFrame(
         [

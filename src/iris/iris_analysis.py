@@ -11,6 +11,7 @@ import re
 import colorsys
 import pickle
 import sys
+import sqlite3
 from typing import Any, Protocol, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
@@ -1720,12 +1721,206 @@ def _dominant_gender_from_observations(observations: list[dict[str, Any]]) -> st
     return "male" if score_m >= score_f else "female"
 
 
+_OVERRIDE_LABEL_ALIASES: dict[str, str] = {
+    "customer": "customer",
+    "staff": "staff",
+    "banner": "banner",
+    "poster": "banner",
+    "poster_banner": "banner",
+    "static_object": "banner",
+    "outside_passer": "pedestrian",
+    "outside passer": "pedestrian",
+    "pedestrian": "pedestrian",
+    "pedestrians": "pedestrian",
+    "no_customer": "no_customer",
+    "no_person": "no_customer",
+    "invalid": "invalid",
+    "unknown": "invalid",
+}
+
+
+def _canonical_override_label(raw: object) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    return _OVERRIDE_LABEL_ALIASES.get(text, text)
+
+
+def _normalize_capture_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return pd.Timestamp(text).date().isoformat()
+    except Exception:
+        pass
+    if len(text) == 8 and text.isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+    return text
+
+
+def _load_feedback_override_memory(
+    store_id: str,
+    root_dir: Path | None = None,
+) -> dict[str, Any]:
+    """
+    Load confirmed feedback as lightweight override memory.
+    Hybrid keys:
+    - exact frame+track: (capture_date, camera_id, filename, track_id)
+    - day+track: (capture_date, camera_id, track_id)
+    """
+    enabled = str(os.getenv("IRIS_FEEDBACK_OVERRIDE_ENABLED", "1")).strip().lower() not in {"0", "false", "no"}
+    base_payload: dict[str, Any] = {
+        "exact_frame_track": {},
+        "day_track": {},
+        "stats": {"rows_loaded": 0, "exact_keys": 0, "day_track_keys": 0},
+    }
+    if not enabled:
+        return base_payload
+
+    db_env = str(os.getenv("IRIS_STORE_REGISTRY_DB", "")).strip()
+    db_path = Path(db_env) if db_env else None
+    if db_path is None:
+        if root_dir is not None:
+            db_path = (root_dir.parent / "store_registry.db").resolve()
+        else:
+            db_path = Path("data/store_registry.db").resolve()
+    if not db_path.exists() or not db_path.is_file():
+        return base_payload
+
+    query = (
+        "SELECT id,capture_date,filename,camera_id,track_id,corrected_label,reviewed_at,created_at "
+        "FROM qa_feedback WHERE lower(store_id)=lower(?) AND lower(review_status)='confirmed' "
+        "ORDER BY id ASC"
+    )
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        conn.execute("PRAGMA busy_timeout=10000")
+        rows = conn.execute(query, (str(store_id).strip(),)).fetchall()
+    except Exception:
+        return base_payload
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    exact_map: dict[tuple[str, str, str, str], tuple[int, str]] = {}
+    day_track_map: dict[tuple[str, str, str], tuple[int, str]] = {}
+    loaded = 0
+    for row in rows:
+        try:
+            rid = int(row[0] or 0)
+        except Exception:
+            rid = 0
+        capture_date = _normalize_capture_date(row[1])
+        filename = str(row[2] or "").strip().lower()
+        camera_id = str(row[3] or "").strip().upper()
+        track_id = str(row[4] or "").strip()
+        corrected = _canonical_override_label(row[5])
+        if not corrected or not capture_date or not camera_id:
+            continue
+        loaded += 1
+        if track_id:
+            day_key = (capture_date, camera_id, track_id)
+            prev_day = day_track_map.get(day_key)
+            if prev_day is None or rid >= int(prev_day[0]):
+                day_track_map[day_key] = (rid, corrected)
+            if filename:
+                exact_key = (capture_date, camera_id, filename, track_id)
+                prev_exact = exact_map.get(exact_key)
+                if prev_exact is None or rid >= int(prev_exact[0]):
+                    exact_map[exact_key] = (rid, corrected)
+
+    return {
+        "exact_frame_track": {k: v[1] for k, v in exact_map.items()},
+        "day_track": {k: v[1] for k, v in day_track_map.items()},
+        "stats": {
+            "rows_loaded": int(loaded),
+            "exact_keys": int(len(exact_map)),
+            "day_track_keys": int(len(day_track_map)),
+        },
+    }
+
+
+def _lookup_feedback_override_label(
+    memory: dict[str, Any] | None,
+    capture_date: str,
+    camera_id: str,
+    track_id: int,
+    observations: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if not memory:
+        return "", ""
+    exact = memory.get("exact_frame_track", {})
+    day_track = memory.get("day_track", {})
+    if not isinstance(exact, dict) or not isinstance(day_track, dict):
+        return "", ""
+    normalized_day = _normalize_capture_date(capture_date)
+    camera_key = str(camera_id).strip().upper()
+    track_key = str(int(track_id))
+    for item in observations:
+        image_name = str(item.get("image_name", "") or "").strip().lower()
+        if not image_name:
+            continue
+        key = (normalized_day, camera_key, image_name, track_key)
+        label = _canonical_override_label(exact.get(key, ""))
+        if label:
+            return label, "exact_frame_track"
+    label = _canonical_override_label(day_track.get((normalized_day, camera_key, track_key), ""))
+    if label:
+        return label, "day_track"
+    return "", ""
+
+
+def _resolve_track_role_with_overrides(
+    *,
+    crossed_in_ts: pd.Timestamp | None,
+    crossed_out_ts: pd.Timestamp | None,
+    is_staff: bool,
+    static_like: bool,
+    near_entry_no_cross: bool,
+    override_label: str,
+) -> tuple[str, str, str, bool]:
+    """
+    Resolve final role/status with conservative override priority.
+    Priority:
+    1) reviewed corrections for non-customer classes (staff/banner/pedestrian/no_customer)
+    2) computed decision from motion + geometry + staff heuristics
+    """
+    normalized = _canonical_override_label(override_label)
+    forced_staff = normalized == "staff"
+    forced_static = normalized in {"banner", "no_customer"}
+    forced_pedestrian = normalized == "pedestrian"
+
+    is_staff_final = bool(is_staff or forced_staff)
+    static_final = bool(static_like or forced_static)
+    outside_final = bool(
+        (forced_pedestrian)
+        or (crossed_in_ts is None and (not is_staff_final) and (not static_final) and (not near_entry_no_cross))
+    )
+
+    entry_valid = bool(crossed_in_ts is not None and not is_staff_final and not static_final and not outside_final)
+    if is_staff_final:
+        return "STAFF", "STAFF", "staff_like", False
+    if static_final:
+        return "INVALID_STATIC_OBJECT", "STATIC_OBJECT", "static_object", False
+    if outside_final:
+        return "OUTSIDE_PASSER", "OUTSIDE_PASSER", "no_valid_entry", False
+    if crossed_in_ts is None:
+        return "ENTRY_CANDIDATE", "INVALID", "entry_not_confirmed", False
+    if crossed_out_ts is None:
+        return "ACTIVE_CUSTOMER", "CUSTOMER", "", bool(entry_valid)
+    return "EXITED", "CUSTOMER", "", bool(entry_valid)
+
+
 def _build_track_based_strict_sessions(
     image_insights: pd.DataFrame,
     store_id: str,
     gate_camera_ids: set[str],
     camera_configs: dict[str, dict[str, object]],
     session_timeout_sec: int,
+    feedback_override_memory: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = image_insights.copy()
     if "store_day_customer_ids" not in df.columns:
@@ -1860,6 +2055,11 @@ def _build_track_based_strict_sessions(
             for a, b in zip(obs, obs[1:]):
                 movement += math.dist((float(a["cx"]), float(a["cy"])), (float(b["cx"]), float(b["cy"])))
 
+            poster_reason_votes = sum(
+                1
+                for item in obs
+                if str(item.get("ignore_reason", "")).strip().lower() == "poster_or_flat_static"
+            )
             poster_votes = sum(
                 1
                 for item in obs
@@ -1869,6 +2069,7 @@ def _build_track_based_strict_sessions(
             static_like = bool(
                 (len(obs) >= 5 and movement <= 0.09 and point_std_x <= 0.015 and point_std_y <= 0.015 and area_cv <= 0.10)
                 or (poster_votes >= max(2, int(len(obs) * 0.6)))
+                or (len(obs) <= 3 and poster_reason_votes >= 1 and movement <= 0.03 and area_cv <= 0.08)
             )
 
             color_score = float(max(float(item.get("staff_score", 0.0) or 0.0) for item in obs))
@@ -1882,39 +2083,26 @@ def _build_track_based_strict_sessions(
             )
 
             near_entry_no_cross = bool(crossed_in_ts is None and any(abs(float(v["cx"]) - line_x) <= 0.05 for v in obs))
-            is_outside_passer = bool(crossed_in_ts is None and not is_staff and not static_like and not near_entry_no_cross)
-
-            entry_valid = bool(crossed_in_ts is not None and not is_staff and not static_like and not is_outside_passer)
+            override_label, override_source = _lookup_feedback_override_label(
+                memory=feedback_override_memory,
+                capture_date=day,
+                camera_id=camera_id,
+                track_id=track_id,
+                observations=obs,
+            )
+            status, session_class, invalid_reason, entry_valid = _resolve_track_role_with_overrides(
+                crossed_in_ts=crossed_in_ts,
+                crossed_out_ts=crossed_out_ts,
+                is_staff=is_staff,
+                static_like=static_like,
+                near_entry_no_cross=near_entry_no_cross,
+                override_label=override_label,
+            )
             if entry_valid:
                 session_id = _new_store_day_customer_id(store_id=store_id, capture_date=day, seq=seq)
                 seq += 1
             else:
                 session_id = f"REJ_{store_id}_{day.replace('-', '')}_{camera_id}_{abs(int(track_id))}"
-
-            if is_staff:
-                status = "STAFF"
-                session_class = "STAFF"
-                invalid_reason = "staff_like"
-            elif static_like:
-                status = "INVALID_STATIC_OBJECT"
-                session_class = "STATIC_OBJECT"
-                invalid_reason = "static_object"
-            elif is_outside_passer:
-                status = "OUTSIDE_PASSER"
-                session_class = "OUTSIDE_PASSER"
-                invalid_reason = "no_valid_entry"
-            elif crossed_in_ts is None:
-                status = "ENTRY_CANDIDATE"
-                session_class = "INVALID"
-                invalid_reason = "entry_not_confirmed"
-            elif crossed_out_ts is None:
-                status = "ACTIVE_CUSTOMER"
-                session_class = "CUSTOMER"
-                invalid_reason = ""
-            else:
-                status = "EXITED"
-                session_class = "CUSTOMER"
-                invalid_reason = ""
 
             track_to_status[key] = status
             close_reason = "exit_crossing" if crossed_out_ts is not None else "timeout"
@@ -1938,7 +2126,9 @@ def _build_track_based_strict_sessions(
                 f"staff_score={staff_score:.3f};"
                 f"movement={movement:.4f};"
                 f"cross_in={bool(crossed_in_ts)};"
-                f"cross_out={bool(crossed_out_ts)}"
+                f"cross_out={bool(crossed_out_ts)};"
+                f"override={override_label or 'none'};"
+                f"override_source={override_source or 'none'}"
             )
             sessions_out.append(
                 {
@@ -2048,6 +2238,7 @@ def build_store_day_customer_sessions(
     store_id: str,
     camera_configs: dict[str, dict[str, object]] | None = None,
     session_timeout_sec: int = 180,
+    feedback_override_memory: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     if camera_configs is None:
         camera_configs = {}
@@ -2093,6 +2284,7 @@ def build_store_day_customer_sessions(
             gate_camera_ids=gate_camera_ids,
             camera_configs=camera_configs,
             session_timeout_sec=session_timeout_sec,
+            feedback_override_memory=feedback_override_memory,
         )
 
     billing_cameras = {
@@ -3386,6 +3578,7 @@ def analyze_store(
     use_streaming: bool = True,
     false_positive_model: Optional[Any] = None,
     filename_prefixes: list[str] | None = None,
+    feedback_override_memory: dict[str, Any] | None = None,
 ) -> StoreAnalysisResult:
     if use_parallel and use_streaming:
         # Fallback detectors like OpenCV HOG are not picklable under multiprocessing.
@@ -3414,6 +3607,7 @@ def analyze_store(
             enable_age_gender=enable_age_gender, false_positive_signatures=false_positive_signatures,
             false_positive_model=false_positive_model,
             filename_prefixes=normalized_prefixes,
+            feedback_override_memory=feedback_override_memory,
         )
     
     # Original linear processing
@@ -3588,6 +3782,7 @@ def analyze_store(
         store_id=store_id,
         camera_configs=camera_configs,
         session_timeout_sec=session_timeout_sec,
+        feedback_override_memory=feedback_override_memory,
     )
     if "customer_ids" not in image_insights.columns:
         image_insights["customer_ids"] = "[]"
@@ -3659,6 +3854,7 @@ def analyze_store_streaming(
     false_positive_model: Optional[Any] = None,
     chunk_size: int = 500,
     filename_prefixes: list[str] | None = None,
+    feedback_override_memory: dict[str, Any] | None = None,
 ) -> StoreAnalysisResult:
     """Implement memory optimization using chunks + parquet storage + multiprocessing."""
     image_paths = _iter_store_images(store_dir)
@@ -3812,6 +4008,7 @@ def analyze_store_streaming(
         store_id=store_id,
         camera_configs=camera_configs,
         session_timeout_sec=session_timeout_sec,
+        feedback_override_memory=feedback_override_memory,
     )
     if "customer_ids" not in image_insights.columns:
         image_insights["customer_ids"] = "[]"
@@ -3884,6 +4081,7 @@ def analyze_root(
     use_streaming: bool = True,
     false_positive_model: Optional[Any] = None,
     filename_prefixes: list[str] | None = None,
+    feedback_overrides_by_store: dict[str, dict[str, Any]] | None = None,
 ) -> AnalysisOutput:
     root_dir = root_dir.resolve()
     detector, detector_warning = build_detector(
@@ -3896,12 +4094,18 @@ def analyze_root(
         camera_configs_by_store = {}
     if false_positive_signatures_by_store is None:
         false_positive_signatures_by_store = {}
+    if feedback_overrides_by_store is None:
+        feedback_overrides_by_store = {}
     normalized_filter = str(store_filter or "").strip()
     if normalized_filter:
         store_dirs = [path for path in store_dirs if path.name == normalized_filter]
     summary_frames: list[pd.DataFrame] = []
     for store_dir in store_dirs:
         store_id = store_dir.name
+        override_memory = feedback_overrides_by_store.get(store_id)
+        if override_memory is None:
+            override_memory = _load_feedback_override_memory(store_id=store_id, root_dir=root_dir)
+            feedback_overrides_by_store[store_id] = override_memory
         result = analyze_store(
             store_id=store_id,
             store_dir=store_dir,
@@ -3922,6 +4126,7 @@ def analyze_root(
             use_streaming=use_streaming,
             false_positive_model=false_positive_model,
             filename_prefixes=filename_prefixes,
+            feedback_override_memory=override_memory,
         )
         store_results[store_id] = result
         summary_frames.append(result.summary_row)
