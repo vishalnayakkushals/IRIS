@@ -27,6 +27,7 @@ if /I "%ACTION%"=="stage1-scheduler-start" goto :do_stage1_scheduler_start
 if /I "%ACTION%"=="stage1-scheduler-stop" goto :do_stage1_scheduler_stop
 if /I "%ACTION%"=="stage1-scheduler-logs" goto :do_stage1_scheduler_logs
 if /I "%ACTION%"=="stage1-scan-now" goto :do_stage1_scan_now
+if /I "%ACTION%"=="stage1-report-now" goto :do_stage1_report_now
 if /I "%ACTION%"=="pull" goto :do_pull
 if /I "%ACTION%"=="health" goto :do_health
 
@@ -106,6 +107,11 @@ echo [IRIS] Running Stage-1 YOLO relevance scan now (inside container)
 docker compose -f %COMPOSE_FILE% exec iris python scripts/yolo_relevance_scan.py --root /app/data/test_stores --out-dir /app/data/exports/current/stage1_relevance --store-id TEST_STORE_D07 --detector yolo --conf 0.18 --gzip-exports --drop-plain-csv
 goto :exit_with_code
 
+:do_stage1_report_now
+echo [IRIS] Building Stage-1 store report now (from Stage-1 output)
+docker compose -f %COMPOSE_FILE% exec iris python scripts/stage1_store_report.py --stage1-all /app/data/exports/current/stage1_relevance/stage1_relevance_all.csv.gz --out /app/data/exports/current/vision_eval/store_report.csv
+goto :exit_with_code
+
 :do_status
 echo [IRIS] docker compose ps
 docker compose -f %COMPOSE_FILE% ps
@@ -149,6 +155,7 @@ echo   run_iris.bat stage1-scheduler-start
 echo   run_iris.bat stage1-scheduler-stop
 echo   run_iris.bat stage1-scheduler-logs
 echo   run_iris.bat stage1-scan-now
+echo   run_iris.bat stage1-report-now
 echo   run_iris.bat pull
 echo   run_iris.bat health
 echo.

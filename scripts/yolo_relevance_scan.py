@@ -34,6 +34,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-images", type=int, default=0, help="Optional cap; 0 means full scan.")
     parser.add_argument("--gzip-exports", action="store_true", help="Also write .csv.gz outputs.")
     parser.add_argument("--drop-plain-csv", action="store_true", help="Skip plain CSV and keep only gzip output.")
+    parser.add_argument(
+        "--store-report",
+        type=Path,
+        default=app_dir / "data" / "exports" / "current" / "vision_eval" / "store_report.csv",
+        help="Store+date aggregated Stage-1 report path.",
+    )
+    parser.add_argument("--skip-store-report", action="store_true", help="Skip store-level report generation.")
     return parser.parse_args()
 
 
@@ -106,6 +113,98 @@ def _preferred_output_path(path: Path, write_gzip: bool, keep_plain: bool) -> st
     if write_gzip:
         return str(path.with_suffix(path.suffix + ".gz").resolve())
     return str(path.resolve())
+
+
+def _normalized_date(value: Any) -> str:
+    try:
+        ts = pd.Timestamp(value)
+        if pd.isna(ts):
+            return ""
+        return ts.date().isoformat()
+    except Exception:
+        return ""
+
+
+def _build_store_date_report(stage1_df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["store_name", "date", "raw_image_count", "relevant_image_count"]
+    if stage1_df.empty:
+        return pd.DataFrame(columns=columns)
+    df = stage1_df.copy()
+    df["store_name"] = df.get("store_id", "").fillna("").astype(str).str.strip()
+    date_col = df.get("capture_date", "").map(_normalized_date)
+    ts_col = df.get("timestamp", "").map(_normalized_date)
+    df["date"] = date_col.mask(date_col == "", ts_col)
+    df["is_relevant"] = pd.to_numeric(df.get("is_relevant", 0), errors="coerce").fillna(0).astype(int).clip(lower=0, upper=1)
+    scoped = df[df["store_name"].ne("") & df["date"].ne("")].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=columns)
+    grouped = (
+        scoped.groupby(["store_name", "date"], as_index=False)
+        .agg(
+            raw_image_count=("image_name", "count"),
+            relevant_image_count=("is_relevant", "sum"),
+        )
+        .sort_values(["date", "store_name"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    grouped["raw_image_count"] = grouped["raw_image_count"].astype(int)
+    grouped["relevant_image_count"] = grouped["relevant_image_count"].astype(int)
+    return grouped[columns]
+
+
+def _upsert_store_report(report_df: pd.DataFrame, report_path: Path) -> tuple[pd.DataFrame, Path, Path]:
+    cols = ["store_name", "date", "raw_image_count", "relevant_image_count"]
+    report_path = report_path.resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path = report_path.with_suffix(".json")
+    if report_df.empty:
+        if report_path.exists():
+            try:
+                existing = pd.read_csv(report_path)
+                existing = existing[[c for c in cols if c in existing.columns]].copy()
+                for c in cols:
+                    if c not in existing.columns:
+                        existing[c] = 0 if c.endswith("_count") else ""
+                existing = existing[cols]
+                existing.to_csv(report_path, index=False)
+                existing.to_json(json_path, orient="records", indent=2)
+                return existing, report_path, json_path
+            except Exception:
+                pass
+        empty = pd.DataFrame(columns=cols)
+        empty.to_csv(report_path, index=False)
+        empty.to_json(json_path, orient="records", indent=2)
+        return empty, report_path, json_path
+
+    incoming = report_df[cols].copy()
+    incoming["raw_image_count"] = pd.to_numeric(incoming["raw_image_count"], errors="coerce").fillna(0).astype(int)
+    incoming["relevant_image_count"] = pd.to_numeric(incoming["relevant_image_count"], errors="coerce").fillna(0).astype(int)
+    if report_path.exists():
+        try:
+            existing = pd.read_csv(report_path)
+            for c in cols:
+                if c not in existing.columns:
+                    existing[c] = 0 if c.endswith("_count") else ""
+            existing = existing[cols].copy()
+            existing["store_name"] = existing["store_name"].fillna("").astype(str).str.strip()
+            existing["date"] = existing["date"].map(_normalized_date)
+            existing["raw_image_count"] = pd.to_numeric(existing["raw_image_count"], errors="coerce").fillna(0).astype(int)
+            existing["relevant_image_count"] = pd.to_numeric(existing["relevant_image_count"], errors="coerce").fillna(0).astype(int)
+        except Exception:
+            existing = pd.DataFrame(columns=cols)
+    else:
+        existing = pd.DataFrame(columns=cols)
+
+    overwrite_keys = set((str(r["store_name"]).strip(), str(r["date"]).strip()) for _, r in incoming.iterrows())
+    if not existing.empty:
+        existing = existing[
+            ~existing.apply(lambda r: (str(r.get("store_name", "")).strip(), str(r.get("date", "")).strip()) in overwrite_keys, axis=1)
+        ].copy()
+    merged = pd.concat([existing, incoming], ignore_index=True)
+    merged = merged.sort_values(["date", "store_name"], ascending=[False, True]).reset_index(drop=True)
+    merged.to_csv(report_path, index=False)
+    merged.to_json(json_path, orient="records", indent=2)
+    return merged, report_path, json_path
 
 
 def run_stage1_scan(args: argparse.Namespace) -> dict[str, Any]:
@@ -264,6 +363,15 @@ def run_stage1_scan(args: argparse.Namespace) -> dict[str, Any]:
             "summary": str((out_dir / "stage1_relevance_summary.json").resolve()),
         },
     }
+    if not bool(args.skip_store_report):
+        stage1_report = _build_store_date_report(stage1_df=all_df)
+        merged_report, report_path, json_path = _upsert_store_report(
+            report_df=stage1_report,
+            report_path=args.store_report,
+        )
+        summary["outputs"]["store_report_csv"] = str(report_path)
+        summary["outputs"]["store_report_json"] = str(json_path)
+        summary["store_report_rows"] = int(len(merged_report))
     (out_dir / "stage1_relevance_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 

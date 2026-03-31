@@ -28,6 +28,7 @@ It records what changed, where it changed, and why.
 | `scripts/gpt_eval_scheduler.py` | Dedicated daily GPT-eval scheduler for TEST_STORE-style capped runs, isolated from YOLO scheduler cycles. |
 | `scripts/yolo_relevance_scan.py` | Stage-1 local relevance filter: counts images, runs YOLO person detection, and exports relevant/irrelevant lists for downstream GPT scan. |
 | `scripts/yolo_relevance_scheduler.py` | Daily Stage-1 scheduler wrapper that runs YOLO relevance scan at configured local time and stores cycle status in app settings. |
+| `scripts/stage1_store_report.py` | Stage-1 reporting utility: aggregates store/date raw vs relevant image counts from relevance output and upserts dashboard-ready flat report. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
@@ -74,6 +75,22 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New compose profile/service: `iris-yolo-relevance-scheduler` (`--profile stage1`).
   - New env controls: `YOLO_RELEVANCE_ENABLED`, `YOLO_RELEVANCE_DAILY_RUN_AT`, `YOLO_RELEVANCE_TZ`, `YOLO_RELEVANCE_ROOT`, `YOLO_RELEVANCE_OUT_ROOT`, `YOLO_RELEVANCE_STORE_ID`, `YOLO_RELEVANCE_CONF`, `YOLO_RELEVANCE_MAX_IMAGES`, `YOLO_RELEVANCE_ALLOW_FALLBACK`, `YOLO_RELEVANCE_GZIP_EXPORTS`, `YOLO_RELEVANCE_DROP_PLAIN_CSV`.
+
+### 2026-03-31 | Commit pending
+- Summary:
+  - Added Stage-1 store-level reporting layer (store+date aggregation) on top of relevance output with required flat schema:
+    - `store_name`, `date`, `raw_image_count`, `relevant_image_count`.
+  - Implemented safe upsert behavior for repeat runs (same store/date rows are replaced, not duplicated) and JSON mirror export for service/API use.
+  - Added standalone report command utility and `run_iris.bat` shortcut for on-demand report generation without rerunning detector.
+- Changed Paths:
+  - `scripts/yolo_relevance_scan.py`
+  - `scripts/stage1_store_report.py`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/stage1_store_report.py`
+- Infra/Config Impact:
+  - New output artifact path default: `data/exports/current/vision_eval/store_report.csv` (+ `store_report.json`).
 
 ### 2026-03-27 | Commit pending
 - Summary:
