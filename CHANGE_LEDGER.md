@@ -66,6 +66,21 @@ Use this template for each new change:
 
 ### 2026-04-01 | Commit pending
 - Summary:
+  - Fixed on-fly runtime parser/runtime issues in container by correcting local-source ID normalization and escaping, and validated end-to-end execution from Docker.
+  - Added detector init timing (`detector_init_ms`) to run metrics and benchmark output so slowness attribution is explicit (download vs model-init vs inference).
+  - Added lightweight durable queue-state table (`onfly_task_queue`) updates for per-image stage tracking (`yolo`, `chatgpt`) with status/error audit trail.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - On-fly run summaries/benchmarks now include `detector_init_ms`.
+  - New SQLite table used by on-fly runtime: `onfly_task_queue`.
+
+
+### 2026-04-01 | Commit pending
+- Summary:
   - Added a lightweight on-the-fly pipeline (`source URL -> YOLO relevance -> optional GPT for relevant-only`) with SQLite-backed idempotent state to skip already processed images.
   - Added dedicated hourly+nightly on-fly scheduler and compose profile (`iris-onfly-scheduler`) so URL-first evaluation flow runs independently from existing overnight analytics services.
   - Added benchmark runner for 3x before/after timing, report artifacts for slowness diagnostics, and store/date flat output (`onfly_store_date_report.csv`) for dashboard readiness.

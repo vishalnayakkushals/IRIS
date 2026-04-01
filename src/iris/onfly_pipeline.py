@@ -122,7 +122,8 @@ class LocalClient:
         for p in paths:
             rel = p.relative_to(self.root)
             ds, dd, cam, ts = _image_meta(rel, p.name)
-            out.append(SourceImage(f"local:{str(rel).replace('\\', '/').lower()}", p.name, str(rel).replace("\\", "/"), "local", str(rel).replace("\\", "/"), str(p), ds, dd, cam, ts))
+            rel_norm = str(rel).replace("\\", "/")
+            out.append(SourceImage(f"local:{rel_norm.lower()}", p.name, rel_norm, "local", rel_norm, str(p), ds, dd, cam, ts))
         return out
 
     def fetch_bytes(self, item: SourceImage) -> bytes:
