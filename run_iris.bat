@@ -14,6 +14,10 @@ set "ONFLY_STORE_ID=%ONFLY_STORE_ID%"
 if /I "%ONFLY_STORE_ID%"=="" set "ONFLY_STORE_ID=TEST_STORE_D07"
 set "ONFLY_SOURCE_URL=%ONFLY_SOURCE_URL%"
 if /I "%ONFLY_SOURCE_URL%"=="" set "ONFLY_SOURCE_URL=/app/data/test_stores/TEST_STORE_D07"
+set "OPENAI_VISION_MODEL=%OPENAI_VISION_MODEL%"
+if /I "%OPENAI_VISION_MODEL%"=="" set "OPENAI_VISION_MODEL=gpt-4.1-mini"
+set "OPENAI_API_BASE=%OPENAI_API_BASE%"
+if /I "%OPENAI_API_BASE%"=="" set "OPENAI_API_BASE=https://api.openai.com/v1"
 
 if /I "%ACTION%"=="help" goto :usage
 if /I "%ACTION%"=="restart" goto :do_restart
@@ -32,6 +36,7 @@ if /I "%ACTION%"=="stage1-scheduler-stop" goto :do_stage1_scheduler_stop
 if /I "%ACTION%"=="stage1-scheduler-logs" goto :do_stage1_scheduler_logs
 if /I "%ACTION%"=="stage1-scan-now" goto :do_stage1_scan_now
 if /I "%ACTION%"=="stage1-report-now" goto :do_stage1_report_now
+if /I "%ACTION%"=="gpt-test-validation-now" goto :do_gpt_test_validation_now
 if /I "%ACTION%"=="onfly-run-now" goto :do_onfly_run_now
 if /I "%ACTION%"=="onfly-benchmark" goto :do_onfly_benchmark
 if /I "%ACTION%"=="onfly-scheduler-start" goto :do_onfly_scheduler_start
@@ -121,6 +126,12 @@ echo [IRIS] Building Stage-1 store report now (from Stage-1 output)
 docker compose -f %COMPOSE_FILE% exec iris python scripts/stage1_store_report.py --stage1-all /app/data/exports/current/stage1_relevance/stage1_relevance_all.csv.gz --out /app/data/exports/current/vision_eval/store_report.csv
 goto :exit_with_code
 
+:do_gpt_test_validation_now
+echo [IRIS] Running GPT post-relevance validation (test-folder only, default 30 images)
+if /I "%OPENAI_API_KEY%"=="" echo [WARN] OPENAI_API_KEY is empty. GPT request will fail.
+docker compose -f %COMPOSE_FILE% exec -e OPENAI_API_KEY=%OPENAI_API_KEY% iris python scripts/gpt_post_relevance_test.py --store-id TEST_STORE_D07 --stage1-relevant /app/data/exports/current/stage1_relevance/stage1_relevant_images.csv.gz --out-root /app/data/exports/current/gpt_validation --db /app/data/store_registry.db --limit 30 --model %OPENAI_VISION_MODEL% --api-base %OPENAI_API_BASE% --save-json
+goto :exit_with_code
+
 
 :do_onfly_run_now
 echo [IRIS] Running on-the-fly pipeline now (YOLO relevance + optional GPT)
@@ -194,6 +205,7 @@ echo   run_iris.bat stage1-scheduler-stop
 echo   run_iris.bat stage1-scheduler-logs
 echo   run_iris.bat stage1-scan-now
 echo   run_iris.bat stage1-report-now
+echo   run_iris.bat gpt-test-validation-now
 echo   run_iris.bat onfly-run-now
 echo   run_iris.bat onfly-benchmark
 echo   run_iris.bat onfly-scheduler-start

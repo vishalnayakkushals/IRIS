@@ -2770,6 +2770,95 @@ def _build_daily_proof_df(image_df: pd.DataFrame, store_result: object, store_id
     ]
 
 
+def _gpt_validation_store_dir(root_dir: Path, store_id: str) -> Path:
+    return root_dir / "exports" / "current" / "gpt_validation" / store_id
+
+
+def _read_csv_if_exists(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _load_gpt_outputs(root_dir: Path, store_id: str) -> dict[str, pd.DataFrame]:
+    base = _gpt_validation_store_dir(root_dir=root_dir, store_id=store_id)
+    return {
+        "validation": _read_csv_if_exists(base / "gpt_validation_results.csv"),
+        "frame_summary": _read_csv_if_exists(base / "gpt_validation_frame_summary.csv"),
+        "store_summary": _read_csv_if_exists(base / "gpt_store_date_summary.csv"),
+        "yolo_vs_gpt": _read_csv_if_exists(base / "yolo_vs_gpt_accuracy.csv"),
+        "gpt_vs_reviewer": _read_csv_if_exists(base / "gpt_vs_reviewer_accuracy.csv"),
+        "gpt_vs_reviewer_detail": _read_csv_if_exists(base / "gpt_vs_reviewer_detail.csv"),
+    }
+
+
+def _build_gpt_frame_index(gpt_validation_df: pd.DataFrame) -> dict[tuple[str, str, str], dict[str, Any]]:
+    if gpt_validation_df.empty:
+        return {}
+    df = gpt_validation_df.copy()
+    for col in ["capture_date", "camera_id", "image_name", "entity_id", "gpt_label"]:
+        if col not in df.columns:
+            df[col] = ""
+    if "annotated_image_path" not in df.columns:
+        df["annotated_image_path"] = ""
+    if "yolo_detected" not in df.columns:
+        df["yolo_detected"] = False
+    if "gpt_extra_detection" not in df.columns:
+        df["gpt_extra_detection"] = False
+
+    df["capture_date"] = df["capture_date"].map(_normalize_capture_date_key)
+    df["camera_id"] = df["camera_id"].astype(str).str.strip()
+    df["image_name"] = df["image_name"].astype(str).str.strip()
+    df["entity_id"] = df["entity_id"].astype(str).str.strip()
+    df["gpt_label"] = df["gpt_label"].map(_label_to_display)
+    df["yolo_detected"] = df["yolo_detected"].fillna(False).astype(bool)
+    df["gpt_extra_detection"] = df["gpt_extra_detection"].fillna(False).astype(bool)
+
+    frame_index: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for (cap_date, cam, name), part in df.groupby(["capture_date", "camera_id", "image_name"], sort=False):
+        working = part.copy()
+        working["_sort_idx"] = (
+            working["entity_id"]
+            .str.extract(r"(\d+)", expand=False)
+            .fillna("9999")
+            .astype(int)
+        )
+        working = working.sort_values(["_sort_idx", "entity_id"]).reset_index(drop=True)
+        track_ids = [str(v).strip() for v in working["entity_id"].tolist() if str(v).strip()]
+        pred_map = {
+            str(row.get("entity_id", "")).strip(): str(row.get("gpt_label", "")).strip()
+            for _, row in working.iterrows()
+            if str(row.get("entity_id", "")).strip()
+        }
+        yolo_map = {
+            str(row.get("entity_id", "")).strip(): bool(row.get("yolo_detected", False))
+            for _, row in working.iterrows()
+            if str(row.get("entity_id", "")).strip()
+        }
+        extra_map = {
+            str(row.get("entity_id", "")).strip(): bool(row.get("gpt_extra_detection", False))
+            for _, row in working.iterrows()
+            if str(row.get("entity_id", "")).strip()
+        }
+        annotated_path = ""
+        ann = working["annotated_image_path"].dropna().astype(str).str.strip()
+        ann = ann[ann != ""]
+        if not ann.empty:
+            annotated_path = str(ann.iloc[0])
+
+        frame_index[(str(cap_date), str(cam), str(name))] = {
+            "track_ids": track_ids,
+            "pred_map": pred_map,
+            "yolo_map": yolo_map,
+            "extra_map": extra_map,
+            "annotated_image_path": annotated_path,
+        }
+    return frame_index
+
+
 def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     st.subheader("Report Module")
     st.caption("Choose store/date and download report data for offline analysis.")
@@ -2789,6 +2878,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     daily_proof_df = _build_daily_proof_df(image_df=image_df, store_result=store_result, store_id=selected_store)
     summary_row = output.all_stores_summary[output.all_stores_summary["store_id"] == selected_store].iloc[0]
     business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
+    gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=selected_store)
 
     date_options = ["All Dates"] + sorted(
         [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()],
@@ -2810,6 +2900,10 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             "Data Health",
             "Camera Hotspots",
             "Location Hotspots",
+            "GPT Validation Results (Test Folder)",
+            "GPT Store-Date Summary (Test Folder)",
+            "YOLO vs GPT Accuracy (Test Folder)",
+            "GPT vs Reviewer Accuracy (Test Folder)",
         ],
         key=f"report_module_type_{selected_store}",
     )
@@ -2847,7 +2941,10 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             else pd.DataFrame()
         )
     elif selected_report == "Daily Calculation Proof (Folder Date Based)":
-        report_df = daily_proof_df.copy()
+        if not gpt_outputs["store_summary"].empty:
+            report_df = gpt_outputs["store_summary"].copy()
+        else:
+            report_df = daily_proof_df.copy()
     elif selected_report == "Frame-Level Proof":
         report_df = image_df.copy()
         report_df["open_frame"] = report_df.apply(
@@ -2902,10 +2999,22 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             if hasattr(store_result, "location_hotspots") and not store_result.location_hotspots.empty
             else pd.DataFrame()
         )
+    elif selected_report == "GPT Validation Results (Test Folder)":
+        report_df = gpt_outputs["validation"].copy()
+    elif selected_report == "GPT Store-Date Summary (Test Folder)":
+        report_df = gpt_outputs["store_summary"].copy()
+    elif selected_report == "YOLO vs GPT Accuracy (Test Folder)":
+        report_df = gpt_outputs["yolo_vs_gpt"].copy()
+    elif selected_report == "GPT vs Reviewer Accuracy (Test Folder)":
+        report_df = gpt_outputs["gpt_vs_reviewer_detail"].copy()
+        if report_df.empty:
+            report_df = gpt_outputs["gpt_vs_reviewer"].copy()
 
     date_filter_col = ""
     if "date" in report_df.columns:
         date_filter_col = "date"
+    elif "Date" in report_df.columns:
+        date_filter_col = "Date"
     elif "capture_date" in report_df.columns:
         date_filter_col = "capture_date"
     if date_filter_col and selected_date != "All Dates":
@@ -2925,7 +3034,27 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         file_name=file_name,
         mime="text/csv",
     )
-    st.dataframe(report_df.head(500), use_container_width=True, hide_index=True)
+    if selected_report == "GPT Validation Results (Test Folder)":
+        view_df = report_df.head(500).copy()
+        if "annotated_image_path" in view_df.columns:
+            view_df["preview_image"] = view_df["annotated_image_path"].map(
+                lambda p: _hover_preview_data_uri(Path(str(p).strip()), max_size=280)
+                if str(p or "").strip() and Path(str(p).strip()).exists()
+                else ""
+            )
+        if "preview_image" in view_df.columns:
+            columns = ["preview_image"] + [c for c in view_df.columns if c != "preview_image"]
+            view_df = view_df[columns]
+            st.dataframe(
+                view_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"preview_image": st.column_config.ImageColumn("Preview")},
+            )
+        else:
+            st.dataframe(view_df, use_container_width=True, hide_index=True)
+    else:
+        st.dataframe(report_df.head(500), use_container_width=True, hide_index=True)
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str, root_dir: Path) -> None:
@@ -2994,6 +3123,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         db_path=db_path,
         store_id=sid,
     )
+    gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=sid)
+    gpt_validation_df = gpt_outputs.get("validation", pd.DataFrame()).copy()
+    gpt_frame_index = _build_gpt_frame_index(gpt_validation_df)
+    gpt_yolo_vs_df = gpt_outputs.get("yolo_vs_gpt", pd.DataFrame()).copy()
+    gpt_vs_reviewer_df = gpt_outputs.get("gpt_vs_reviewer", pd.DataFrame()).copy()
 
     top_cols = st.columns(6)
     top_cols[0].metric("Frames", int(len(image_df)))
@@ -3009,6 +3143,44 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         f"Matched={int(accuracy_summary.get('matched_rows', 0.0))} | "
         f"Mismatched={int(accuracy_summary.get('mismatch_rows', 0.0))}"
     )
+    if not gpt_validation_df.empty:
+        yolo_match_pct = (
+            round(
+                float(
+                    pd.to_numeric(gpt_yolo_vs_df.get("match", False), errors="coerce")
+                    .fillna(False)
+                    .astype(bool)
+                    .mean()
+                    * 100.0
+                ),
+                2,
+            )
+            if not gpt_yolo_vs_df.empty
+            else None
+        )
+        reviewer_acc_pct = (
+            float(
+                pd.to_numeric(
+                    gpt_vs_reviewer_df.get("accuracy_pct", pd.Series([0.0])),
+                    errors="coerce",
+                )
+                .fillna(0.0)
+                .iloc[0]
+            )
+            if not gpt_vs_reviewer_df.empty
+            else None
+        )
+        gpt_extra_count = (
+            int(gpt_validation_df["gpt_extra_detection"].fillna(False).astype(bool).sum())
+            if "gpt_extra_detection" in gpt_validation_df.columns
+            else 0
+        )
+        st.caption(
+            "GPT post-relevance validation loaded. "
+            f"YOLO vs GPT={f'{yolo_match_pct:.2f}%' if yolo_match_pct is not None else 'N/A'} | "
+            f"GPT vs reviewer={f'{reviewer_acc_pct:.2f}%' if reviewer_acc_pct is not None else 'N/A'} | "
+            f"GPT extra detections={gpt_extra_count}"
+        )
 
     st.markdown("**Feedback Accuracy Trend**")
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
@@ -3081,6 +3253,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         st.session_state[preview_cache_key] = preview_cache
 
     def _preview_uri_cached(row: pd.Series) -> str:
+        frame_key = _frame_key(row.get("capture_date", ""), row.get("camera_id", ""), row.get("filename", ""))
+        gpt_meta = gpt_frame_index.get(frame_key, {})
+        gpt_annotated = str(gpt_meta.get("annotated_image_path", "") or "").strip() if isinstance(gpt_meta, dict) else ""
+        if gpt_annotated and Path(gpt_annotated).exists():
+            return _hover_preview_data_uri(Path(gpt_annotated), max_size=320)
         cache_key = (
             str(row.get("capture_date", "") or "").strip(),
             str(row.get("camera_id", "") or "").strip(),
@@ -3101,23 +3278,42 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
                 preview_cache.pop(old_key, None)
         return generated
 
+    gpt_max_slots = max(
+        [len(list(v.get("track_ids", []))) for v in gpt_frame_index.values() if isinstance(v, dict)] or [1]
+    )
     max_track_slots = max(
         1,
         min(
             20,
             int(
-                image_df.head(10)["track_ids"].map(
-                    lambda raw: len([str(x) for x in _safe_json_list(raw) if str(x).strip()])
-                ).max()
-                or 1
+                max(
+                    image_df.head(10)["track_ids"].map(
+                        lambda raw: len([str(x) for x in _safe_json_list(raw) if str(x).strip()])
+                    ).max()
+                    or 1,
+                    gpt_max_slots,
+                )
             ),
         ),
     )
 
     def _prepare_batch_rows(base_df: pd.DataFrame, slot_numbers: list[int]) -> pd.DataFrame:
         df = base_df.copy()
-        df["track_ids_list"] = df["track_ids"].map(
-            lambda raw: [str(x) for x in _safe_json_list(raw) if str(x).strip()]
+        df["track_ids_list"] = df.apply(
+            lambda r: (
+                [
+                    str(x).strip()
+                    for x in list(
+                        gpt_frame_index.get(
+                            _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
+                            {},
+                        ).get("track_ids", [])
+                    )
+                    if str(x).strip()
+                ]
+                or [str(x) for x in _safe_json_list(r.get("track_ids", "")) if str(x).strip()]
+            ),
+            axis=1,
         )
         df["staff_flags_list"] = df["staff_flags"].map(
             lambda raw: [bool(x) for x in _safe_json_list(raw)]
@@ -3167,8 +3363,8 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             ),
             axis=1,
         )
-        df["track_ids"] = df["track_ids"].map(
-            lambda raw: ", ".join([str(x) for x in _safe_json_list(raw) if str(x).strip()])
+        df["track_ids"] = df["track_ids_list"].map(
+            lambda raw: ", ".join([str(x) for x in list(raw) if str(x).strip()])
         )
         for slot in slot_numbers:
             df[f"track_{slot}_id"] = df.apply(
@@ -3181,11 +3377,50 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
             )
             df[f"track_{slot}_predicted"] = df.apply(
                 lambda r: (
-                    _label_to_display("staff")
-                    if len(list(r.get("staff_flags_list", []))) >= slot and bool(list(r.get("staff_flags_list", []))[slot - 1])
+                    str(
+                        gpt_frame_index.get(
+                            _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
+                            {},
+                        )
+                        .get("pred_map", {})
+                        .get(str(r.get(f"track_{slot}_id", "") or "").strip(), "")
+                        or ""
+                    ).strip()
+                    or (
+                        _label_to_display("staff")
+                        if len(list(r.get("staff_flags_list", []))) >= slot and bool(list(r.get("staff_flags_list", []))[slot - 1])
+                        else (
+                            _label_to_display("customer")
+                            if len(list(r.get("staff_flags_list", []))) >= slot
+                            else ""
+                        )
+                    )
+                ),
+                axis=1,
+            )
+            df[f"track_{slot}_yolo"] = df.apply(
+                lambda r: (
+                    "YOLO"
+                    if bool(
+                        gpt_frame_index.get(
+                            _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
+                            {},
+                        )
+                        .get("yolo_map", {})
+                        .get(str(r.get(f"track_{slot}_id", "") or "").strip(), False)
+                    )
                     else (
-                        _label_to_display("customer")
-                        if len(list(r.get("staff_flags_list", []))) >= slot
+                        "GPT_EXTRA"
+                        if str(r.get(f"track_{slot}_id", "") or "").strip()
+                        and str(
+                            gpt_frame_index.get(
+                                _frame_key(r.get("capture_date", ""), r.get("camera_id", ""), r.get("filename", "")),
+                                {},
+                            )
+                            .get("pred_map", {})
+                            .get(str(r.get(f"track_{slot}_id", "") or "").strip(), "")
+                            or ""
+                        ).strip()
                         else ""
                     )
                 ),
@@ -3266,10 +3501,11 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         "drive_link": st.column_config.LinkColumn("Drive", display_text="Open"),
     }
     for slot in slot_numbers:
-        editor_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_label"])
-        disabled_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted"])
+        editor_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_yolo", f"track_{slot}_label"])
+        disabled_columns.extend([f"track_{slot}_id", f"track_{slot}_predicted", f"track_{slot}_yolo"])
         column_config[f"track_{slot}_id"] = st.column_config.TextColumn(f"T{slot} ID")
         column_config[f"track_{slot}_predicted"] = st.column_config.TextColumn(f"T{slot} Pred")
+        column_config[f"track_{slot}_yolo"] = st.column_config.TextColumn(f"T{slot} Source")
         column_config[f"track_{slot}_label"] = st.column_config.SelectboxColumn(
             f"T{slot} Feedback",
             options=TRACK_FEEDBACK_OPTIONS,

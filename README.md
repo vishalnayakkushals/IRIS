@@ -210,6 +210,34 @@ Throughput benchmark helper:
 python scripts/benchmark_drive_sync.py --drive-folder-url "https://drive.google.com/drive/folders/<folder_id>" --sample-size 300 --workers 8
 ```
 
+## Test-Folder GPT Post-Relevance Flow (YOLO -> GPT)
+
+Use this when you want GPT-only intelligence after YOLO relevance filtering for `TEST_STORE_D07`:
+
+1. Stage-1 YOLO relevant-image scan (no BLRJAY full GPT rollup):
+```powershell
+run_iris.bat stage1-scan-now
+```
+
+2. GPT post-relevance validation run (default top 30 relevant images):
+```powershell
+run_iris.bat gpt-test-validation-now
+```
+
+Outputs:
+- `data/exports/current/gpt_validation/TEST_STORE_D07/gpt_validation_results.csv`
+- `data/exports/current/gpt_validation/TEST_STORE_D07/gpt_validation_frame_summary.csv`
+- `data/exports/current/gpt_validation/TEST_STORE_D07/gpt_store_date_summary.csv`
+- `data/exports/current/gpt_validation/TEST_STORE_D07/yolo_vs_gpt_accuracy.csv`
+- `data/exports/current/gpt_validation/TEST_STORE_D07/gpt_vs_reviewer_accuracy.csv`
+- `data/exports/current/gpt_validation/TEST_STORE_D07/annotated/`
+
+Dashboard:
+- `Reports > Report Module > GPT Validation Results (Test Folder)`
+- `Reports > Report Module > GPT Store-Date Summary (Test Folder)`
+- `Reports > Report Module > YOLO vs GPT Accuracy (Test Folder)`
+- `Reports > Report Module > GPT vs Reviewer Accuracy (Test Folder)`
+
 ## Detector Notes
 
 - Default detector: YOLOv8n via `ultralytics` (CPU mode), stored at `data/models/yolov8n.pt`.

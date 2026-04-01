@@ -27,6 +27,7 @@ It records what changed, where it changed, and why.
 | `scripts/evaluate_chatgpt_vision_batch.py` | Batch ChatGPT vision evaluator: GDrive sync, structured JSON inference, business-rule filtering, and accuracy/mismatch/confusion exports vs ground truth. |
 | `scripts/gpt_eval_scheduler.py` | Dedicated daily GPT-eval scheduler for TEST_STORE-style capped runs, isolated from YOLO scheduler cycles. |
 | `scripts/yolo_relevance_scan.py` | Stage-1 local relevance filter: counts images, runs YOLO person detection, and exports relevant/irrelevant lists for downstream GPT scan. |
+| `scripts/gpt_post_relevance_test.py` | Test-folder GPT post-relevance pipeline: per-entity GPT labels, YOLO-vs-GPT audit, reviewer override application, and annotated review artifacts. |
 | `scripts/yolo_relevance_scheduler.py` | Daily Stage-1 scheduler wrapper that runs YOLO relevance scan at configured local time and stores cycle status in app settings. |
 | `scripts/stage1_store_report.py` | Stage-1 reporting utility: aggregates store/date raw vs relevant image counts from relevance output and upserts dashboard-ready flat report. |
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
@@ -73,6 +74,23 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-01 | Commit pending
+- Summary:
+  - Separated TEST_STORE post-relevance intelligence into a dedicated GPT stage that consumes Stage-1 YOLO relevant images and preserves YOLO count as audit-only.
+  - Added GPT validation exports with per-entity labels (`T1...Tn`), YOLO-vs-GPT comparison, GPT-vs-reviewer comparison, GPT-extra detections (YOLO missed), and annotated image artifacts.
+  - Extended dashboard report module and frame-review table to surface GPT validation outputs (including preview and per-track source `YOLO` vs `GPT_EXTRA`) without triggering BLRJAY full-date GPT runs.
+- Changed Paths:
+  - `scripts/gpt_post_relevance_test.py`
+  - `run_iris.bat`
+  - `src/iris/iris_dashboard.py`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/gpt_post_relevance_test.py`
+- Infra/Config Impact:
+  - New optional command: `run_iris.bat gpt-test-validation-now` (requires `OPENAI_API_KEY`).
+  - New outputs under `data/exports/current/gpt_validation/<store_id>/`.
 
 ### 2026-04-01 | Commit pending
 - Summary:
