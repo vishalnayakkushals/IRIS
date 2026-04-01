@@ -2600,7 +2600,11 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.info("No per-store analysis available.")
         return
 
-    selected_store = st.selectbox("Store", options=store_ids)
+    select_placeholder = "-- Select Store --"
+    selected_store = st.selectbox("Store", options=[select_placeholder, *store_ids], index=0, key="store_detail_select")
+    if selected_store == select_placeholder:
+        st.info("Select a store to load drill-down metrics.")
+        return
     store_result = output.stores[selected_store]
     image_df = _normalize_image_df(store_result.image_insights)
     hotspot_df = store_result.camera_hotspots.copy()
@@ -2866,8 +2870,17 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         st.info("No store analysis loaded.")
         return
 
+    select_placeholder = "-- Select --"
     store_ids = sorted(output.stores.keys())
-    selected_store = st.selectbox("Store", options=store_ids, key="report_module_store")
+    selected_store = st.selectbox(
+        "Store",
+        options=[select_placeholder, *store_ids],
+        index=0,
+        key="report_module_store_v2",
+    )
+    if selected_store == select_placeholder:
+        st.info("Select a store to load report options.")
+        return
     store_result = output.stores[selected_store]
     image_df = _normalize_image_df(store_result.image_insights)
     customer_sessions_df = (
@@ -2880,7 +2893,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
     gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=selected_store)
 
-    date_options = ["All Dates"] + sorted(
+    date_options = [select_placeholder, "All Dates"] + sorted(
         [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()],
         reverse=True,
     )
@@ -2888,11 +2901,12 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         "Date",
         options=date_options,
         index=0,
-        key=f"report_module_date_{selected_store}",
+        key=f"report_module_date_v2_{selected_store}",
     )
     selected_report = st.selectbox(
         "Which report",
         options=[
+            select_placeholder,
             "Top Summary",
             "Daily Walk-in & Conversion Report",
             "Daily Calculation Proof (Folder Date Based)",
@@ -2905,8 +2919,12 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             "YOLO vs GPT Accuracy (Test Folder)",
             "GPT vs Reviewer Accuracy (Test Folder)",
         ],
-        key=f"report_module_type_{selected_store}",
+        index=0,
+        key=f"report_module_type_v2_{selected_store}",
     )
+    if selected_date == select_placeholder or selected_report == select_placeholder:
+        st.info("Select date and report type to load report data.")
+        return
 
     report_df = pd.DataFrame()
     if selected_report == "Top Summary":
@@ -3064,10 +3082,16 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         st.info("No store analysis loaded.")
         return
 
+    select_placeholder = "-- Select Store --"
     store_ids = sorted(output.stores.keys())
     preselected_store = _query_value("store", "").strip()
-    default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
-    sid = st.selectbox("Store", options=store_ids, index=default_index, key="qa_store")
+    store_options = [select_placeholder, *store_ids]
+    default_value = preselected_store if preselected_store in store_ids else select_placeholder
+    default_index = store_options.index(default_value)
+    sid = st.selectbox("Store", options=store_options, index=default_index, key="qa_store_v2")
+    if sid == select_placeholder:
+        st.info("Select a store to load pending review rows.")
+        return
     runtime_settings = _ensure_config_defaults(db_path)
     cfg_auto_confirm = _setting_bool(runtime_settings, "cfg_feedback_auto_confirm", True)
     cfg_batch_confidence = _setting_float(runtime_settings, "cfg_feedback_batch_confidence", 0.9, minimum=0.0, maximum=1.0)
@@ -4023,10 +4047,16 @@ def _render_customer_journeys(output: AnalysisOutput, root_dir: Path) -> None:
     if not output.stores:
         st.info("No store analysis loaded.")
         return
+    select_placeholder = "-- Select Store --"
     store_ids = sorted(output.stores.keys())
     preselected_store = _query_value("store", "").strip()
-    default_index = store_ids.index(preselected_store) if preselected_store in store_ids else 0
-    sid = st.selectbox("Store", options=store_ids, index=default_index, key="journey_store")
+    store_options = [select_placeholder, *store_ids]
+    default_value = preselected_store if preselected_store in store_ids else select_placeholder
+    default_index = store_options.index(default_value)
+    sid = st.selectbox("Store", options=store_options, index=default_index, key="journey_store_v2")
+    if sid == select_placeholder:
+        st.info("Select a store to load customer journey verification.")
+        return
     auth_token = str(st.session_state.get("session_token", "") or "").strip()
     image_df = _normalize_image_df(output.stores[sid].image_insights)
     summary_df, events = _build_customer_journey_summary(image_df=image_df)
@@ -5555,13 +5585,15 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
         upsert_app_settings(db_path=db_path, settings={"cfg_scheduler_interval_minutes": str(current_interval)})
         settings = _ensure_config_defaults(db_path)
 
+    select_placeholder = "-- Select Config Module --"
     config_modules = ["Feedback", "Retrain", "Scheduler", "Sync", "Run Mode"]
+    config_options = [select_placeholder, *config_modules]
     discover_cols = st.columns([2, 2, 3])
     selected_module = discover_cols[0].selectbox(
         "Config Module",
-        options=config_modules,
+        options=config_options,
         index=0,
-        key="cfg_module_select",
+        key="cfg_module_select_v2",
     )
     module_search = discover_cols[1].text_input(
         "Search Setting",
@@ -5577,9 +5609,15 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     show_all_modules = not module_search
 
     def _show_module(name: str) -> bool:
+        if selected_module == select_placeholder:
+            return False
         if show_all_modules:
             return selected_module == name
         return module_search in name.lower()
+
+    if selected_module == select_placeholder:
+        st.info("Select a config module from dropdown to load settings.")
+        return False
 
     if _show_module("Feedback"):
         with st.expander("Feedback Settings", expanded=True):

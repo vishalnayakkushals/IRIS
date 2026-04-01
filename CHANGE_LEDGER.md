@@ -77,6 +77,18 @@ Use this template for each new change:
 
 ### 2026-04-01 | Commit pending
 - Summary:
+  - Updated high-traffic dashboard selectors to default to a blank placeholder so pages load only after explicit dropdown selection.
+  - Applied explicit select-first behavior to `Config`, `Report Module`, `Store Drill-down`, `Frame Review`, and `Customer Journeys` to avoid auto-loading first option content.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (UI selection behavior only).
+
+### 2026-04-01 | Commit pending
+- Summary:
   - Separated TEST_STORE post-relevance intelligence into a dedicated GPT stage that consumes Stage-1 YOLO relevant images and preserves YOLO count as audit-only.
   - Added GPT validation exports with per-entity labels (`T1...Tn`), YOLO-vs-GPT comparison, GPT-vs-reviewer comparison, GPT-extra detections (YOLO missed), and annotated image artifacts.
   - Extended dashboard report module and frame-review table to surface GPT validation outputs (including preview and per-track source `YOLO` vs `GPT_EXTRA`) without triggering BLRJAY full-date GPT runs.
