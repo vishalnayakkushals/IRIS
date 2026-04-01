@@ -124,16 +124,19 @@ goto :exit_with_code
 
 :do_onfly_run_now
 echo [IRIS] Running on-the-fly pipeline now (YOLO relevance + optional GPT)
-docker compose -f %COMPOSE_FILE% exec iris python scripts/run_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --detector yolo --conf 0.18 --max-images 100 --run-mode manual --allow-detector-fallback
+if /I "%GOOGLE_API_KEY%"=="" echo [WARN] GOOGLE_API_KEY is empty. Drive URLs will fail.
+docker compose -f %COMPOSE_FILE% exec -e GOOGLE_API_KEY=%GOOGLE_API_KEY% -e OPENAI_API_KEY=%OPENAI_API_KEY% iris python scripts/run_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --detector yolo --conf 0.18 --max-images 100 --run-mode manual --allow-detector-fallback
 goto :exit_with_code
 
 :do_onfly_benchmark
 echo [IRIS] Benchmarking on-the-fly pipeline (3x before/after)
-docker compose -f %COMPOSE_FILE% exec iris python scripts/benchmark_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --limit 30 --runs 3 --detector yolo --conf 0.18 --allow-detector-fallback
+if /I "%GOOGLE_API_KEY%"=="" echo [WARN] GOOGLE_API_KEY is empty. Drive URLs will fail.
+docker compose -f %COMPOSE_FILE% exec -e GOOGLE_API_KEY=%GOOGLE_API_KEY% -e OPENAI_API_KEY=%OPENAI_API_KEY% iris python scripts/benchmark_onfly_pipeline.py --store-id %ONFLY_STORE_ID% --source-url %ONFLY_SOURCE_URL% --db /app/data/store_registry.db --out-dir /app/data/exports/current/onfly --limit 30 --runs 3 --detector yolo --conf 0.18 --allow-detector-fallback
 goto :exit_with_code
 
 :do_onfly_scheduler_start
 echo [IRIS] Starting on-fly scheduler (profile onfly)
+if /I "%GOOGLE_API_KEY%"=="" echo [WARN] GOOGLE_API_KEY is empty. Scheduler will fail for Drive URLs.
 docker compose -f %COMPOSE_FILE% --profile onfly up -d iris-onfly-scheduler
 goto :exit_with_code
 

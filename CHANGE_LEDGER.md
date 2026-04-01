@@ -66,6 +66,19 @@ Use this template for each new change:
 
 ### 2026-04-01 | Commit pending
 - Summary:
+  - Hardened `run_iris.bat` on-fly commands to pass runtime keys into container exec (`GOOGLE_API_KEY`, `OPENAI_API_KEY`) so Drive on-fly runs work without full container recreation.
+  - Added explicit warnings in on-fly run/benchmark/scheduler start commands when `GOOGLE_API_KEY` is empty.
+- Changed Paths:
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (runtime command behavior only).
+
+
+### 2026-04-01 | Commit pending
+- Summary:
   - Fixed on-fly runtime parser/runtime issues in container by correcting local-source ID normalization and escaping, and validated end-to-end execution from Docker.
   - Added detector init timing (`detector_init_ms`) to run metrics and benchmark output so slowness attribution is explicit (download vs model-init vs inference).
   - Added lightweight durable queue-state table (`onfly_task_queue`) updates for per-image stage tracking (`yolo`, `chatgpt`) with status/error audit trail.
