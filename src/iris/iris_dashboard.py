@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+from typing import Any
 from urllib.parse import quote, unquote_plus
 
 import pandas as pd

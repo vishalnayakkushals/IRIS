@@ -77,6 +77,17 @@ Use this template for each new change:
 
 ### 2026-04-01 | Commit pending
 - Summary:
+  - Fixed CI lint failure by importing `Any` used in GPT frame-index type annotations.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
+### 2026-04-01 | Commit pending
+- Summary:
   - Updated high-traffic dashboard selectors to default to a blank placeholder so pages load only after explicit dropdown selection.
   - Applied explicit select-first behavior to `Config`, `Report Module`, `Store Drill-down`, `Frame Review`, and `Customer Journeys` to avoid auto-loading first option content.
 - Changed Paths:
