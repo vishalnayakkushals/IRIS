@@ -93,6 +93,15 @@ Compatibility mode:
 python -m pip install -r requirements.txt
 ```
 
+Create local environment file (do not commit secrets):
+
+```powershell
+Copy-Item .env.example .env
+```
+
+SOP checklist status for this repo:
+- `docs/process/b2b_projects_sop_status.md`
+
 ## Run Batch Analysis
 
 ```powershell

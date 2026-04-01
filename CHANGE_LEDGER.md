@@ -35,7 +35,10 @@ It records what changed, where it changed, and why.
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
+| `.env.example` | Local-safe environment template for required scheduler/runtime keys. |
+| `.github/pull_request_template.md` | Mandatory PR review template aligned with SOP fields (what/why/how-to-test/UI+DB impact). |
 | `SECURITY_CLEANUP_CHECKLIST.md` | Sign-off checklist to remove temporary keys/tokens and development artifacts. |
+| `docs/process/b2b_projects_sop_status.md` | SOP compliance matrix for IRIS with Done/Now/Future status and action items. |
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
@@ -62,6 +65,25 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-01 | Commit pending
+- Summary:
+  - Assessed the uploaded B2B SOP checklist against IRIS and added a concrete Done/Now/Future status matrix for operational clarity.
+  - Added missing repository controls that can be completed purely in-code now: `.env.example` and a mandatory PR template.
+  - Updated README setup guidance to use `.env.example` and linked SOP status tracking doc.
+- Changed Paths:
+  - `.env.example`
+  - `.github/pull_request_template.md`
+  - `docs/process/b2b_projects_sop_status.md`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `.env.example`
+  - `.github/pull_request_template.md`
+  - `docs/process/b2b_projects_sop_status.md`
+- Infra/Config Impact:
+  - Adds a standard `.env` initialization path (`Copy-Item .env.example .env`) for local/dev setup.
+  - Standardizes PR metadata collection via GitHub PR template.
 
 
 ### 2026-04-01 | Commit pending
