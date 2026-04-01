@@ -51,7 +51,9 @@ It records what changed, where it changed, and why.
 | `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
 | `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
 | `CTO/scripts/perf_analyze.py` | CTO analyzer for slow paths/regressions and latest markdown/csv report generation. |
+| `CTO/scripts/perf_watch.py` | Continuous interval-based page probe logger for browsing-speed trend capture. |
 | `CTO/run_cto_cycle.bat` | Windows wrapper to run a CTO perf cycle quickly with default dashboard URLs. |
+| `CTO/run_cto_watch.bat` | Windows wrapper for continuous CTO browse-speed watch mode. |
 | `CTO/README.md` | Usage and isolation guarantees for the CTO observer layer. |
 
 ## Change Entry Template
@@ -76,14 +78,16 @@ Use this template for each new change:
 - Summary:
   - Added a fully isolated CTO performance observer layer under `CTO/` to track run-by-run fix timing and page-load probe timing without coupling to core runtime.
   - Introduced a single main performance log (`CTO/logs/perf_events.jsonl`) plus lightweight analyzer reports for slow paths and regressions.
-  - Added a simple Windows wrapper (`CTO/run_cto_cycle.bat`) and README usage so post-fix speed checks are repeatable.
+  - Added both single-run and continuous-watch wrappers (`CTO/run_cto_cycle.bat`, `CTO/run_cto_watch.bat`) so post-fix and live-browsing speed checks are repeatable.
 - Changed Paths:
   - `CTO/README.md`
   - `CTO/scripts/perf_common.py`
   - `CTO/scripts/perf_cycle.py`
   - `CTO/scripts/perf_run.py`
   - `CTO/scripts/perf_analyze.py`
+  - `CTO/scripts/perf_watch.py`
   - `CTO/run_cto_cycle.bat`
+  - `CTO/run_cto_watch.bat`
   - `CTO/logs/.gitkeep`
   - `CTO/reports/.gitkeep`
   - `.gitignore`
@@ -95,7 +99,9 @@ Use this template for each new change:
   - `CTO/scripts/perf_cycle.py`
   - `CTO/scripts/perf_run.py`
   - `CTO/scripts/perf_analyze.py`
+  - `CTO/scripts/perf_watch.py`
   - `CTO/run_cto_cycle.bat`
+  - `CTO/run_cto_watch.bat`
   - `CTO/logs/.gitkeep`
   - `CTO/reports/.gitkeep`
 - Infra/Config Impact:

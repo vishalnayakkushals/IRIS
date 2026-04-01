@@ -117,6 +117,12 @@ python CTO/scripts/perf_cycle.py --note "post-fix check" --url "http://localhost
 python CTO/scripts/perf_analyze.py
 ```
 
+Optional continuous watch (Ctrl+C to stop):
+
+```powershell
+python CTO/scripts/perf_watch.py --note "browse-watch" --interval-seconds 30 --url "http://localhost:8765/?module=Reports"
+```
+
 ## Run Batch Analysis
 
 ```powershell

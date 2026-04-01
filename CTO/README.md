@@ -33,6 +33,11 @@ python CTO/scripts/perf_cycle.py --note "manual browse check" --url "http://loca
 python CTO/scripts/perf_analyze.py
 ```
 
+4. Continuous browse-speed watch (Ctrl+C to stop):
+```powershell
+python CTO/scripts/perf_watch.py --note "daytime watch" --interval-seconds 30 --url "http://localhost:8765/?module=Reports" --url "http://localhost:8765/?module=Access&section=Config"
+```
+
 ## Reports
 - `CTO/reports/latest_perf_report.md`
 - `CTO/reports/perf_regression_report.csv`
@@ -40,4 +45,5 @@ python CTO/scripts/perf_analyze.py
 ## Optional BAT wrapper
 ```powershell
 CTO\run_cto_cycle.bat "fix: restart check" "docker restart deploy-iris-1"
+CTO\run_cto_watch.bat "daytime watch"
 ```
