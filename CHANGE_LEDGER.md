@@ -47,6 +47,12 @@ It records what changed, where it changed, and why.
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
 | `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
 | `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
+| `CTO/scripts/perf_common.py` | Shared isolated CTO log utilities (single JSONL sink, path setup, run id, percentile). |
+| `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
+| `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
+| `CTO/scripts/perf_analyze.py` | CTO analyzer for slow paths/regressions and latest markdown/csv report generation. |
+| `CTO/run_cto_cycle.bat` | Windows wrapper to run a CTO perf cycle quickly with default dashboard URLs. |
+| `CTO/README.md` | Usage and isolation guarantees for the CTO observer layer. |
 
 ## Change Entry Template
 Use this template for each new change:
@@ -65,6 +71,35 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-01 | Commit pending
+- Summary:
+  - Added a fully isolated CTO performance observer layer under `CTO/` to track run-by-run fix timing and page-load probe timing without coupling to core runtime.
+  - Introduced a single main performance log (`CTO/logs/perf_events.jsonl`) plus lightweight analyzer reports for slow paths and regressions.
+  - Added a simple Windows wrapper (`CTO/run_cto_cycle.bat`) and README usage so post-fix speed checks are repeatable.
+- Changed Paths:
+  - `CTO/README.md`
+  - `CTO/scripts/perf_common.py`
+  - `CTO/scripts/perf_cycle.py`
+  - `CTO/scripts/perf_run.py`
+  - `CTO/scripts/perf_analyze.py`
+  - `CTO/run_cto_cycle.bat`
+  - `CTO/logs/.gitkeep`
+  - `CTO/reports/.gitkeep`
+  - `.gitignore`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `CTO/README.md`
+  - `CTO/scripts/perf_common.py`
+  - `CTO/scripts/perf_cycle.py`
+  - `CTO/scripts/perf_run.py`
+  - `CTO/scripts/perf_analyze.py`
+  - `CTO/run_cto_cycle.bat`
+  - `CTO/logs/.gitkeep`
+  - `CTO/reports/.gitkeep`
+- Infra/Config Impact:
+  - None for core app runtime (CTO layer is optional and removable).
 
 ### 2026-04-01 | Commit pending
 - Summary:

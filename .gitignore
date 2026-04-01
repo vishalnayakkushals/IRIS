@@ -23,3 +23,9 @@ streamlit.err
 *.png
 *.bmp
 *.webp
+
+# CTO observer outputs (isolated and removable)
+CTO/logs/*
+CTO/reports/*
+!CTO/logs/.gitkeep
+!CTO/reports/.gitkeep
