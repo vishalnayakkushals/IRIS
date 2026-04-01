@@ -84,6 +84,8 @@ def _write_regression_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "delta_ms",
         "delta_pct",
         "regression",
+        "slow_run_count",
+        "repeated_slow",
     ]
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -130,6 +132,16 @@ def _write_markdown_report(
             lines.append(
                 f"- `{row['path_name']}` worsened by {row['delta_ms']} ms ({row['delta_pct']}%)"
             )
+    lines.append("")
+    lines.append("## Repeated Slow Paths")
+    repeated = [r for r in regression_rows if r.get("repeated_slow") == "yes"]
+    if not repeated:
+        lines.append("- No repeated slow paths yet.")
+    else:
+        for row in sorted(repeated, key=lambda r: int(r.get("slow_run_count", 0)), reverse=True)[:10]:
+            lines.append(
+                f"- `{row['path_name']}` slow in {row['slow_run_count']} run(s) (latest avg={row['latest_avg_ms']} ms)"
+            )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -164,6 +176,13 @@ def main() -> None:
         previous_path_stats = _path_stats(previous_events)
 
     all_paths = sorted(set(latest_path_stats.keys()) | set(previous_path_stats.keys()))
+    slow_run_count_by_path: dict[str, int] = defaultdict(int)
+    for run_id in sorted_runs:
+        stats = _path_stats(run_probe_events[run_id])
+        for path_name, row in stats.items():
+            if float(row.get("avg_ms", 0.0)) >= float(args.slow_threshold_ms):
+                slow_run_count_by_path[path_name] += 1
+
     regression_rows: list[dict[str, Any]] = []
     for path_name in all_paths:
         latest = latest_path_stats.get(path_name, {"count": 0, "avg_ms": 0.0, "p95_ms": 0.0})
@@ -181,6 +200,8 @@ def main() -> None:
                 "delta_ms": delta_ms,
                 "delta_pct": delta_pct,
                 "regression": "yes" if delta_ms > 0 else "no",
+                "slow_run_count": int(slow_run_count_by_path.get(path_name, 0)),
+                "repeated_slow": "yes" if int(slow_run_count_by_path.get(path_name, 0)) >= 2 else "no",
             }
         )
 

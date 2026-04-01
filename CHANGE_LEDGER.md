@@ -77,7 +77,7 @@ Use this template for each new change:
 ### 2026-04-01 | Commit pending
 - Summary:
   - Added a fully isolated CTO performance observer layer under `CTO/` to track run-by-run fix timing and page-load probe timing without coupling to core runtime.
-  - Introduced a single main performance log (`CTO/logs/perf_events.jsonl`) plus lightweight analyzer reports for slow paths and regressions.
+  - Introduced a single main performance log (`CTO/logs/perf_events.jsonl`) plus lightweight analyzer reports for slow paths, repeated slow-path detection, and regressions.
   - Added both single-run and continuous-watch wrappers (`CTO/run_cto_cycle.bat`, `CTO/run_cto_watch.bat`) so post-fix and live-browsing speed checks are repeatable.
 - Changed Paths:
   - `CTO/README.md`
