@@ -178,3 +178,84 @@ services:
         "--workers",
         "${IRIS_SYNC_WORKERS:-6}"
       ]
+
+  # ── New Phase 1 services: React + FastAPI + Celery + Redis ─────────────────
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  iris-api:
+    build:
+      context: ${IRIS_BUILD_CONTEXT:-..}
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8766:8766"
+    restart: unless-stopped
+    environment:
+      - IRIS_DB_PATH=/app/data/store_registry.db
+      - IRIS_DATA_ROOT=/app/data
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET=${IRIS_JWT_SECRET:-change_me_before_deploy}
+      - STORE_ID=${ONFLY_STORE_ID:-TEST_STORE_D07}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
+      - ONFLY_SOURCE_URL=${ONFLY_SOURCE_URL:-}
+      - YOLO_CONF=${ONFLY_CONF:-0.18}
+      - MAX_IMAGES=${ONFLY_MAX_IMAGES:-100}
+      - OMP_NUM_THREADS=1
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    depends_on:
+      - redis
+
+  iris-celery-worker:
+    build:
+      context: ${IRIS_BUILD_CONTEXT:-..}
+      dockerfile: backend/Dockerfile
+    command: celery -A backend.app.celery_app.worker.celery_app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
+    environment:
+      - IRIS_DB_PATH=/app/data/store_registry.db
+      - IRIS_DATA_ROOT=/app/data
+      - REDIS_URL=redis://redis:6379/0
+      - STORE_ID=${ONFLY_STORE_ID:-TEST_STORE_D07}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
+      - ONFLY_SOURCE_URL=${ONFLY_SOURCE_URL:-}
+      - YOLO_CONF=${ONFLY_CONF:-0.18}
+      - MAX_IMAGES=${ONFLY_MAX_IMAGES:-100}
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+    depends_on:
+      - redis
+
+  iris-celery-beat:
+    build:
+      context: ${IRIS_BUILD_CONTEXT:-..}
+      dockerfile: backend/Dockerfile
+    command: celery -A backend.app.celery_app.worker.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler --schedule /app/celerybeat-schedule
+    restart: unless-stopped
+    environment:
+      - IRIS_DB_PATH=/app/data/store_registry.db
+      - REDIS_URL=redis://redis:6379/0
+      - STORE_ID=${ONFLY_STORE_ID:-TEST_STORE_D07}
+      - TZ=Asia/Kolkata
+    volumes:
+      - ${IRIS_DATA_DIR:-../data}:/app/data
+      - celery_beat_data:/app
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+  celery_beat_data:

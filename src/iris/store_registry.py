@@ -449,6 +449,25 @@ def init_db(db_path: Path) -> None:
             conn.execute("ALTER TABLE qa_feedback ADD COLUMN model_version TEXT NOT NULL DEFAULT ''")
         if "drive_link" not in qa_feedback_cols:
             conn.execute("ALTER TABLE qa_feedback ADD COLUMN drive_link TEXT NOT NULL DEFAULT ''")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_run_log (
+                run_id       TEXT PRIMARY KEY,
+                job_key      TEXT NOT NULL,
+                job_name     TEXT NOT NULL,
+                store_id     TEXT NOT NULL DEFAULT 'TEST_STORE_D07',
+                status       TEXT NOT NULL DEFAULT 'queued',
+                remarks      TEXT NOT NULL DEFAULT '',
+                triggered_by TEXT NOT NULL DEFAULT 'scheduler',
+                started_at   TEXT NOT NULL DEFAULT '',
+                completed_at TEXT NOT NULL DEFAULT '',
+                result_json  TEXT NOT NULL DEFAULT '{}',
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_job "
+            "ON pipeline_run_log(job_key, created_at DESC)"
+        )
         _seed_defaults(conn)
         for commit_attempt in range(1, 8):
             try:

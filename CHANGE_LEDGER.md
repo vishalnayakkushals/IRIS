@@ -77,6 +77,31 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-03 | Phase 1 — React + FastAPI + Celery Scheduler Dashboard
+- Summary:
+  - Added React (Vite + TypeScript + Tailwind) frontend with Login page and Scheduler Dashboard.
+  - Added FastAPI backend (port 8766) with JWT auth, job trigger endpoints, and run history API.
+  - Added Celery + Redis queue: drive_sync → yolo_scan → gpt_analysis → report auto-chain.
+  - Hourly YOLO beat schedule + midnight full pipeline beat schedule (Asia/Kolkata).
+  - Added `pipeline_run_log` SQLite table to track per-job run status for dashboard display.
+  - New Docker services: redis, iris-api, iris-celery-worker, iris-celery-beat.
+  - Backend Dockerfile: multi-stage (Node React build → Python FastAPI, React served as static files).
+  - No raw images saved in pipeline — only analysis results stored in DB and CSV exports.
+  - Sampling mode is off (ONFLY_DETECTOR=yolo always; allow_detector_fallback=False).
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `deploy/docker-compose.yml`
+  - `.env.example`
+  - `AGENTS.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `backend/` (FastAPI + Celery application)
+  - `frontend/` (React + Vite + TypeScript)
+- Infra/Config Impact:
+  - New env var: `IRIS_JWT_SECRET` (required for API auth — generate with secrets.token_hex(32))
+  - New Docker volumes: redis_data, celery_beat_data
+  - New ports: 8766 (iris-api + React UI)
+
 ### 2026-04-03 | Commit pending
 - Summary:
   - Enabled downloadable empty template behavior for `GPT Consolidated Walk-in Table (Test Folder)` in Report Module.
@@ -90,6 +115,7 @@ Use this template for each new change:
   - None.
 
 ### 2026-04-03 | Commit pending
+
 - Summary:
   - Fixed `run-iris-normal.ps1` argument handling under `Set-StrictMode` by moving `param(...)` to top and giving `RunArgs` a safe default (`@()`).
   - Verified launcher works without explicit args and with pass-through args (e.g., `status`).
