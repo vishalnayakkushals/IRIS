@@ -1,8 +1,8 @@
 # Stage 1: Build React frontend
 FROM node:20-alpine AS frontend-build
 WORKDIR /frontend
-COPY frontend/package*.json ./
-RUN npm ci --silent
+COPY frontend/package.json ./
+RUN npm install --silent
 COPY frontend/ ./
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
