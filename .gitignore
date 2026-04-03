@@ -29,3 +29,8 @@ CTO/logs/*
 CTO/reports/*
 !CTO/logs/.gitkeep
 !CTO/reports/.gitkeep
+
+# Local launcher overrides (optional, local-only)
+run-iris-validation.local.ps1
+run-iris-normal.local.ps1
+.local-secrets/

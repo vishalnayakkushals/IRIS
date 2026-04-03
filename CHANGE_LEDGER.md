@@ -33,6 +33,8 @@ It records what changed, where it changed, and why.
 | `scripts/refresh_and_check.ps1` | One-command local automation: pull/build(or restart)/recreate/wait/log-scan with fast failure for troubleshooting. |
 | `scripts/scheduler_worker.py` | Dedicated background scheduler worker: executes sync/feedback/retrain/predict cycles and updates scheduler runtime state in app settings. |
 | `run_iris.bat` | Windows launcher wrapper for one-command IRIS refresh in restart/rebuild mode. |
+| `run-iris-validation.ps1` | Local Windows secure launcher: reads API keys from local key files, sets runtime env vars, runs GPT test validation, and clears secrets from session env on exit. |
+| `run-iris-normal.ps1` | Local Windows secure launcher: reads API keys from local key files, sets runtime env vars, runs normal `run_iris.bat` flow (with optional args), and clears secrets from session env on exit. |
 | `scripts/store_google_api_key.py` | One-time utility to encrypt and persist Google API key in local data/secrets path. |
 | `scripts/benchmark_drive_sync.py` | Throughput benchmark utility to estimate first-day and daily sync times. |
 | `.dockerignore` | Excludes heavy runtime data/cache from Docker build context to reduce build time and storage usage. |
@@ -74,6 +76,25 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-03 | Commit pending
+- Summary:
+  - Added production-safe local PowerShell launchers to avoid repeated API key copy-paste, with file-based secret loading, validation, and cleanup.
+  - Introduced `run-iris-validation.ps1` (fixed GPT validation run) and `run-iris-normal.ps1` (default/arg pass-through normal runs).
+  - Added local-only ignore patterns for optional launcher overrides and local secrets directory.
+- Changed Paths:
+  - `run-iris-validation.ps1`
+  - `run-iris-normal.ps1`
+  - `.gitignore`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `run-iris-validation.ps1`
+  - `run-iris-normal.ps1`
+- Infra/Config Impact:
+  - Uses local key files by default:
+    - `C:\Users\Kushals.DESKTOP-D51MT8S\Downloads\IRIS\Key\OPEN AI API Key.txt`
+    - `C:\Users\Kushals.DESKTOP-D51MT8S\Downloads\IRIS\Key\Google Cloud Key.txt`
+  - Optional path overrides via env vars: `IRIS_OPENAI_KEY_FILE`, `IRIS_GOOGLE_KEY_FILE`.
 
 ### 2026-04-03 | Commit pending
 - Summary:
