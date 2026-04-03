@@ -28,6 +28,28 @@ DEFAULT_OUT_ROOT = Path("data/exports/current/gpt_validation")
 DEFAULT_STAGE1_ROOT = Path("data/exports/current/stage1_relevance")
 LABELS = {"CUSTOMER", "STAFF", "BANNER", "PEDESTRIANS", "PRODUCT", "INVALID", "UNKNOWN"}
 CAMERA_PATTERN = re.compile(r"_([A-Za-z]\d{2})[-_]")
+WALKIN_TABLE_COLUMNS = [
+    "Date",
+    "Walk-in ID",
+    "Group ID",
+    "Role",
+    "Entry Time",
+    "Exit Time",
+    "Time Spent (mins)",
+    "Session Status",
+    "Entry Type",
+    "Gender",
+    "Age Band",
+    "Attire / Visual Marker",
+    "Primary Clothing",
+    "Jewellery Load",
+    "Bag Type",
+    "Primary Clothing Style Archetype",
+    "Engagement Type",
+    "Engagement Depth",
+    "Purchase Signal (Bag)",
+    "Included in Analytics",
+]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -200,6 +222,38 @@ def _vision_prompt() -> str:
     )
 
 
+def _sequence_prompt() -> str:
+    return (
+        "You are analyzing retail store CCTV image frames for offline customer intelligence.\n"
+        "Process all frames together as one chronological sequence and produce one consolidated table with one row per walk-in session candidate.\n"
+        "Privacy rules: no identity recognition, no biometric logic, no personal sensitive inference, and no persistence across days.\n"
+        "Use only session-local visual cues, timestamps, movement continuity, and behavioral context.\n"
+        "Role must be one of: Customer, Staff, Uncertain.\n"
+        "Exclude Staff/Uncertain from analytics using Included in Analytics = No.\n"
+        "Temporal rules: do not merge solely by clothing similarity. Create new walk-in when continuity is unclear.\n"
+        "If time gap > about 2 minutes and no continuity, create new group.\n"
+        "Entry Type must be one of: Assisted Entry, Walk-in, Already Inside, NA.\n"
+        "Session fields: Entry Time, Exit Time, Time Spent (mins), Session Status (OPEN/CLOSED).\n"
+        "Deterministic IDs are mandatory:\n"
+        "- Walk-in ID: YYYYMMDDHHMMSSWNN\n"
+        "- Group ID: YYYYMMDDHHMMSSGNN\n"
+        "If reliable timestamp not available, set Walk-in ID and Group ID to NA.\n"
+        "Sort walk-ins by Entry Time asc, tie-break by smaller group size then left-to-right then stable order.\n"
+        "For solo customers, still assign a Group ID.\n"
+        "Gender: Male/Female/Uncertain.\n"
+        "Age Band: Under 18, 18 – 24, 25 – 34, 35 – 45, 45 – 55, Above 55, NA.\n"
+        "Primary Clothing: Saree, Dress, Suit, Casual, Formal, Office / Workwear, Festive, Mixed, NA.\n"
+        "Jewellery Load: None, Minimal, Everyday jewellery, Ethnic jewellery, Celebration / Heavy, Uncertain.\n"
+        "Bag Type: Tote bag, Sling bag, Handbag, Backpack, Branded paper bag, None, NA.\n"
+        "Primary Clothing Style Archetype: Ethnic, Casual, Western, Office, Festive, Mixed, Uncertain.\n"
+        "Engagement Type: Browsing, Assisted, Assisted Entry, Waiting, Billing, NA.\n"
+        "Engagement Depth: Low, Medium, High, NA.\n"
+        "Purchase Signal (Bag): Yes, No, NA.\n"
+        "Prefer NA over guessing. Never invent continuity. Never output extra commentary.\n"
+        "Return strict JSON only."
+    )
+
+
 def _vision_schema() -> dict[str, Any]:
     return {
         "name": "retail_post_relevance_eval",
@@ -236,6 +290,51 @@ def _vision_schema() -> dict[str, Any]:
     }
 
 
+def _sequence_schema() -> dict[str, Any]:
+    row_props = {
+        "Date": {"type": "string"},
+        "Walk-in ID": {"type": "string"},
+        "Group ID": {"type": "string"},
+        "Role": {"type": "string"},
+        "Entry Time": {"type": "string"},
+        "Exit Time": {"type": "string"},
+        "Time Spent (mins)": {"type": "string"},
+        "Session Status": {"type": "string"},
+        "Entry Type": {"type": "string"},
+        "Gender": {"type": "string"},
+        "Age Band": {"type": "string"},
+        "Attire / Visual Marker": {"type": "string"},
+        "Primary Clothing": {"type": "string"},
+        "Jewellery Load": {"type": "string"},
+        "Bag Type": {"type": "string"},
+        "Primary Clothing Style Archetype": {"type": "string"},
+        "Engagement Type": {"type": "string"},
+        "Engagement Depth": {"type": "string"},
+        "Purchase Signal (Bag)": {"type": "string"},
+        "Included in Analytics": {"type": "string"},
+    }
+    return {
+        "name": "retail_walkin_sequence_table",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": row_props,
+                        "required": list(row_props.keys()),
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    }
+
+
 def _extract_output_text(payload: dict[str, Any]) -> str:
     text = payload.get("output_text")
     if isinstance(text, str) and text.strip():
@@ -254,6 +353,131 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
         if parts:
             return "\n".join(parts).strip()
     return ""
+
+
+def _normalize_table_cell(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text else "NA"
+
+
+def _table_to_markdown(df: pd.DataFrame) -> str:
+    columns = list(df.columns)
+    if not columns:
+        return ""
+    header = "| " + " | ".join(columns) + " |"
+    divider = "|" + "|".join(["---"] * len(columns)) + "|"
+    lines = [header, divider]
+    for _, row in df.iterrows():
+        cells = [str(row.get(col, "NA")).replace("\n", " ").strip() or "NA" for col in columns]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _build_sequence_evidence(validation_df: pd.DataFrame, frame_df: pd.DataFrame) -> dict[str, Any]:
+    frame_cols = [
+        "capture_date",
+        "camera_id",
+        "image_name",
+        "timestamp_or_sequence",
+        "yolo_detected_people",
+        "gpt_human_entities",
+        "gpt_extra_detections",
+        "customer_count",
+        "staff_count",
+        "banner_count",
+        "pedestrian_count",
+    ]
+    val_cols = [
+        "capture_date",
+        "camera_id",
+        "image_name",
+        "timestamp_or_sequence",
+        "entity_id",
+        "gpt_label",
+        "final_label",
+        "reviewer_label",
+        "yolo_detected",
+        "gpt_extra_detection",
+        "gender",
+        "age_band",
+        "bbox_x1",
+        "bbox_y1",
+        "bbox_x2",
+        "bbox_y2",
+        "notes",
+    ]
+    frames = frame_df[[c for c in frame_cols if c in frame_df.columns]].copy()
+    frames = frames.sort_values(["capture_date", "timestamp_or_sequence", "image_name"], ascending=[True, True, True]).fillna("")
+    entities = validation_df[[c for c in val_cols if c in validation_df.columns]].copy()
+    entities = entities.sort_values(
+        ["capture_date", "timestamp_or_sequence", "image_name", "entity_id"],
+        ascending=[True, True, True, True],
+    ).fillna("")
+    return {
+        "frame_count": int(len(frames)),
+        "entity_count": int(len(entities)),
+        "frames": frames.to_dict(orient="records"),
+        "entities": entities.to_dict(orient="records"),
+    }
+
+
+def _call_gpt_sequence_table(
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    sequence_evidence: dict[str, Any],
+    timeout_seconds: int,
+    max_retries: int,
+    retry_sleep: float,
+) -> pd.DataFrame:
+    body = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": _sequence_prompt()},
+                    {
+                        "type": "input_text",
+                        "text": "SEQUENCE_EVIDENCE_JSON:\n"
+                        + json.dumps(sequence_evidence, ensure_ascii=False, separators=(",", ":")),
+                    },
+                ],
+            }
+        ],
+        "text": {"format": {"type": "json_schema", **_sequence_schema()}},
+        "max_output_tokens": 3500,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url = f"{api_base.rstrip('/')}/responses"
+    attempts = max(1, int(max_retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=int(timeout_seconds))
+            if resp.status_code >= 400:
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise RuntimeError(f"OpenAI client error {resp.status_code}: {resp.text[:500]}")
+                raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text[:500]}")
+            payload = resp.json()
+            text = _extract_output_text(payload)
+            if not text:
+                raise RuntimeError("OpenAI sequence response did not include output text.")
+            parsed = json.loads(text)
+            rows = parsed.get("rows", [])
+            if not isinstance(rows, list):
+                raise RuntimeError("OpenAI sequence response 'rows' must be a list.")
+            clean_rows: list[dict[str, str]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                clean_rows.append({col: _normalize_table_cell(row.get(col, "NA")) for col in WALKIN_TABLE_COLUMNS})
+            return pd.DataFrame(clean_rows, columns=WALKIN_TABLE_COLUMNS)
+        except Exception:
+            if attempt >= attempts:
+                raise
+            time.sleep(float(retry_sleep) * float(attempt))
+    raise RuntimeError("Unexpected GPT sequence table call state.")
 
 
 def _call_gpt_entities(
@@ -606,6 +830,22 @@ def main() -> None:
 
     yolo_vs_gpt_df, yolo_vs_gpt_acc = _build_yolo_vs_gpt(frame_df)
     gpt_vs_reviewer_df, gpt_vs_reviewer_detail_df = _build_gpt_vs_reviewer(validation_df)
+    sequence_table_error = ""
+    sequence_table_df = pd.DataFrame(columns=WALKIN_TABLE_COLUMNS)
+    try:
+        sequence_evidence = _build_sequence_evidence(validation_df=validation_df, frame_df=frame_df)
+        sequence_table_df = _call_gpt_sequence_table(
+            api_key=api_key,
+            api_base=str(args.api_base),
+            model=str(args.model),
+            sequence_evidence=sequence_evidence,
+            timeout_seconds=int(args.request_timeout),
+            max_retries=int(args.max_retries),
+            retry_sleep=float(args.retry_sleep),
+        )
+    except Exception as exc:
+        sequence_table_error = str(exc)
+        sequence_table_df = pd.DataFrame(columns=WALKIN_TABLE_COLUMNS)
 
     if frame_df.empty:
         summary_df = pd.DataFrame(
@@ -677,6 +917,8 @@ def main() -> None:
     yolo_vs_gpt_path = out_dir / "yolo_vs_gpt_accuracy.csv"
     gpt_vs_reviewer_path = out_dir / "gpt_vs_reviewer_accuracy.csv"
     gpt_vs_reviewer_detail_path = out_dir / "gpt_vs_reviewer_detail.csv"
+    walkin_sequence_table_path = out_dir / "gpt_walkin_sequence_table.csv"
+    walkin_sequence_markdown_path = out_dir / "gpt_walkin_sequence_table.md"
 
     validation_df.to_csv(validation_path, index=False)
     frame_df.to_csv(frame_path, index=False)
@@ -684,6 +926,8 @@ def main() -> None:
     yolo_vs_gpt_df.to_csv(yolo_vs_gpt_path, index=False)
     gpt_vs_reviewer_df.to_csv(gpt_vs_reviewer_path, index=False)
     gpt_vs_reviewer_detail_df.to_csv(gpt_vs_reviewer_detail_path, index=False)
+    sequence_table_df.to_csv(walkin_sequence_table_path, index=False)
+    walkin_sequence_markdown_path.write_text(_table_to_markdown(sequence_table_df), encoding="utf-8")
 
     if bool(args.save_json):
         (out_dir / "gpt_validation_results.json").write_text(json.dumps(validation_df.to_dict(orient="records"), indent=2), encoding="utf-8")
@@ -702,6 +946,8 @@ def main() -> None:
         "gpt_vs_reviewer_compared_entities": int(gpt_vs_reviewer_df["compared_entities"].iloc[0]) if not gpt_vs_reviewer_df.empty else 0,
         "gpt_vs_reviewer_accuracy_pct": float(gpt_vs_reviewer_df["accuracy_pct"].iloc[0]) if not gpt_vs_reviewer_df.empty else None,
         "gpt_extra_detections": int(validation_df["gpt_extra_detection"].fillna(False).astype(bool).sum()),
+        "walkin_sequence_rows": int(len(sequence_table_df)),
+        "walkin_sequence_error": sequence_table_error,
         "outputs": {
             "gpt_validation_results_csv": str(validation_path.resolve()),
             "gpt_validation_frame_summary_csv": str(frame_path.resolve()),
@@ -709,6 +955,8 @@ def main() -> None:
             "yolo_vs_gpt_accuracy_csv": str(yolo_vs_gpt_path.resolve()),
             "gpt_vs_reviewer_accuracy_csv": str(gpt_vs_reviewer_path.resolve()),
             "gpt_vs_reviewer_detail_csv": str(gpt_vs_reviewer_detail_path.resolve()),
+            "gpt_walkin_sequence_table_csv": str(walkin_sequence_table_path.resolve()),
+            "gpt_walkin_sequence_table_md": str(walkin_sequence_markdown_path.resolve()),
             "annotated_dir": str(annotated_dir.resolve()) if not bool(args.skip_annotate) else "",
         },
     }

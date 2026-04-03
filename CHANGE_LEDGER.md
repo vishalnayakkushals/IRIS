@@ -75,6 +75,20 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-03 | Commit pending
+- Summary:
+  - Extended GPT post-relevance pipeline with a second-pass consolidated sequence analyzer that applies the provided retail walk-in prompt logic and writes a deterministic consolidated walk-in table.
+  - Added new walk-in outputs (`gpt_walkin_sequence_table.csv`, `gpt_walkin_sequence_table.md`) and run-summary fields for sequence generation status/errors.
+  - Exposed consolidated walk-in output in Report Module as `GPT Consolidated Walk-in Table (Test Folder)`.
+- Changed Paths:
+  - `scripts/gpt_post_relevance_test.py`
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `run_iris.bat gpt-test-validation-now` now also attempts consolidated sequence-table generation using the same GPT model and API key.
+
 ### 2026-04-01 | Commit pending
 - Summary:
   - Fixed CI lint failure by importing `Any` used in GPT frame-index type annotations.

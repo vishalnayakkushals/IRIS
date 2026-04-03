@@ -2797,6 +2797,7 @@ def _load_gpt_outputs(root_dir: Path, store_id: str) -> dict[str, pd.DataFrame]:
         "yolo_vs_gpt": _read_csv_if_exists(base / "yolo_vs_gpt_accuracy.csv"),
         "gpt_vs_reviewer": _read_csv_if_exists(base / "gpt_vs_reviewer_accuracy.csv"),
         "gpt_vs_reviewer_detail": _read_csv_if_exists(base / "gpt_vs_reviewer_detail.csv"),
+        "walkin_sequence": _read_csv_if_exists(base / "gpt_walkin_sequence_table.csv"),
     }
 
 
@@ -2919,6 +2920,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             "GPT Store-Date Summary (Test Folder)",
             "YOLO vs GPT Accuracy (Test Folder)",
             "GPT vs Reviewer Accuracy (Test Folder)",
+            "GPT Consolidated Walk-in Table (Test Folder)",
         ],
         index=0,
         key=f"report_module_type_v2_{selected_store}",
@@ -3028,6 +3030,8 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         report_df = gpt_outputs["gpt_vs_reviewer_detail"].copy()
         if report_df.empty:
             report_df = gpt_outputs["gpt_vs_reviewer"].copy()
+    elif selected_report == "GPT Consolidated Walk-in Table (Test Folder)":
+        report_df = gpt_outputs["walkin_sequence"].copy()
 
     date_filter_col = ""
     if "date" in report_df.columns:
