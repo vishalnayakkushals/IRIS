@@ -79,6 +79,18 @@ Use this template for each new change:
 
 ### 2026-04-03 | Commit pending
 - Summary:
+  - Enabled downloadable empty template behavior for `GPT Consolidated Walk-in Table (Test Folder)` in Report Module.
+  - Enforced exact column order for consolidated walk-in output in UI/CSV download, even when no rows are present.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
+### 2026-04-03 | Commit pending
+- Summary:
   - Fixed `run-iris-normal.ps1` argument handling under `Set-StrictMode` by moving `param(...)` to top and giving `RunArgs` a safe default (`@()`).
   - Verified launcher works without explicit args and with pass-through args (e.g., `status`).
 - Changed Paths:

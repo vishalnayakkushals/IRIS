@@ -2929,6 +2929,28 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         st.info("Select date and report type to load report data.")
         return
 
+    walkin_columns = [
+        "Date",
+        "Walk-in ID",
+        "Group ID",
+        "Role",
+        "Entry Time",
+        "Exit Time",
+        "Time Spent (mins)",
+        "Session Status",
+        "Entry Type",
+        "Gender",
+        "Age Band",
+        "Attire / Visual Marker",
+        "Primary Clothing",
+        "Jewellery Load",
+        "Bag Type",
+        "Primary Clothing Style Archetype",
+        "Engagement Type",
+        "Engagement Depth",
+        "Purchase Signal (Bag)",
+        "Included in Analytics",
+    ]
     report_df = pd.DataFrame()
     if selected_report == "Top Summary":
         report_df = pd.DataFrame(
@@ -3032,6 +3054,10 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             report_df = gpt_outputs["gpt_vs_reviewer"].copy()
     elif selected_report == "GPT Consolidated Walk-in Table (Test Folder)":
         report_df = gpt_outputs["walkin_sequence"].copy()
+        if report_df.empty:
+            report_df = pd.DataFrame(columns=walkin_columns)
+        else:
+            report_df = report_df.reindex(columns=walkin_columns)
 
     date_filter_col = ""
     if "date" in report_df.columns:
@@ -3043,9 +3069,12 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     if date_filter_col and selected_date != "All Dates":
         report_df = report_df[report_df[date_filter_col].astype(str) == str(selected_date)].copy()
 
-    if report_df.empty:
+    allow_empty_download = selected_report == "GPT Consolidated Walk-in Table (Test Folder)"
+    if report_df.empty and not allow_empty_download:
         st.info("No rows available for this report with the selected filters.")
         return
+    if report_df.empty and allow_empty_download:
+        st.info("No rows yet. Download will contain empty template with required columns.")
 
     report_file_stub = re.sub(r"[^A-Za-z0-9_]+", "_", selected_report.strip().lower())
     date_stub = "all_dates" if selected_date == "All Dates" else re.sub(r"[^0-9A-Za-z_-]+", "_", selected_date)
@@ -3076,6 +3105,8 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             )
         else:
             st.dataframe(view_df, use_container_width=True, hide_index=True)
+    elif report_df.empty:
+        st.dataframe(report_df.head(0), use_container_width=True, hide_index=True)
     else:
         st.dataframe(report_df.head(500), use_container_width=True, hide_index=True)
 
