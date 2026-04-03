@@ -79,6 +79,18 @@ Use this template for each new change:
 
 ### 2026-04-03 | Commit pending
 - Summary:
+  - Fixed `run-iris-normal.ps1` argument handling under `Set-StrictMode` by moving `param(...)` to top and giving `RunArgs` a safe default (`@()`).
+  - Verified launcher works without explicit args and with pass-through args (e.g., `status`).
+- Changed Paths:
+  - `run-iris-normal.ps1`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
+### 2026-04-03 | Commit pending
+- Summary:
   - Added production-safe local PowerShell launchers to avoid repeated API key copy-paste, with file-based secret loading, validation, and cleanup.
   - Introduced `run-iris-validation.ps1` (fixed GPT validation run) and `run-iris-normal.ps1` (default/arg pass-through normal runs).
   - Added local-only ignore patterns for optional launcher overrides and local secrets directory.

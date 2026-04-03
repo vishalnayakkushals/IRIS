@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$RunArgs
+    [string[]]$RunArgs = @()
 )
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 $repoPath = "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
 $openAiKeyPath = if ([string]::IsNullOrWhiteSpace($env:IRIS_OPENAI_KEY_FILE)) {
