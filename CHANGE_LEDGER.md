@@ -114,6 +114,25 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None.
 
+### 2026-04-03 | Fix iris-api startup crash — wrong sys.path depth in backend modules
+
+- Summary:
+  - Fixed `ModuleNotFoundError: No module named 'iris'` that caused iris-api container to crash-loop on startup.
+  - All backend files used `.parents[N]` one level too deep, resolving to `/src` (filesystem root) instead of `/app/src`.
+  - Added explicit `PYTHONPATH=/app:/app/src` to all three Phase 1 docker-compose services as belt-and-suspenders.
+- Changed Paths:
+  - `backend/app/api/routes_auth.py`
+  - `backend/app/celery_app/tasks/drive_sync.py`
+  - `backend/app/celery_app/tasks/yolo_scan.py`
+  - `backend/app/celery_app/tasks/gpt_analysis.py`
+  - `backend/app/celery_app/tasks/report.py`
+  - `deploy/docker-compose.yml`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - `PYTHONPATH=/app:/app/src` now set explicitly in iris-api, iris-celery-worker, iris-celery-beat environments.
+
 ### 2026-04-03 | Commit pending
 
 - Summary:

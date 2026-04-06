@@ -7,8 +7,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[5] / "src"
-_SCRIPTS = Path(__file__).resolve().parents[5] / "scripts"
+_SRC = Path(__file__).resolve().parents[4] / "src"
+_SCRIPTS = Path(__file__).resolve().parents[4] / "scripts"
 for _p in (_SRC, _SCRIPTS):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))

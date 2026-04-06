@@ -196,6 +196,7 @@ services:
       - "8766:8766"
     restart: unless-stopped
     environment:
+      - PYTHONPATH=/app:/app/src
       - IRIS_DB_PATH=/app/data/store_registry.db
       - IRIS_DATA_ROOT=/app/data
       - REDIS_URL=redis://redis:6379/0
@@ -220,6 +221,7 @@ services:
     command: celery -A backend.app.celery_app.worker.celery_app worker --loglevel=info --concurrency=2
     restart: unless-stopped
     environment:
+      - PYTHONPATH=/app:/app/src
       - IRIS_DB_PATH=/app/data/store_registry.db
       - IRIS_DATA_ROOT=/app/data
       - REDIS_URL=redis://redis:6379/0
@@ -246,6 +248,7 @@ services:
     command: celery -A backend.app.celery_app.worker.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler --schedule /app/celerybeat-schedule
     restart: unless-stopped
     environment:
+      - PYTHONPATH=/app:/app/src
       - IRIS_DB_PATH=/app/data/store_registry.db
       - REDIS_URL=redis://redis:6379/0
       - STORE_ID=${ONFLY_STORE_ID:-TEST_STORE_D07}
