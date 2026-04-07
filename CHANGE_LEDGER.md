@@ -51,6 +51,7 @@ It records what changed, where it changed, and why.
 | `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
 | `scripts/scan_b2b_template.py` | External B2B template + SOP scanner that generates IRIS-ready incorporation reports (JSON + Markdown). |
 | `scripts/setup_local_env.ps1` | Local-only secure env bootstrapper: reads API keys from key files and writes `.env.local` for Docker/run commands. |
+| `scripts/optimize_docker_runtime.ps1` | Lightweight runtime switcher: stops optional high-memory services and keeps only core on-fly services running. |
 | `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
 | `docs/process/onfly_pipeline_logic.md` | Canonical human-readable on-fly logic reference (stage flow, timestamp rules, session behavior, and output artifacts). |
 | `docs/process/onfly_independent_app_checklist.md` | Readiness checklist for moving on-fly workflow to an independent app mode (no manual shell dependency). |
@@ -80,6 +81,24 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-07 | Lightweight runtime automation + full-folder on-fly validation run
+
+- Summary:
+  - Added lightweight Docker runtime automation to reduce memory/container footprint for server-like operation by stopping optional services.
+  - Added `run_iris.bat light-runtime` command to apply this mode quickly.
+  - Executed full test-folder on-fly run for `TEST_STORE_D07` with no 30-image cap (`max-images 10000`) and version split enabled (`yolo_v1`, `gpt_v1`), then validated delta rerun behavior.
+  - Generated a readable latest-run file report with counts, timings, and output paths.
+- Changed Paths:
+  - `scripts/optimize_docker_runtime.ps1`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+  - `data/exports/current/onfly/TEST_STORE_D07/onfly_run_report_latest.md` (runtime artifact)
+- New Modules Introduced:
+  - `scripts/optimize_docker_runtime.ps1`
+- Infra/Config Impact:
+  - New command: `run_iris.bat light-runtime`
+  - Stops optional containers by default: `iris-api`, celery, legacy schedulers, GPT scheduler, YOLO relevance scheduler.
 
 ### 2026-04-07 | Version-split rerun control + process timing dataset
 
