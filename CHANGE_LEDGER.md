@@ -80,6 +80,20 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-07 | Non-blocking CSV write when canonical export is locked
+
+- Summary:
+  - Updated on-fly report writer to avoid failing whole pipeline when canonical CSV is open/locked (e.g., Excel file handle).
+  - On `PermissionError`, pipeline now writes run-scoped fallback CSV (`<name>_<run_id>.csv`) and continues to complete run/report/index updates.
+  - Added `write_warnings` into run summary JSON and report-writer event payload for traceability in UI/debug.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (runtime behavior only; no schema/dependency change).
+
 ### 2026-04-07 | On-fly logic clarity documentation refresh
 
 - Summary:
