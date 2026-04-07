@@ -423,14 +423,22 @@ run_iris.bat restart --skip-pull
 
 IRIS now supports a lightweight URL-first pipeline for evaluation and staged production rollout:
 
-1. Source ingestion from URL (`Google Drive` today, `S3` adapter path reserved)
-2. YOLO relevance filter (human presence)
-3. ChatGPT analysis only for relevant images (optional toggle)
-4. Idempotent state in SQLite (`onfly_image_state`) to skip already processed images
-5. Hourly + nightly scheduler (`scripts/onfly_scheduler.py`)
+1. `LIST`: source ingestion from URL/path (`Google Drive` today, `S3` adapter path reserved)
+2. `SKIP_CHECK`: idempotent/delta check in SQLite (`onfly_image_state`)
+3. `DOWNLOAD`: in-memory image fetch
+4. `YOLO`: person relevance filter
+5. `GPT`: semantic analysis only for relevant images (optional toggle)
+6. `REPORT_WRITER`: canonical CSV/JSON artifacts
+7. `DASHBOARD_INGEST`: report index updates for UI visibility
+
+Important:
+- GPT decides semantic event type/role, while timestamp assignment is canonicalized from filename parsing for session times.
+- Detailed and always-current logic lives in:
+  - `docs/process/onfly_pipeline_logic.md`
 
 Key artifacts:
 - `data/exports/current/onfly/<STORE_ID>/onfly_image_results.csv`
+- `data/exports/current/onfly/<STORE_ID>/onfly_walkin_sessions.csv`
 - `data/exports/current/onfly/onfly_store_date_report.csv`
 - `data/exports/current/onfly/onfly_run_summary_<run_id>.json`
 

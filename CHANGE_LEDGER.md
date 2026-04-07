@@ -49,7 +49,10 @@ It records what changed, where it changed, and why.
 | `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
 | `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
+| `scripts/scan_b2b_template.py` | External B2B template + SOP scanner that generates IRIS-ready incorporation reports (JSON + Markdown). |
+| `scripts/setup_local_env.ps1` | Local-only secure env bootstrapper: reads API keys from key files and writes `.env.local` for Docker/run commands. |
 | `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
+| `docs/process/onfly_pipeline_logic.md` | Canonical human-readable on-fly logic reference (stage flow, timestamp rules, session behavior, and output artifacts). |
 | `CTO/scripts/perf_common.py` | Shared isolated CTO log utilities (single JSONL sink, path setup, run id, percentile). |
 | `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
 | `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
@@ -76,6 +79,158 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-07 | On-fly logic clarity documentation refresh
+
+- Summary:
+  - Added a dedicated canonical logic document for on-fly processing so stage behavior is always clear and auditable.
+  - Documented the exact `LIST -> SKIP_CHECK -> DOWNLOAD -> YOLO -> GPT -> REPORT_WRITER -> DASHBOARD_INGEST` flow with delta/idempotent rules.
+  - Clarified source-of-truth timing rule: GPT decides event semantics, but session times are assigned from filename timestamp parsing.
+  - Updated README to point to the canonical logic file and aligned artifact list to include walk-in session exports.
+- Changed Paths:
+  - `docs/process/onfly_pipeline_logic.md`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `docs/process/onfly_pipeline_logic.md`
+- Infra/Config Impact:
+  - None (documentation-only change).
+
+### 2026-04-07 | Local env bootstrap + run command env-file support
+
+- Summary:
+  - Added a local secure env bootstrap script to auto-create `.env.local` from key files and default runtime values (including `OPENAI_VISION_MODEL=gpt-4.1-mini`).
+  - Added `.env.local.example` with required fields (`MAX_FRAMES_PER_JOB`, OpenAI/Google keys, service account email/id placeholders, on-fly defaults).
+  - Expanded `.env.example` with additional required fields and placeholders for local/dev consistency.
+  - Updated `run_iris.bat` to automatically use `--env-file .env.local` (fallback `.env`) when present, so Docker compose commands pick local env without repeated manual export.
+  - Added git ignore protection for `.env` and `.env.local` to prevent secret commits.
+- Changed Paths:
+  - `.gitignore`
+  - `.env.example`
+  - `.env.local.example`
+  - `scripts/setup_local_env.ps1`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/setup_local_env.ps1`
+- Infra/Config Impact:
+  - Optional local runtime file `.env.local` is now first-class for compose-backed commands.
+  - No Docker rebuild required (code/config only).
+
+### 2026-04-07 | Pipeline Journey UI trigger for source path / Drive key runs
+
+- Summary:
+  - Added a manual “Run Pipeline Now” control in `Operations > Pipeline > Pipeline Journey`.
+  - UI now accepts source in all common forms:
+    - full Google Drive folder URL
+    - Drive folder key only
+    - local folder path
+    - direct image folder path
+  - Added normalization logic to convert Drive key to canonical Drive folder URL.
+  - Added run controls for `Store ID`, `Max Images`, `YOLO Confidence`, and `Force Reprocess`.
+  - Manual UI run now executes `run_onfly_pipeline` directly and writes normal run/event/report artifacts.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Uses existing runtime env keys (`GOOGLE_API_KEY`, `OPENAI_API_KEY`) loaded in running `iris` service.
+  - No rebuild required; restart `iris` service only.
+
+### 2026-04-07 | Pipeline Journey stability fix + simplified run form
+
+- Summary:
+  - Fixed Pipeline Journey crash (`StoreRecord` has no `.get`) by switching store extraction to dataclass attribute access (`s.store_id`).
+  - Simplified run form to only required inputs:
+    - Store selection
+    - Source path / Drive URL / Drive folder key
+    - Overwrite toggle
+  - Removed run-time confidence/max controls from this screen (these remain under Config).
+  - Added result reuse behavior:
+    - If latest successful run for same source exists and report files exist, UI reuses existing outputs when overwrite is OFF.
+    - If overwrite is ON, full reprocess is executed.
+  - Added lightweight progress indicator and explicit report paths display after run.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None; restart `iris` service to load UI fix.
+
+### 2026-04-07 | On-fly export cleanup (Folder + Image name columns)
+
+- Summary:
+  - Updated `onfly_image_results.csv` export to derive and include `folder_name` from `relative_path` (date-like folders normalized to `DD-MM-YYYY`), and removed `date_source` from report output.
+  - Kept `Date` as the visible date column for reporting; `date_source` remains internal in DB for derivation only.
+  - Updated `onfly_walkin_sessions.csv` export to include `folder_name` + `image_name` by joining `onfly_walkin_sessions` with `onfly_image_state` on `store_id + image_id`.
+  - Changed walk-in session export scope to current run only (`run_id = current run`) to avoid mixed historical duplicates in one CSV.
+  - Hardened GPT prompt with explicit banner/poster/mannequin suppression guidance (non-human prints should be `Uncertain` and excluded).
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/fix_onfly_exports.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None. Re-run on-fly pipeline to regenerate CSV artifacts with new columns.
+
+### 2026-04-07 | On-fly report writer stability for locked CSV files
+
+- Summary:
+  - Added safe CSV writer fallback in on-fly report stage to handle file lock/permission collisions (e.g., CSV open in Excel).
+  - If a target CSV is locked, pipeline now writes run-scoped fallback files:
+    - `onfly_image_results_<run_id>.csv`
+    - `onfly_walkin_sessions_<run_id>.csv`
+    - `onfly_store_date_report_<run_id>.csv`
+  - Summary JSON and dashboard ingestion index now reference the actual written path (primary or fallback) so UI/report links remain correct.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None
+
+### 2026-04-06 | Scan and incorporate external B2B template references
+
+- Summary:
+  - Added a lightweight scanner utility to inspect `D:\\b2b-template` and the provided SOP docx, then generate incorporation artifacts inside IRIS docs.
+  - Generated `docs/process/b2b_template_scan_report.md` and `docs/process/b2b_template_scan_report.json` with file-volume stats, key path presence checks, SOP section detection, and now/future incorporation guidance.
+  - Kept implementation fully non-invasive (documentation/process only), with no runtime coupling to IRIS pipeline.
+- Changed Paths:
+  - `scripts/scan_b2b_template.py`
+  - `docs/process/b2b_template_scan_report.md`
+  - `docs/process/b2b_template_scan_report.json`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/scan_b2b_template.py`
+- Infra/Config Impact:
+  - None.
+
+### 2026-04-06 | Upgrade GPT eval to comprehensive 20-field retail analytics prompt
+
+- Summary:
+  - Replaced simple 4-field GPT prompt (`customer_count, staff_count, conversions, bounce`) in `onfly_pipeline.py` with the full privacy-safe retail analytics prompt.
+  - GPT now returns one row per detected person with 20 fields: Walk-in ID, Group ID, Role, Entry/Exit Time, Session Status, Entry Type, Gender, Age Band, Attire, Primary Clothing, Jewellery Load, Bag Type, Clothing Style Archetype, Engagement Type, Engagement Depth, Purchase Signal (Bag), Included in Analytics.
+  - Privacy rules enforced in prompt: no identity recognition, no biometrics, session-local only, non-PII.
+  - Deterministic Walk-in IDs (YYYYMMDDHHMMSSWNN) and Group IDs (YYYYMMDDHHMMSSGNN) mandatory.
+  - Temporal reasoning: treat all provided frames as time-ordered sequence; never merge across frames by clothing similarity alone.
+  - Uses JSON schema (Responses API) for structured output — same schema pattern as `gpt_post_relevance_test.py`.
+  - Added `onfly_walkin_sessions` SQLite table: one row per detected person per image run.
+  - `gpt_result_json` in `onfly_image_state` now stores summary only; full per-customer data in `onfly_walkin_sessions`.
+  - New export: `data/exports/current/onfly/{store_id}/onfly_walkin_sessions.csv` alongside existing `onfly_image_results.csv`.
+  - `run_summary_json` output now includes `walkin_sessions_csv` path.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None (new DB table `onfly_walkin_sessions` added inside `init_onfly_tables`)
+- Infra/Config Impact:
+  - `max_output_tokens` increased from 500 → 2000 (per-person rows need more tokens).
+  - `request timeout` increased from 90s → 120s.
+  - No new env vars required.
 
 ### 2026-04-03 | Phase 1 — React + FastAPI + Celery Scheduler Dashboard
 - Summary:
@@ -1591,4 +1746,141 @@ Use this template for each new change:
   - New optional runtime flags:
     - `IRIS_FEEDBACK_OVERRIDE_ENABLED` (default `1`)
     - `IRIS_STORE_REGISTRY_DB` (optional explicit DB path; defaults to inferred `data/store_registry.db`)
+
+### 2026-04-06 | Commit pending
+- Summary:
+  - Added on-fly pipeline observability persistence (`onfly_pipeline_runs` + `onfly_pipeline_run_events`) with stage-level tracking for LIST, SKIP_CHECK, DOWNLOAD, YOLO, GPT, REPORT_WRITER, and DASHBOARD_INGEST.
+  - Wired on-fly report indexing for dashboard/report discovery (`onfly_report_index`) and updated on-fly runtime to upsert report paths and ingestion markers per store/date.
+  - Added business-readable `Operations > Pipeline Journey` UI with run list, stage timeline, failure inspector, report paths, and scheduler history.
+  - Extended Report Module with direct on-fly exports (`On-Fly Store-Date Summary`, `On-Fly Image Results`, `On-Fly Walk-in Sessions`) so test-store output is visible even when legacy summary exports are not loaded.
+  - Added scheduler history persistence in `cfg_onfly_scheduler_history_json` for execution traceability.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/store_registry.py`
+  - `src/iris/iris_dashboard.py`
+  - `scripts/onfly_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No rebuild required.
+  - New SQLite tables auto-created on startup: `onfly_pipeline_runs`, `onfly_pipeline_run_events`, `onfly_report_index`.
+
+### 2026-04-06 | Commit pending
+- Summary:
+  - Updated `run_iris.bat` to auto-load `OPENAI_API_KEY` and `GOOGLE_API_KEY` from local key files when env vars are empty, so `onfly-run-now`, `onfly-benchmark`, `onfly-scheduler-start`, and `gpt-test-validation-now` run without manual key paste.
+- Changed Paths:
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Optional local key-file env overrides supported: `OPENAI_KEY_FILE`, `GOOGLE_KEY_FILE`.
+
+### 2026-04-06 | Commit pending
+- Summary:
+  - Reduced on-fly Drive slowness by making Google Drive listing stop early once `--max-images` is reached (instead of scanning full folder tree before slicing).
+  - Added retry + shorter connect/read timeouts for Drive fetch operations and changed per-image download failures to continue gracefully (marking failed status/event) instead of aborting the entire run.
+  - Added `ONFLY_MAX_IMAGES` env support in `run_iris.bat` for quick capped runs without editing commands.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `run_iris.bat`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - New optional runtime env in launcher: `ONFLY_MAX_IMAGES` (default `100`).
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Fixed Pipeline Journey crash for store loading by using `StoreRecord.store_id` (instead of dict-style `.get`) in the store filter list.
+  - Normalized on-fly walk-in export `date` to folder-derived pipeline date (`item.date_display`) to prevent GPT-hallucinated dates from breaking folder/image reconciliation.
+  - Re-ran full on-fly test-store pipeline (`TEST_STORE_D07`, 30 images, force reprocess, GPT enabled) and validated delta rerun behavior, stage timings, and report artifact generation.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No new env vars.
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Fixed on-fly session time assignment to use filename-derived timestamp (`HH:MM:SS`) as canonical event time instead of GPT-provided clock text.
+  - Extended GPT prompt/schema for explicit event semantics (`Event Type`, `Direction Confidence`, `Match Fingerprint`) while keeping GPT responsible for entry/exit/inside semantics.
+  - Added deterministic on-fly session state machine:
+    - `ENTRY -> OPEN`
+    - `INSIDE_ACTIVE/INSIDE_PURCHASING -> OPEN update or INFERRED_INSIDE_OPEN`
+    - `EXIT -> CLOSED` when matched; otherwise `UNMATCHED_EXIT`
+    - EOD closeout turns remaining `OPEN/INFERRED_INSIDE_OPEN` into `CLOSED_EOD`.
+  - Added best-effort deterministic matching against open sessions (store/date scoped) with score/reason persistence for auditability.
+  - Added staff manager override support (white shirt + black pant/trouser => Staff, excluded from analytics).
+  - Expanded `onfly_walkin_sessions` schema with audit/debug fields (`event_type`, `event_time`, `first_seen_time`, `last_seen_time`, `matched_session_id`, `match_score`, `match_reason`, `direction_confidence`, `match_fingerprint`, debug fields, source image/folder metadata).
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - SQLite migration auto-adds new columns to `onfly_walkin_sessions` on startup.
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Cleaned test-store on-fly export directory to keep only canonical files:
+    - `onfly_image_results.csv`
+    - `onfly_walkin_sessions.csv`
+  - Updated on-fly CSV writer to always overwrite canonical filenames and stop creating run-suffixed fallback files on file-lock conditions.
+  - Added explicit lock error message instructing to close open file handles and rerun.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - If CSV is open/locked, run now fails fast with a clear message instead of generating extra files.
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Added one-click **Restore Selected Run To Canonical Files** action in `Operations > Pipeline Journey`.
+  - Restore action rebuilds and overwrites only:
+    - `data/exports/current/onfly/<STORE_ID>/onfly_image_results.csv`
+    - `data/exports/current/onfly/<STORE_ID>/onfly_walkin_sessions.csv`
+    from the selected `run_id` directly from SQLite state/tables.
+  - Preserves folder/date/image normalization (`folder_name`, `Date`, `image_name`) and aligns walk-in `date` with folder display for reconciliation.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No new env vars or services.
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Fixed Pipeline Journey runtime crash source by confirming `StoreRecord` access path in the page store filter logic (`s.store_id`), avoiding dict-style `.get` access.
+  - Renamed Pipeline page label and header from `Pipeline Journey` to `Maual data sync of IRIS` in Operations navigation.
+  - Added backward-compatible page routing alias so old deep-links to `Pipeline Journey` still work.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No new runtime dependencies.
+
+### 2026-04-07 | Commit pending
+- Summary:
+  - Updated GPT retail prompt for on-fly pipeline with explicit manager staff rule:
+    - white shirt + black pant/trouser should be treated as Staff.
+  - Added deterministic post-processing rule in on-fly GPT normalization:
+    - if attire markers imply white+black+pant/trouser and role is customer/uncertain, force Role=Staff and Included in Analytics=No.
+  - This improves staff/customer separation for manager-like appearances without changing detector stage.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No new env vars.
 
