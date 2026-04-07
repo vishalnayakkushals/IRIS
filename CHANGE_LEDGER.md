@@ -53,6 +53,7 @@ It records what changed, where it changed, and why.
 | `scripts/setup_local_env.ps1` | Local-only secure env bootstrapper: reads API keys from key files and writes `.env.local` for Docker/run commands. |
 | `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
 | `docs/process/onfly_pipeline_logic.md` | Canonical human-readable on-fly logic reference (stage flow, timestamp rules, session behavior, and output artifacts). |
+| `docs/process/onfly_independent_app_checklist.md` | Readiness checklist for moving on-fly workflow to an independent app mode (no manual shell dependency). |
 | `CTO/scripts/perf_common.py` | Shared isolated CTO log utilities (single JSONL sink, path setup, run id, percentile). |
 | `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
 | `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
@@ -79,6 +80,32 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-07 | Version-split rerun control + process timing dataset
+
+- Summary:
+  - Added separate `yolo_version` and `gpt_version` handling to on-fly pipeline config and scheduler command wiring.
+  - Implemented version-aware selective rerun logic:
+    - if YOLO version unchanged, YOLO step is skipped;
+    - if GPT version changed on relevant images, only GPT re-runs;
+    - legacy compatibility preserved by falling back to `pipeline_version` for existing rows.
+  - Added `yolo_version` and `gpt_version` columns to `onfly_image_state` (auto-migration).
+  - Added per-run timing dataset export: `onfly_process_timings.csv` with ms + `HH:MM:SS` for each stage.
+  - Added independent-app readiness checklist document for full cutover planning.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/run_onfly_pipeline.py`
+  - `scripts/onfly_scheduler.py`
+  - `docs/process/onfly_pipeline_logic.md`
+  - `docs/process/onfly_independent_app_checklist.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `docs/process/onfly_independent_app_checklist.md`
+- Infra/Config Impact:
+  - New optional env vars:
+    - `ONFLY_YOLO_VERSION`
+    - `ONFLY_GPT_VERSION`
+  - Existing `ONFLY_PIPELINE_VERSION` remains supported.
 
 ### 2026-04-07 | Walk-in export cleanup + audit column toggle
 

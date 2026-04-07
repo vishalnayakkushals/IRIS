@@ -71,6 +71,8 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
     detector = str(os.getenv("ONFLY_DETECTOR", "yolo")).strip() or "yolo"
     conf = str(os.getenv("ONFLY_CONF", "0.18")).strip() or "0.18"
     version = str(os.getenv("ONFLY_PIPELINE_VERSION", "onfly_v1")).strip() or "onfly_v1"
+    yolo_version = str(os.getenv("ONFLY_YOLO_VERSION", "")).strip()
+    gpt_version = str(os.getenv("ONFLY_GPT_VERSION", "")).strip()
     allow_fallback = _truthy(os.getenv("ONFLY_ALLOW_DETECTOR_FALLBACK", "0"), default=False)
 
     settings = get_app_settings(args.db)
@@ -149,12 +151,35 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         "--pipeline-version",
         version,
     ]
+    if yolo_version:
+        command.extend(["--yolo-version", yolo_version])
+    if gpt_version:
+        command.extend(["--gpt-version", gpt_version])
     if enable_gpt:
         command.append("--enable-gpt")
     if allow_fallback:
         command.append("--allow-detector-fallback")
     rc, out_tail, err_tail = _run_command(command)
     now_utc = datetime.now(tz=timezone.utc)
+    history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]").strip()
+    try:
+        history = json.loads(history_raw)
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+    history.append(
+        {
+            "ran_at": now_utc.isoformat(),
+            "mode": mode,
+            "store_id": store_id,
+            "returncode": int(rc),
+            "status": "ok" if rc == 0 else "error",
+            "stdout_tail": out_tail[-600:],
+            "stderr_tail": err_tail[-600:],
+        }
+    )
+    history = history[-40:]
     updates = {
         key_hourly: now_utc.isoformat(),
         "cfg_onfly_last_run_at": now_utc.isoformat(),
@@ -162,6 +187,7 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
             {"status": "ok" if rc == 0 else "error", "mode": mode, "returncode": rc, "stdout_tail": out_tail, "stderr_tail": err_tail},
             separators=(",", ":"),
         ),
+        "cfg_onfly_scheduler_history_json": json.dumps(history, separators=(",", ":")),
     }
     if mode == "nightly":
         updates[key_nightly] = now_local.date().isoformat()

@@ -259,6 +259,8 @@ class OnFlyConfig:
     openai_api_base: str = "https://api.openai.com/v1"
     gpt_rate_limit_rps: float = 1.0
     pipeline_version: str = "onfly_v1"
+    yolo_version: str = ""
+    gpt_version: str = ""
     allow_detector_fallback: bool = False
     force_reprocess: bool = False
     keep_relevant_dir: Path | None = None
@@ -277,6 +279,14 @@ class SourceClient(Protocol):
 
 def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _ms_to_hms(ms: float) -> str:
+    total_seconds = max(0, int(round(float(ms) / 1000.0)))
+    hh = total_seconds // 3600
+    mm = (total_seconds % 3600) // 60
+    ss = total_seconds % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def _parse_date_token(token: str) -> date | None:
@@ -450,7 +460,8 @@ def init_onfly_tables(db_path: Path) -> None:
                 source_item_id TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', image_name TEXT NOT NULL,
                 relative_path TEXT NOT NULL DEFAULT '', date_source TEXT NOT NULL DEFAULT '', date_display TEXT NOT NULL DEFAULT '',
                 camera_id TEXT NOT NULL DEFAULT '', timestamp_hint TEXT NOT NULL DEFAULT '', discovered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-                pipeline_version TEXT NOT NULL DEFAULT '', yolo_status TEXT NOT NULL DEFAULT 'pending', yolo_relevant INTEGER NOT NULL DEFAULT 0,
+                pipeline_version TEXT NOT NULL DEFAULT '', yolo_version TEXT NOT NULL DEFAULT '', gpt_version TEXT NOT NULL DEFAULT '',
+                yolo_status TEXT NOT NULL DEFAULT 'pending', yolo_relevant INTEGER NOT NULL DEFAULT 0,
                 person_count INTEGER NOT NULL DEFAULT 0, yolo_conf REAL NOT NULL DEFAULT 0, yolo_error TEXT NOT NULL DEFAULT '',
                 gpt_status TEXT NOT NULL DEFAULT 'pending', gpt_customer_count INTEGER NOT NULL DEFAULT 0, gpt_staff_count INTEGER NOT NULL DEFAULT 0,
                 gpt_conversions INTEGER NOT NULL DEFAULT 0, gpt_bounce INTEGER NOT NULL DEFAULT 0, gpt_result_json TEXT NOT NULL DEFAULT '{}',
@@ -474,6 +485,11 @@ def init_onfly_tables(db_path: Path) -> None:
             )
             """
         )
+        state_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(onfly_image_state)").fetchall()}
+        if "yolo_version" not in state_cols:
+            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN yolo_version TEXT NOT NULL DEFAULT ''")
+        if "gpt_version" not in state_cols:
+            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN gpt_version TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_task_stage_status ON onfly_task_queue(stage,status,updated_at)")
         conn.execute(
             """
@@ -812,6 +828,8 @@ def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str) -> dict[
 
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
+    yolo_version = str(cfg.yolo_version or cfg.pipeline_version or "onfly_v1").strip()
+    gpt_version = str(cfg.gpt_version or cfg.pipeline_version or "onfly_v1").strip()
     started_at = _now()
     run_id = f"{cfg.store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     perf0 = time.perf_counter()
@@ -864,16 +882,20 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             now = _now()
             row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             if row is None:
-                conn.execute("INSERT INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,discovered_at,last_seen_at,pipeline_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id, item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, now, cfg.pipeline_version))
+                conn.execute("INSERT INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id, item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, now, cfg.pipeline_version, "", ""))
                 row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             else:
                 conn.execute("UPDATE onfly_image_state SET source_url=?,image_name=?,relative_path=?,date_source=?,date_display=?,camera_id=?,timestamp_hint=?,last_seen_at=? WHERE store_id=? AND image_id=?", (item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, cfg.store_id, item.image_id))
             if row is None:
                 continue
-            same_version = str(row["pipeline_version"] or "") == cfg.pipeline_version
+            row_yolo_version = str(row["yolo_version"] or row["pipeline_version"] or "").strip()
+            row_gpt_version = str(row["gpt_version"] or row["pipeline_version"] or "").strip()
             done_yolo = str(row["yolo_status"] or "") == "done"
             done_gpt = str(row["gpt_status"] or "") == "done"
-            if (not cfg.force_reprocess) and same_version and done_yolo and (not cfg.gpt_enabled or done_gpt or int(row["yolo_relevant"] or 0) == 0):
+            existing_relevant = int(row["yolo_relevant"] or 0)
+            yolo_needed = cfg.force_reprocess or not (done_yolo and row_yolo_version == yolo_version)
+            gpt_needed = bool(cfg.gpt_enabled and existing_relevant == 1 and (cfg.force_reprocess or yolo_needed or not (done_gpt and row_gpt_version == gpt_version)))
+            if (not yolo_needed) and (not gpt_needed):
                 skipped += 1
                 _append_pipeline_event(
                     conn,
@@ -883,7 +905,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     image_id=item.image_id,
                     image_name=item.image_name,
                     message="Skipped by delta check",
-                    payload={"pipeline_version": cfg.pipeline_version, "done_yolo": done_yolo, "done_gpt": done_gpt},
+                    payload={
+                        "pipeline_version": cfg.pipeline_version,
+                        "yolo_version": yolo_version,
+                        "gpt_version": gpt_version,
+                        "done_yolo": done_yolo,
+                        "done_gpt": done_gpt,
+                    },
                 )
                 continue
             new_images += 1
@@ -945,49 +973,65 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 timings["detector_init_ms"] = round((time.perf_counter() - d0) * 1000.0, 2)
                 if cfg.detector_type == "yolo" and detector_warning and "fallback active" in detector_warning.lower() and not cfg.allow_detector_fallback:
                     raise RuntimeError("YOLO unavailable and fallback detected. Fix runtime or allow fallback.")
-            stage = PIPELINE_STAGES[3]
-            _update_pipeline_run(conn, run_id, current_stage=stage)
-            _append_pipeline_event(
-                conn,
-                run_id=run_id,
-                stage=stage,
-                event_type="start",
-                image_id=item.image_id,
-                image_name=item.image_name,
-                message="YOLO detection started",
-            )
-            y0 = time.perf_counter()
-            pcount, max_conf, yerr = _yolo_detect_from_bytes(detector, image_bytes, item.image_name)
-            timings["yolo_ms"] += round((time.perf_counter() - y0) * 1000.0, 2)
-            relevant = int(pcount > 0 and not yerr)
-            yolo_relevant += int(relevant == 1)
-            yolo_done += 1
-            conn.execute("UPDATE onfly_image_state SET pipeline_version=?,yolo_status='done',yolo_relevant=?,person_count=?,yolo_conf=?,yolo_error=?,last_run_id=? WHERE store_id=? AND image_id=?", (cfg.pipeline_version, relevant, pcount, max_conf, str(yerr)[:1000], run_id, cfg.store_id, item.image_id))
-            _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="done")
-            _append_pipeline_event(
-                conn,
-                run_id=run_id,
-                stage=stage,
-                event_type="success" if not yerr else "failure",
-                image_id=item.image_id,
-                image_name=item.image_name,
-                message="YOLO detection completed",
-                payload={"person_count": int(pcount), "max_confidence_score": float(max_conf), "relevant": int(relevant)},
-                error_message=str(yerr)[:1000],
-            )
-            _update_pipeline_run(
-                conn,
-                run_id,
-                images_relevant=yolo_relevant,
-                images_irrelevant=max(0, yolo_done - yolo_relevant),
-            )
+            if yolo_needed:
+                stage = PIPELINE_STAGES[3]
+                _update_pipeline_run(conn, run_id, current_stage=stage)
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=stage,
+                    event_type="start",
+                    image_id=item.image_id,
+                    image_name=item.image_name,
+                    message="YOLO detection started",
+                )
+                y0 = time.perf_counter()
+                pcount, max_conf, yerr = _yolo_detect_from_bytes(detector, image_bytes, item.image_name)
+                timings["yolo_ms"] += round((time.perf_counter() - y0) * 1000.0, 2)
+                relevant = int(pcount > 0 and not yerr)
+                yolo_relevant += int(relevant == 1)
+                yolo_done += 1
+                conn.execute("UPDATE onfly_image_state SET pipeline_version=?,yolo_version=?,yolo_status='done',yolo_relevant=?,person_count=?,yolo_conf=?,yolo_error=?,last_run_id=? WHERE store_id=? AND image_id=?", (cfg.pipeline_version, yolo_version, relevant, pcount, max_conf, str(yerr)[:1000], run_id, cfg.store_id, item.image_id))
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="done")
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=stage,
+                    event_type="success" if not yerr else "failure",
+                    image_id=item.image_id,
+                    image_name=item.image_name,
+                    message="YOLO detection completed",
+                    payload={"person_count": int(pcount), "max_confidence_score": float(max_conf), "relevant": int(relevant), "yolo_version": yolo_version},
+                    error_message=str(yerr)[:1000],
+                )
+                _update_pipeline_run(
+                    conn,
+                    run_id,
+                    images_relevant=yolo_relevant,
+                    images_irrelevant=max(0, yolo_done - yolo_relevant),
+                )
+            else:
+                relevant = existing_relevant
+                pcount = int(row["person_count"] or 0)
+                max_conf = float(row["yolo_conf"] or 0.0)
+                yerr = str(row["yolo_error"] or "")
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=PIPELINE_STAGES[3],
+                    event_type="progress",
+                    image_id=item.image_id,
+                    image_name=item.image_name,
+                    message="YOLO skipped (version match)",
+                    payload={"yolo_version": yolo_version, "stored_yolo_version": row_yolo_version, "relevant": int(relevant)},
+                )
             if relevant == 1 and cfg.keep_relevant_dir is not None:
                 cfg.keep_relevant_dir.mkdir(parents=True, exist_ok=True)
                 try:
                     (cfg.keep_relevant_dir / item.image_name).write_bytes(image_bytes)
                 except Exception:
                     pass
-            if relevant == 1 and cfg.gpt_enabled:
+            if relevant == 1 and cfg.gpt_enabled and gpt_needed:
                 stage = PIPELINE_STAGES[4]
                 _update_pipeline_run(conn, run_id, current_stage=stage)
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="pending")
@@ -1016,8 +1060,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 walkins = gpt.pop("walkins", [])
                 gpt_summary = json.dumps(gpt, separators=(',', ':'))
                 conn.execute(
-                    "UPDATE onfly_image_state SET gpt_status=?,gpt_customer_count=?,gpt_staff_count=?,gpt_conversions=?,gpt_bounce=?,gpt_result_json=?,gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
-                    (gstatus, int(gpt.get("customer_count", 0)), int(gpt.get("staff_count", 0)), int(gpt.get("conversions", 0)), int(gpt.get("bounce", 0)), gpt_summary, str(gerr)[:1000], run_id, cfg.store_id, item.image_id),
+                    "UPDATE onfly_image_state SET gpt_version=?,gpt_status=?,gpt_customer_count=?,gpt_staff_count=?,gpt_conversions=?,gpt_bounce=?,gpt_result_json=?,gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
+                    (gpt_version, gstatus, int(gpt.get("customer_count", 0)), int(gpt.get("staff_count", 0)), int(gpt.get("conversions", 0)), int(gpt.get("bounce", 0)), gpt_summary, str(gerr)[:1000], run_id, cfg.store_id, item.image_id),
                 )
                 # Session state machine: GPT decides event semantics, filename timestamp is source-of-truth for event time.
                 event_time = _parse_filename_time(item.image_name) or str(item.timestamp_hint or "").split(" ")[-1].strip()
@@ -1234,9 +1278,21 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 _update_pipeline_run(conn, run_id, gpt_success_count=gpt_done, gpt_failed_count=gpt_failed)
                 if cfg.gpt_rate_limit_rps > 0:
                     time.sleep(1.0 / max(0.01, float(cfg.gpt_rate_limit_rps)))
+            elif relevant == 1 and cfg.gpt_enabled and not gpt_needed:
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="skipped_version")
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=PIPELINE_STAGES[4],
+                    event_type="progress",
+                    image_id=item.image_id,
+                    image_name=item.image_name,
+                    message="GPT skipped (version match)",
+                    payload={"gpt_version": gpt_version, "stored_gpt_version": row_gpt_version},
+                )
             else:
                 status = "skipped_irrelevant" if relevant == 0 else "disabled"
-                conn.execute("UPDATE onfly_image_state SET gpt_status=?,gpt_customer_count=0,gpt_staff_count=0,gpt_conversions=0,gpt_bounce=0,gpt_result_json='{}',gpt_error='',last_run_id=? WHERE store_id=? AND image_id=?", (status, run_id, cfg.store_id, item.image_id))
+                conn.execute("UPDATE onfly_image_state SET gpt_version=?,gpt_status=?,gpt_customer_count=0,gpt_staff_count=0,gpt_conversions=0,gpt_bounce=0,gpt_result_json='{}',gpt_error='',last_run_id=? WHERE store_id=? AND image_id=?", (gpt_version, status, run_id, cfg.store_id, item.image_id))
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status=status)
                 _append_pipeline_event(
                     conn,
@@ -1418,10 +1474,44 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         )
         total_ms = round((time.perf_counter() - perf0) * 1000.0, 2)
         ended_at = _now()
-        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
+        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
         summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         summary["outputs"]["run_summary_json"] = str(summary_path.resolve())
+        timings_df = pd.DataFrame(
+            [
+                {
+                    "run_id": run_id,
+                    "store_id": cfg.store_id,
+                    "pipeline_version": cfg.pipeline_version,
+                    "yolo_version": yolo_version,
+                    "gpt_version": gpt_version,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "list_ms": float(timings["list_ms"]),
+                    "download_ms": float(timings["download_ms"]),
+                    "yolo_ms": float(timings["yolo_ms"]),
+                    "gpt_ms": float(timings["gpt_ms"]),
+                    "report_ms": float(timings["report_ms"]),
+                    "total_ms": float(total_ms),
+                    "list_hms": _ms_to_hms(float(timings["list_ms"])),
+                    "download_hms": _ms_to_hms(float(timings["download_ms"])),
+                    "yolo_hms": _ms_to_hms(float(timings["yolo_ms"])),
+                    "gpt_hms": _ms_to_hms(float(timings["gpt_ms"])),
+                    "report_hms": _ms_to_hms(float(timings["report_ms"])),
+                    "total_hms": _ms_to_hms(float(total_ms)),
+                }
+            ]
+        )
+        timings_path = store_out / "onfly_process_timings.csv"
+        if timings_path.exists():
+            try:
+                prev_timings = pd.read_csv(timings_path)
+                timings_df = pd.concat([prev_timings, timings_df], ignore_index=True)
+            except Exception:
+                pass
+        _safe_write_csv(timings_path, timings_df, run_id)
+        summary["outputs"]["process_timings_csv"] = str(timings_path.resolve())
         stage = PIPELINE_STAGES[6]
         _update_pipeline_run(conn, run_id, current_stage=stage)
         _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="start", message="Updating dashboard ingestion index")

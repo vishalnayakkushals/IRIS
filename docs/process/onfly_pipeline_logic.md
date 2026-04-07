@@ -18,10 +18,12 @@ Update this file whenever on-fly behavior changes.
 
 ### Step 2 - `SKIP_CHECK` (Delta / Idempotent)
 - Uses `onfly_image_state` in `store_registry.db`.
-- If image already has:
-  - `yolo_status='done'`
-  - same `pipeline_version`
-  then it is skipped.
+- Version-aware skip:
+  - YOLO uses `yolo_version`
+  - GPT uses `gpt_version`
+  - fallback compatibility uses `pipeline_version` for legacy rows
+- If YOLO version is unchanged and YOLO already done, YOLO is skipped.
+- If GPT version changed (and image is relevant), only GPT re-runs.
 - Only new or version-changed images continue.
 
 ### Step 3 - `DOWNLOAD` (Memory Only)
@@ -56,7 +58,8 @@ Update this file whenever on-fly behavior changes.
   - `data/exports/current/onfly/<STORE_ID>/onfly_walkin_sessions.csv`
 - Writes shared summary:
   - `data/exports/current/onfly/onfly_store_date_report.csv`
-  - `data/exports/current/onfly/onfly_run_summary_<run_id>.json`
+- `data/exports/current/onfly/onfly_run_summary_<run_id>.json`
+- `data/exports/current/onfly/<STORE_ID>/onfly_process_timings.csv` (per-run timing dataset)
 
 ### Step 7 - `DASHBOARD_INGEST`
 - Updates on-fly report index tables for UI/report discovery.

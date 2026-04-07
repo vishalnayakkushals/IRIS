@@ -24,6 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-images", type=int, default=int(os.getenv("ONFLY_MAX_IMAGES", "100")))
     parser.add_argument("--run-mode", default="hourly")
     parser.add_argument("--pipeline-version", default=os.getenv("ONFLY_PIPELINE_VERSION", "onfly_v1"))
+    parser.add_argument("--yolo-version", default=os.getenv("ONFLY_YOLO_VERSION", ""))
+    parser.add_argument("--gpt-version", default=os.getenv("ONFLY_GPT_VERSION", ""))
     parser.add_argument("--allow-detector-fallback", action="store_true")
     parser.add_argument("--force-reprocess", action="store_true")
     parser.add_argument("--enable-gpt", action="store_true")
@@ -50,6 +52,8 @@ def main() -> None:
         openai_api_base=str(args.openai_api_base).strip(),
         gpt_rate_limit_rps=max(0.01, float(args.gpt_rate_limit_rps)),
         pipeline_version=str(args.pipeline_version).strip() or "onfly_v1",
+        yolo_version=str(args.yolo_version).strip(),
+        gpt_version=str(args.gpt_version).strip(),
         allow_detector_fallback=bool(args.allow_detector_fallback),
         force_reprocess=bool(args.force_reprocess),
         keep_relevant_dir=args.keep_relevant_dir.resolve() if args.keep_relevant_dir is not None else None,
