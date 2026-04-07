@@ -80,6 +80,23 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-07 | Staff uniform rule expanded (red+black and white+black)
+
+- Summary:
+  - Expanded deterministic staff post-processing override to classify both patterns as staff:
+    - red shirt + black pant/trouser (store staff)
+    - white shirt + black pant/trouser (managers)
+  - Updated GPT prompt text to align with both staff patterns.
+  - Updated on-fly logic documentation to reflect current deployed staff override behavior.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `docs/process/onfly_pipeline_logic.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (logic/documentation only).
+
 ### 2026-04-07 | Non-blocking CSV write when canonical export is locked
 
 - Summary:

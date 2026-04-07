@@ -81,7 +81,7 @@ _RETAIL_WALKIN_PROMPT = (
     "Detect all visible people in every frame. Classify each as: Customer, Staff, or Uncertain.\n"
     "Staff identification signals: repeated presence across frames, uniform/name tag/store dress, stationary near entrance or billing area,\n"
     "door handling for others, counter-side positioning, repeated customer-facing interaction pattern.\n"
-    "Special rule: managers (Store/Cluster/Area) commonly wear white shirt + black pant/trouser; classify them as Staff.\n"
+    "Special staff rules: store staff commonly wear red shirt + black pant/trouser; managers (Store/Cluster/Area) commonly wear white shirt + black pant/trouser; classify both patterns as Staff.\n"
     "Clothing colour alone is NOT sufficient to classify staff.\n"
     "Staff and Uncertain must be excluded from customer analytics: set Included in Analytics = No.\n\n"
     "CRITICAL FALSE-POSITIVE CONTROL:\n"
@@ -158,7 +158,10 @@ def _walkin_schema() -> dict[str, Any]:
 
 
 def _apply_staff_manager_rule(walkins: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Deterministic post-rule: white shirt + black pant/trouser => Staff."""
+    """Deterministic post-rules:
+    - red shirt + black pant/trouser => Staff (store staff)
+    - white shirt + black pant/trouser => Staff (managers)
+    """
     for row in walkins:
         role = str(row.get("Role", "") or "").strip().lower()
         marker = str(row.get("Attire / Visual Marker", "") or "").lower()
@@ -166,9 +169,11 @@ def _apply_staff_manager_rule(walkins: list[dict[str, str]]) -> list[dict[str, s
         style = str(row.get("Primary Clothing Style Archetype", "") or "").lower()
         text = " ".join([marker, primary, style])
         has_white = "white" in text
+        has_red = "red" in text
         has_black = "black" in text
         has_pant = any(tok in text for tok in ("pant", "pants", "trouser", "trousers"))
-        if has_white and has_black and has_pant and role in {"customer", "uncertain", ""}:
+        has_staff_uniform = (has_white or has_red) and has_black and has_pant
+        if has_staff_uniform and role in {"customer", "uncertain", ""}:
             row["Role"] = "Staff"
             row["Included in Analytics"] = "No"
     return walkins

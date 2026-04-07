@@ -76,6 +76,7 @@ Update this file whenever on-fly behavior changes.
 
 ## Staff Override Rule (Current)
 
+- Red shirt + black pant/trouser store-staff pattern is forced to staff in post-processing.
 - White shirt + black pant/trouser manager pattern is forced to staff in post-processing.
 
 ## Output Notes
