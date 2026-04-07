@@ -83,6 +83,7 @@ Update this file whenever on-fly behavior changes.
 
 - `onfly_image_results.csv` = one row per image (YOLO + GPT aggregates)
 - `onfly_walkin_sessions.csv` = one row per person/session event
+- `onfly_walkin_sessions_audit.csv` = full person/session event with debug/audit columns
 - `onfly_store_date_report.csv` = store/date totals
 
 ## Update Discipline

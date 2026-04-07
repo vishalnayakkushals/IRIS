@@ -1386,7 +1386,20 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         ).fetchall()
         if walkin_rows:
             walkin_df = pd.DataFrame([dict(r) for r in walkin_rows])
-            walkin_sessions_path = _safe_write_csv(store_out / "onfly_walkin_sessions.csv", walkin_df, run_id)
+            # Keep canonical export business-friendly by default.
+            # Full audit trail remains available in a dedicated audit CSV.
+            audit_only_cols = [
+                "matched_session_id",
+                "match_score",
+                "match_reason",
+                "direction_confidence",
+                "match_fingerprint",
+                "debug_parsed_time",
+                "created_at",
+            ]
+            business_df = walkin_df.drop(columns=[c for c in ["debug_gpt_event_type", *audit_only_cols] if c in walkin_df.columns])
+            walkin_sessions_path = _safe_write_csv(store_out / "onfly_walkin_sessions.csv", business_df, run_id)
+            _safe_write_csv(store_out / "onfly_walkin_sessions_audit.csv", walkin_df, run_id)
         else:
             walkin_sessions_path = store_out / "onfly_walkin_sessions.csv"
         timings["report_ms"] = round((time.perf_counter() - t_rep) * 1000.0, 2)

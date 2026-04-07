@@ -80,6 +80,26 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-07 | Walk-in export cleanup + audit column toggle
+
+- Summary:
+  - Removed duplicate `debug_gpt_event_type` from the canonical business export.
+  - Canonical `onfly_walkin_sessions.csv` now excludes audit-only fields by default:
+    - `matched_session_id`, `match_score`, `match_reason`, `direction_confidence`, `match_fingerprint`, `debug_parsed_time`, `created_at`.
+  - Added `onfly_walkin_sessions_audit.csv` so full debug/audit fields remain accessible.
+  - Added report UI controls for `On-Fly Walk-in Sessions`:
+    - `Show Audit Columns` toggle
+    - `Visible Columns` selector (add/remove columns interactively before viewing/downloading).
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/iris_dashboard.py`
+  - `docs/process/onfly_pipeline_logic.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - No schema/dependency changes; export/view behavior only.
+
 ### 2026-04-07 | Staff uniform rule expanded (red+black and white+black)
 
 - Summary:

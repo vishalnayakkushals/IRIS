@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 from typing import Any
 from urllib.parse import quote, unquote_plus
 
@@ -27,6 +28,7 @@ from iris.iris_analysis import (
     load_exports,
     parse_filename,
 )
+from iris.onfly_pipeline import OnFlyConfig, run_onfly_pipeline
 from iris.store_registry import (
     add_qa_feedback,
     add_false_positive_signature,
@@ -43,6 +45,7 @@ from iris.store_registry import (
     ensure_default_admins,
     ensure_store_login,
     get_app_settings,
+    get_onfly_report_index,
     get_store_master_by_id,
     get_user_by_session_token,
     get_store_by_email,
@@ -55,6 +58,8 @@ from iris.store_registry import (
     list_camera_configs,
     list_employees,
     list_location_master,
+    list_onfly_pipeline_run_events,
+    list_onfly_pipeline_runs,
     list_permission_codes,
     list_roles,
     list_model_versions,
@@ -70,6 +75,7 @@ from iris.store_registry import (
     sync_store_from_drive,
     register_model_version,
     promote_model_version,
+    parse_drive_folder_id,
     update_qa_feedback_review,
     update_qa_feedback_entry,
     upsert_camera_config,
@@ -105,6 +111,7 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Operations": {
         "Store Setup": ["Store Mapping", "Store Camera Mapping", "Store Master"],
         "Workforce": ["Employee Management"],
+        "Pipeline": ["Maual data sync of IRIS"],
     },
 }
 
@@ -132,6 +139,7 @@ COLOR_PRESETS: dict[str, str] = {
 
 LEGACY_PAGE_ALIAS = {
     "Pipeline Configuration": "Config",
+    "Pipeline Journey": "Maual data sync of IRIS",
     "Store Admin": "Store Mapping",
     "Auth/RBAC": "Role Permissions",
     "Camera Zones": "Store Camera Mapping",
@@ -2865,15 +2873,353 @@ def _build_gpt_frame_index(gpt_validation_df: pd.DataFrame) -> dict[tuple[str, s
     return frame_index
 
 
-def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
-    st.subheader("Report Module")
-    st.caption("Choose store/date and download report data for offline analysis.")
-    if not output.stores:
-        st.info("No store analysis loaded.")
+def _render_onfly_pipeline_journey(db_path: Path) -> None:
+    st.subheader("Maual data sync of IRIS")
+    st.caption("Live on-fly run visibility: stage status, counts, failures, and scheduler heartbeat.")
+    st.markdown("**Run On-Fly Now**")
+
+    def _normalize_onfly_source_input(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return raw
+        folder_id = parse_drive_folder_id(raw)
+        if folder_id:
+            return f"https://drive.google.com/drive/folders/{folder_id}"
+        if re.fullmatch(r"[A-Za-z0-9_-]{20,}", raw):
+            return f"https://drive.google.com/drive/folders/{raw}"
+        return raw
+
+    cfg_settings = get_app_settings(db_path)
+    default_store = str(cfg_settings.get("cfg_onfly_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
+    default_source = str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip() or "https://drive.google.com/drive/folders/1Wd8X8t-wF_HhPQPYuuFHjqTq6Ojc3Nnw"
+    default_max = int(pd.to_numeric(cfg_settings.get("cfg_onfly_max_images", 100), errors="coerce") or 100)
+    default_conf = float(pd.to_numeric(cfg_settings.get("cfg_onfly_conf", 0.18), errors="coerce") or 0.18)
+
+    known_stores = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
+    store_options = known_stores if known_stores else [default_store]
+    default_idx = store_options.index(default_store) if default_store in store_options else 0
+    run_store_id = st.selectbox("Store", options=store_options, index=default_idx, key="onfly_run_store_id")
+    run_source_raw = st.text_input(
+        "Source Path / Drive URL / Drive Folder ID",
+        value=default_source,
+        key="onfly_run_source_input",
+        help="Supports full Drive URL, folder key only, local folder path, or image folder path.",
+    )
+    run_overwrite = st.checkbox("Overwrite existing processed data", value=False, key="onfly_run_overwrite")
+    normalized_source = _normalize_onfly_source_input(run_source_raw)
+    st.caption(f"Normalized Source: `{normalized_source}`")
+    st.caption("If reports already exist: overwrite OFF -> reuses delta and skips cached; overwrite ON -> full reprocess.")
+
+    if st.button("Run Pipeline Now", key="onfly_pipeline_run_now_btn", type="primary"):
+        if not str(run_store_id or "").strip():
+            st.error("Store ID is required.")
+        elif not str(normalized_source or "").strip():
+            st.error("Source path/URL/folder ID is required.")
+        else:
+            gkey = str(os.getenv("GOOGLE_API_KEY", "") or "").strip()
+            okey = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
+            if parse_drive_folder_id(normalized_source) and not gkey:
+                st.error("GOOGLE_API_KEY is missing in runtime env. Add it in `.env.local` and restart `iris`.")
+            else:
+                out_root = db_path.parent / "exports" / "current" / "onfly"
+                existing_runs = list_onfly_pipeline_runs(db_path=db_path, store_id=str(run_store_id).strip(), limit=20)
+                latest_same_source = next(
+                    (
+                        r
+                        for r in existing_runs
+                        if str(r.get("source_uri", "")).strip() == normalized_source and str(r.get("status", "")).strip().lower() == "success"
+                    ),
+                    None,
+                )
+                def _hostify(path_text: str) -> str:
+                    p = str(path_text or "").strip()
+                    if not p:
+                        return ""
+                    if p.startswith("/app/data/"):
+                        return str((db_path.parent / p.replace("/app/data/", "")).resolve())
+                    return p
+
+                if latest_same_source and not run_overwrite:
+                    img_path = _hostify(str(latest_same_source.get("report_image_results_csv", "") or ""))
+                    walk_path = _hostify(str(latest_same_source.get("report_walkin_sessions_csv", "") or ""))
+                    store_path = _hostify(str(latest_same_source.get("report_store_date_csv", "") or ""))
+                    all_ok = all([img_path, walk_path, store_path, Path(img_path).exists(), Path(walk_path).exists(), Path(store_path).exists()])
+                    if all_ok:
+                        st.success(f"Existing successful result found (Run ID: {latest_same_source.get('run_id')}). Reusing cached result.")
+                        st.markdown("**Report Paths (latest)**")
+                        st.write(f"- Image Results: `{img_path}`")
+                        st.write(f"- Walk-in Sessions: `{walk_path}`")
+                        st.write(f"- Store-Date Report: `{store_path}`")
+                        st.info("Set 'Overwrite existing processed data' = ON if you want a full rerun.")
+                        st.stop()
+
+                cfg = OnFlyConfig(
+                    store_id=str(run_store_id).strip(),
+                    source_uri=normalized_source,
+                    db_path=db_path,
+                    out_dir=out_root,
+                    detector_type="yolo",
+                    conf_threshold=float(default_conf),
+                    max_images=int(default_max),
+                    gpt_enabled=bool(okey),
+                    openai_api_key=okey,
+                    openai_model=str(os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"),
+                    force_reprocess=bool(run_overwrite),
+                    run_mode="manual_ui",
+                    allow_detector_fallback=True,
+                )
+                progress = st.progress(0, text="LIST: discovering images")
+                with st.spinner("Running on-fly pipeline..."):
+                    try:
+                        progress.progress(15, text="SKIP_CHECK: checking delta")
+                        summary = run_onfly_pipeline(cfg)
+                        progress.progress(100, text="Done")
+                        st.success(
+                            "Run complete: "
+                            f"listed={summary.get('total_listed', 0)}, "
+                            f"new={summary.get('new_images', 0)}, "
+                            f"relevant={summary.get('yolo_relevant', 0)}, "
+                            f"gpt_done={summary.get('gpt_done', 0)}"
+                        )
+                        out = summary.get("outputs", {}) if isinstance(summary.get("outputs", {}), dict) else {}
+                        def _friendly(path_text: str) -> str:
+                            p = _hostify(path_text)
+                            if not p:
+                                return "Not generated"
+                            try:
+                                return str(Path(p).relative_to(db_path.parent.parent))
+                            except Exception:
+                                return p
+                        st.markdown("**Report Paths**")
+                        st.write(f"- Image Results: `{_friendly(str(out.get('image_results_csv', '')) )}`")
+                        st.write(f"- Walk-in Sessions: `{_friendly(str(out.get('walkin_sessions_csv', '')) )}`")
+                        st.write(f"- Store-Date Report: `{_friendly(str(out.get('store_report_csv', '')) )}`")
+                        st.caption("Step-by-step scan details are visible below in Stage Timeline and Scheduler Execution History.")
+                        st.rerun()
+                    except Exception as exc:  # pragma: no cover - UI guard
+                        st.error(f"Pipeline run failed: {exc}")
+
+    st.markdown("---")
+    if st.button("Refresh Pipeline Status", key="onfly_pipeline_refresh_btn"):
+        st.rerun()
+    stores = [str(s.store_id or "").strip() for s in list_stores(db_path)]
+    stores = sorted([s for s in stores if str(s).strip()])
+    options = ["(All Stores)"] + stores
+    selected_store = st.selectbox("Store Filter", options=options, index=0, key="onfly_pipeline_store_filter")
+    store_filter = "" if selected_store == "(All Stores)" else selected_store
+
+    runs = list_onfly_pipeline_runs(db_path=db_path, store_id=store_filter, limit=200)
+    runs_df = pd.DataFrame(runs)
+    if runs_df.empty:
+        st.info("No on-fly pipeline runs found yet. Trigger `run_iris.bat onfly-run-now` and refresh.")
         return
 
+    for col in [
+        "images_discovered",
+        "images_skipped",
+        "images_processed",
+        "images_relevant",
+        "images_irrelevant",
+        "gpt_success_count",
+        "gpt_failed_count",
+    ]:
+        runs_df[col] = pd.to_numeric(runs_df.get(col, 0), errors="coerce").fillna(0).astype(int)
+
+    display_cols = [
+        "run_id",
+        "store_id",
+        "business_date",
+        "source_type",
+        "status",
+        "current_stage",
+        "images_discovered",
+        "images_skipped",
+        "images_processed",
+        "images_relevant",
+        "images_irrelevant",
+        "gpt_success_count",
+        "gpt_failed_count",
+        "started_at",
+        "ended_at",
+        "last_heartbeat_at",
+    ]
+    st.markdown("**Run List**")
+    st.dataframe(runs_df[[c for c in display_cols if c in runs_df.columns]], use_container_width=True, hide_index=True, height=260)
+
+    run_ids = runs_df["run_id"].astype(str).tolist()
+    selected_run = st.selectbox("Run ID", options=run_ids, index=0, key="onfly_pipeline_run_selector")
+    run_row = runs_df[runs_df["run_id"].astype(str) == str(selected_run)].head(1)
+    if run_row.empty:
+        st.info("Select a run to inspect details.")
+        return
+    rr = run_row.iloc[0]
+    st.markdown("**Run Detail**")
+    mcols = st.columns(6)
+    mcols[0].metric("Discovered", int(rr.get("images_discovered", 0)))
+    mcols[1].metric("Skipped", int(rr.get("images_skipped", 0)))
+    mcols[2].metric("Processed", int(rr.get("images_processed", 0)))
+    mcols[3].metric("Relevant", int(rr.get("images_relevant", 0)))
+    mcols[4].metric("GPT Success", int(rr.get("gpt_success_count", 0)))
+    mcols[5].metric("GPT Failed", int(rr.get("gpt_failed_count", 0)))
+    st.caption(
+        f"Status={rr.get('status', '')} | Current Stage={rr.get('current_stage', '')} | "
+        f"Started={rr.get('started_at', '')} | Ended={rr.get('ended_at', '')}"
+    )
+
+    st.markdown("**Report Paths**")
+    st.code(
+        "\n".join(
+            [
+                f"image_results: {str(rr.get('report_image_results_csv', '') or '')}",
+                f"walkin_sessions: {str(rr.get('report_walkin_sessions_csv', '') or '')}",
+                f"store_date: {str(rr.get('report_store_date_csv', '') or '')}",
+            ]
+        ),
+        language="text",
+    )
+    if str(rr.get("error_message", "") or "").strip():
+        st.error(f"Failed at stage `{rr.get('current_stage', '')}`: {rr.get('error_message', '')}")
+        trace = str(rr.get("error_trace", "") or "").strip()
+        if trace:
+            st.code(trace[:3000], language="text")
+
+    def _restore_onfly_run_to_canonical(selected_store_id: str, selected_run_id: str) -> dict[str, Any]:
+        out_dir = db_path.parent / "exports" / "current" / "onfly" / selected_store_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            image_rows = conn.execute(
+                "SELECT * FROM onfly_image_state WHERE store_id=? AND last_run_id=? ORDER BY date_display,image_name",
+                (selected_store_id, selected_run_id),
+            ).fetchall()
+            frame_df = pd.DataFrame([dict(r) for r in image_rows])
+            if frame_df.empty:
+                raise RuntimeError(f"No image rows found for run_id={selected_run_id}")
+            frame_df = frame_df.rename(
+                columns={
+                    "date_display": "Date",
+                    "yolo_relevant": "relevant",
+                    "gpt_customer_count": "customer_count",
+                    "gpt_staff_count": "staff_count",
+                    "gpt_conversions": "conversions",
+                    "gpt_bounce": "bounce",
+                }
+            )
+
+            def _folder_from_rel(rel: Any) -> str:
+                txt = str(rel or "").strip().replace("\\", "/")
+                if not txt:
+                    return ""
+                first = txt.split("/", 1)[0].strip()
+                parsed = datetime.strptime(first, "%Y-%m-%d") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", first) else None
+                return parsed.strftime("%d-%m-%Y") if parsed is not None else first
+
+            frame_df["folder_name"] = frame_df["relative_path"].map(_folder_from_rel) if "relative_path" in frame_df.columns else frame_df.get("Date", "")
+            if "date_source" in frame_df.columns:
+                frame_df = frame_df.drop(columns=["date_source"])
+            preferred = ["store_id", "image_id", "relative_path", "folder_name", "Date", "image_name", "camera_id", "timestamp_hint"]
+            frame_df = frame_df[[c for c in preferred if c in frame_df.columns] + [c for c in frame_df.columns if c not in preferred]]
+
+            walk_rows = conn.execute(
+                """
+                SELECT
+                    w.id, w.store_id, w.run_id, w.image_id,
+                    s.date_display AS folder_name,
+                    s.image_name AS image_name,
+                    w.date, w.walkin_id, w.group_id, w.role,
+                    w.entry_time, w.exit_time, w.time_spent_mins, w.session_status,
+                    w.entry_type, w.gender, w.age_band, w.attire_visual_marker,
+                    w.primary_clothing, w.jewellery_load, w.bag_type, w.clothing_style_archetype,
+                    w.engagement_type, w.engagement_depth, w.purchase_signal_bag, w.included_in_analytics,
+                    w.created_at
+                FROM onfly_walkin_sessions w
+                LEFT JOIN onfly_image_state s ON s.store_id=w.store_id AND s.image_id=w.image_id
+                WHERE w.store_id=? AND w.run_id=?
+                ORDER BY w.date,w.walkin_id,w.id
+                """,
+                (selected_store_id, selected_run_id),
+            ).fetchall()
+            walk_df = pd.DataFrame([dict(r) for r in walk_rows])
+            if not walk_df.empty:
+                walk_df["folder_name"] = walk_df["folder_name"].fillna("")
+                walk_df["date"] = walk_df["folder_name"]
+                preferred_walk = ["id", "store_id", "run_id", "image_id", "folder_name", "image_name", "date"]
+                walk_df = walk_df[[c for c in preferred_walk if c in walk_df.columns] + [c for c in walk_df.columns if c not in preferred_walk]]
+
+        image_out = out_dir / "onfly_image_results.csv"
+        walk_out = out_dir / "onfly_walkin_sessions.csv"
+        frame_df.to_csv(image_out, index=False)
+        if walk_df.empty:
+            pd.DataFrame(columns=["id", "store_id", "run_id", "image_id", "folder_name", "image_name", "date"]).to_csv(walk_out, index=False)
+            walk_count = 0
+        else:
+            walk_df.to_csv(walk_out, index=False)
+            walk_count = int(len(walk_df))
+        return {
+            "image_csv": str(image_out),
+            "walkin_csv": str(walk_out),
+            "image_rows": int(len(frame_df)),
+            "walk_rows": walk_count,
+        }
+
+    if st.button("Restore Selected Run To Canonical Files", key="onfly_restore_run_btn"):
+        try:
+            restored = _restore_onfly_run_to_canonical(str(rr.get("store_id", "")), str(selected_run))
+            st.success(
+                f"Restored run `{selected_run}` to canonical files. "
+                f"image_rows={restored['image_rows']}, walkin_rows={restored['walk_rows']}"
+            )
+            st.write(f"- Image Results: `{restored['image_csv']}`")
+            st.write(f"- Walk-in Sessions: `{restored['walkin_csv']}`")
+        except Exception as exc:
+            st.error(f"Restore failed: {exc}")
+
+    events = list_onfly_pipeline_run_events(db_path=db_path, run_id=str(selected_run), limit=2000)
+    events_df = pd.DataFrame(events)
+    stage_order = ["LIST", "SKIP_CHECK", "DOWNLOAD", "YOLO", "GPT", "REPORT_WRITER", "DASHBOARD_INGEST"]
+    st.markdown("**Stage Timeline**")
+    if events_df.empty:
+        st.info("No stage events found for this run.")
+    else:
+        events_df["stage_rank"] = events_df["stage"].map({s: i for i, s in enumerate(stage_order)}).fillna(999).astype(int)
+        events_df = events_df.sort_values(["stage_rank", "created_at", "event_id"], ascending=[True, True, True])
+        timeline_cols = [
+            "created_at",
+            "stage",
+            "event_type",
+            "image_name",
+            "message",
+            "error_message",
+            "attempt_no",
+        ]
+        st.dataframe(events_df[[c for c in timeline_cols if c in events_df.columns]], use_container_width=True, hide_index=True, height=280)
+
+    settings = get_app_settings(db_path)
+    st.markdown("**Scheduler Execution History**")
+    history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]")
+    try:
+        history = json.loads(history_raw)
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+    if not history:
+        st.info("No scheduler history yet.")
+    else:
+        hist_df = pd.DataFrame(history).sort_values("ran_at", ascending=False)
+        st.dataframe(hist_df.head(40), use_container_width=True, hide_index=True, height=220)
+
+
+def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path) -> None:
+    st.subheader("Report Module")
+    st.caption("Choose store/date and download report data for offline analysis.")
+
     select_placeholder = "-- Select --"
-    store_ids = sorted(output.stores.keys())
+    mapped_store_ids = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
+    store_ids = sorted(set(list(output.stores.keys()) + mapped_store_ids))
+    if not store_ids:
+        st.info("No stores found. Map at least one store first.")
+        return
     selected_store = st.selectbox(
         "Store",
         options=[select_placeholder, *store_ids],
@@ -2883,22 +3229,36 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     if selected_store == select_placeholder:
         st.info("Select a store to load report options.")
         return
-    store_result = output.stores[selected_store]
-    image_df = _normalize_image_df(store_result.image_insights)
-    customer_sessions_df = (
-        store_result.customer_sessions.copy()
-        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
-        else pd.DataFrame()
-    )
-    daily_proof_df = _build_daily_proof_df(image_df=image_df, store_result=store_result, store_id=selected_store)
-    summary_row = output.all_stores_summary[output.all_stores_summary["store_id"] == selected_store].iloc[0]
-    business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
+    store_result = output.stores.get(selected_store)
+    if store_result is not None:
+        image_df = _normalize_image_df(store_result.image_insights)
+        customer_sessions_df = (
+            store_result.customer_sessions.copy()
+            if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
+            else pd.DataFrame()
+        )
+        daily_proof_df = _build_daily_proof_df(image_df=image_df, store_result=store_result, store_id=selected_store)
+    else:
+        image_df = pd.DataFrame()
+        customer_sessions_df = pd.DataFrame()
+        daily_proof_df = pd.DataFrame()
+    summary_rows = output.all_stores_summary[output.all_stores_summary["store_id"] == selected_store]
+    summary_row = summary_rows.iloc[0] if not summary_rows.empty else pd.Series(dtype=object)
+    business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df) if not image_df.empty else {
+        "entries": 0,
+        "closed_exits": 0,
+        "converted": 0,
+        "bounced": 0,
+        "conversion_rate": np.nan,
+    }
     gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=selected_store)
+    onfly_index_rows = get_onfly_report_index(db_path=db_path, store_id=selected_store)
+    onfly_index_df = pd.DataFrame(onfly_index_rows)
 
-    date_options = [select_placeholder, "All Dates"] + sorted(
-        [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()],
-        reverse=True,
-    )
+    image_dates = [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()] if "capture_date" in image_df.columns else []
+    onfly_dates = [str(v) for v in onfly_index_df.get("business_date", pd.Series(dtype=str)).dropna().astype(str).unique()] if not onfly_index_df.empty else []
+    merged_dates = sorted({d for d in (image_dates + onfly_dates) if str(d).strip()}, reverse=True)
+    date_options = [select_placeholder, "All Dates"] + merged_dates
     selected_date = st.selectbox(
         "Date",
         options=date_options,
@@ -2912,6 +3272,9 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             "Top Summary",
             "Daily Walk-in & Conversion Report",
             "Daily Calculation Proof (Folder Date Based)",
+            "On-Fly Store-Date Summary",
+            "On-Fly Image Results",
+            "On-Fly Walk-in Sessions",
             "Frame-Level Proof",
             "Data Health",
             "Camera Hotspots",
@@ -2952,6 +3315,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         "Included in Analytics",
     ]
     report_df = pd.DataFrame()
+    report_download_df = pd.DataFrame()
     if selected_report == "Top Summary":
         report_df = pd.DataFrame(
             [
@@ -2988,6 +3352,76 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
             report_df = gpt_outputs["store_summary"].copy()
         else:
             report_df = daily_proof_df.copy()
+    elif selected_report == "On-Fly Store-Date Summary":
+        onfly_store_csv = root_dir.parent / "exports" / "current" / "onfly" / "onfly_store_date_report.csv"
+        if onfly_store_csv.exists():
+            try:
+                report_df = pd.read_csv(onfly_store_csv)
+            except Exception:
+                report_df = pd.DataFrame()
+        if not report_df.empty and "store_id" in report_df.columns:
+            report_df = report_df[report_df["store_id"].astype(str) == selected_store].copy()
+    elif selected_report == "On-Fly Image Results":
+        image_csv = ""
+        if not onfly_index_df.empty:
+            latest = onfly_index_df.sort_values("updated_at", ascending=False).head(1).iloc[0]
+            image_csv = str(latest.get("image_results_csv", "") or "").strip()
+        if image_csv and Path(image_csv).exists():
+            try:
+                report_df = pd.read_csv(Path(image_csv))
+            except Exception:
+                report_df = pd.DataFrame()
+    elif selected_report == "On-Fly Walk-in Sessions":
+        walkin_csv = ""
+        if not onfly_index_df.empty:
+            latest = onfly_index_df.sort_values("updated_at", ascending=False).head(1).iloc[0]
+            walkin_csv = str(latest.get("walkin_sessions_csv", "") or "").strip()
+        if walkin_csv and Path(walkin_csv).exists():
+            try:
+                report_df = pd.read_csv(Path(walkin_csv))
+            except Exception:
+                report_df = pd.DataFrame()
+        audit_csv = ""
+        if walkin_csv:
+            audit_candidate = Path(walkin_csv).with_name("onfly_walkin_sessions_audit.csv")
+            if audit_candidate.exists():
+                audit_csv = str(audit_candidate)
+        show_audit = st.checkbox(
+            "Show Audit Columns",
+            value=False,
+            key="onfly_walkin_show_audit_cols",
+            help="Toggle full debug/audit fields for investigation.",
+        )
+        if show_audit and audit_csv:
+            try:
+                report_df = pd.read_csv(Path(audit_csv))
+            except Exception:
+                pass
+        if show_audit and not audit_csv:
+            st.info("Audit file not found yet for this run. Run on-fly pipeline once to generate it.")
+        if not report_df.empty:
+            default_cols = list(report_df.columns)
+            if not show_audit:
+                for c in [
+                    "matched_session_id",
+                    "match_score",
+                    "match_reason",
+                    "direction_confidence",
+                    "match_fingerprint",
+                    "debug_parsed_time",
+                    "created_at",
+                    "debug_gpt_event_type",
+                ]:
+                    if c in default_cols:
+                        default_cols.remove(c)
+            selected_cols = st.multiselect(
+                "Visible Columns",
+                options=list(report_df.columns),
+                default=default_cols,
+                key="onfly_walkin_visible_columns",
+            )
+            if selected_cols:
+                report_df = report_df[selected_cols].copy()
     elif selected_report == "Frame-Level Proof":
         report_df = image_df.copy()
         report_df["open_frame"] = report_df.apply(
@@ -3068,6 +3502,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
         date_filter_col = "capture_date"
     if date_filter_col and selected_date != "All Dates":
         report_df = report_df[report_df[date_filter_col].astype(str) == str(selected_date)].copy()
+    report_download_df = report_df.copy()
 
     allow_empty_download = selected_report == "GPT Consolidated Walk-in Table (Test Folder)"
     if report_df.empty and not allow_empty_download:
@@ -3079,7 +3514,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path) -> None:
     report_file_stub = re.sub(r"[^A-Za-z0-9_]+", "_", selected_report.strip().lower())
     date_stub = "all_dates" if selected_date == "All Dates" else re.sub(r"[^0-9A-Za-z_-]+", "_", selected_date)
     file_name = f"{selected_store}_{report_file_stub}_{date_stub}.csv"
-    csv_bytes = report_df.to_csv(index=False).encode("utf-8")
+    csv_bytes = report_download_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download CSV",
         data=csv_bytes,
@@ -6384,7 +6819,7 @@ def main() -> None:
     elif current_page == "Store Detail":
         _render_store_detail(view_output, time_bucket_minutes=time_bucket_minutes, root_dir=root_dir)
     elif current_page in {"Report Module", "Data Health"}:
-        _render_report_module(view_output, root_dir=root_dir)
+        _render_report_module(view_output, root_dir=root_dir, db_path=db_path)
     elif current_page == "Customer Journeys":
         _render_customer_journeys(view_output, root_dir=root_dir)
     elif current_page == "Store Mapping":
@@ -6403,6 +6838,8 @@ def main() -> None:
             employee_assets_root=employee_assets_root,
             root_dir=root_dir,
         )
+    elif current_page in {"Pipeline Journey", "Maual data sync of IRIS"}:
+        _render_onfly_pipeline_journey(db_path=db_path)
 
     elif current_page == "Frame Review":
         _render_qa_timeline(output=view_output, db_path=db_path, active_email=active_email, root_dir=root_dir)
