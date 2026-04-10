@@ -2952,7 +2952,32 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.warning("Selected store has no analytics-eligible customer sessions yet.")
         return
 
-    summary = _summarize_walkin_metrics(sdf)
+    customer_df["gender_norm"] = customer_df["gender"].replace("", "Unknown").astype(str).str.title()
+    customer_df["age_norm"] = customer_df["age_band"].replace("", "Unknown").astype(str)
+    filter_cols = st.columns(2)
+    gender_options = sorted(customer_df["gender_norm"].dropna().unique().tolist())
+    age_options = sorted(customer_df["age_norm"].dropna().unique().tolist())
+    selected_genders = filter_cols[0].multiselect(
+        "Gender Filter",
+        options=gender_options,
+        default=gender_options,
+        key="store_gender_filter",
+    )
+    selected_ages = filter_cols[1].multiselect(
+        "Age Group Filter",
+        options=age_options,
+        default=age_options,
+        key="store_age_filter",
+    )
+    filtered_customers = customer_df[
+        customer_df["gender_norm"].isin(selected_genders) & customer_df["age_norm"].isin(selected_ages)
+    ].copy()
+    if filtered_customers.empty:
+        st.info("No rows for selected gender/age filters.")
+        return
+
+    scoped_for_summary = sdf[sdf["walkin_key"].isin(filtered_customers["walkin_key"].astype(str))].copy()
+    summary = _summarize_walkin_metrics(scoped_for_summary)
     kcols = st.columns(4)
     kcols[0].metric("Total Groups", int(summary["groups"]))
     kcols[1].metric("Total Walk-ins", int(summary["walkins"]))
@@ -2960,13 +2985,13 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     kcols[3].metric("Conversion Rate", "N/A" if pd.isna(summary["conversion_rate"]) else f"{float(summary['conversion_rate']):.2%}")
 
     gender = (
-        customer_df.assign(gender=customer_df["gender"].replace("", "Unknown"))
+        filtered_customers.assign(gender=filtered_customers["gender_norm"])
         .groupby("gender", as_index=False)
         .agg(walkins=("walkin_key", "nunique"))
         .sort_values("walkins", ascending=False)
     )
     age = (
-        customer_df.assign(age_band=customer_df["age_band"].replace("", "Unknown"))
+        filtered_customers.assign(age_band=filtered_customers["age_norm"])
         .groupby("age_band", as_index=False)
         .agg(walkins=("walkin_key", "nunique"))
         .sort_values("age_band")
@@ -2977,8 +3002,16 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     split_cols[1].markdown("**Age Group Split**")
     split_cols[1].dataframe(age, use_container_width=True, hide_index=True)
 
-    trend_grain = st.selectbox("Trend Granularity", options=["Day", "Month", "Year"], index=0, key="store_trend_grain")
-    trend_df = customer_df.dropna(subset=["date_dt"]).copy()
+    trend_grain = "Day"
+    if date_mode == "Month Range":
+        trend_grain = "Month"
+    elif date_mode == "Manual Date Range":
+        if start_date and end_date:
+            day_span = abs((pd.Timestamp(end_date) - pd.Timestamp(start_date)).days)
+            trend_grain = "Year" if day_span >= 365 else ("Month" if day_span >= 60 else "Day")
+    st.caption(f"Trend grain auto-selected: **{trend_grain}**")
+
+    trend_df = filtered_customers.dropna(subset=["date_dt"]).copy()
     if trend_df.empty:
         st.info("No valid date rows for trend.")
     else:
@@ -2996,6 +3029,14 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         )
         agg["conversion_rate"] = np.where(agg["walkins"] > 0, agg["conversions"] / agg["walkins"], np.nan)
         agg = agg.sort_values("period")
+        period_options = agg["period"].astype(str).tolist()
+        current_period = period_options[-1]
+        prev_period = period_options[-2] if len(period_options) >= 2 else None
+        compare_default = prev_period if prev_period else "(No compare period)"
+        compare_options = ["(No compare period)"] + period_options[:-1]
+        compare_idx = compare_options.index(compare_default) if compare_default in compare_options else 0
+        compare_period = st.selectbox("Compare Against", options=compare_options, index=compare_idx, key="store_compare_period")
+
         chart_cols = st.columns(2)
         chart_cols[0].plotly_chart(
             px.line(agg, x="period", y=["walkins", "groups"], markers=True, title="Walk-ins & Groups Trend"),
@@ -3006,21 +3047,34 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
             use_container_width=True,
         )
 
-        if len(agg) >= 2:
-            cur = agg.iloc[-1]
-            prev = agg.iloc[-2]
-            delta_cols = st.columns(4)
-            delta_cols[0].metric("Walk-ins Delta", int(cur["walkins"]), int(cur["walkins"] - prev["walkins"]))
-            delta_cols[1].metric("Groups Delta", int(cur["groups"]), int(cur["groups"] - prev["groups"]))
-            conv_delta = np.nan if pd.isna(cur["conversion_rate"]) or pd.isna(prev["conversion_rate"]) else cur["conversion_rate"] - prev["conversion_rate"]
-            delta_cols[2].metric("Conversion Delta", "N/A" if pd.isna(cur["conversion_rate"]) else f"{float(cur['conversion_rate']):.2%}", "N/A" if pd.isna(conv_delta) else f"{float(conv_delta):+.2%}")
-            avg_delta = float(cur["avg_time_spent"] - prev["avg_time_spent"]) if not pd.isna(cur["avg_time_spent"]) and not pd.isna(prev["avg_time_spent"]) else 0.0
-            delta_cols[3].metric("Avg Time Delta (mins)", f"{float(cur['avg_time_spent']):.2f}", f"{avg_delta:+.2f}")
+        cur = agg[agg["period"] == current_period].iloc[0]
+        if compare_period != "(No compare period)" and compare_period in set(agg["period"].astype(str)):
+            prev = agg[agg["period"] == compare_period].iloc[0]
+        else:
+            prev = pd.Series({"walkins": 0, "groups": 0, "conversion_rate": 0.0, "avg_time_spent": 0.0})
+        delta_cols = st.columns(4)
+        delta_cols[0].metric("Walk-ins Delta", int(cur["walkins"]), int(cur["walkins"] - prev["walkins"]))
+        delta_cols[1].metric("Groups Delta", int(cur["groups"]), int(cur["groups"] - prev["groups"]))
+        cur_conv = 0.0 if pd.isna(cur["conversion_rate"]) else float(cur["conversion_rate"])
+        prev_conv = 0.0 if pd.isna(prev["conversion_rate"]) else float(prev["conversion_rate"])
+        delta_cols[2].metric("Conversion Delta", f"{cur_conv:.2%}", f"{(cur_conv - prev_conv):+.2%}")
+        cur_avg = 0.0 if pd.isna(cur["avg_time_spent"]) else float(cur["avg_time_spent"])
+        prev_avg = 0.0 if pd.isna(prev["avg_time_spent"]) else float(prev["avg_time_spent"])
+        delta_cols[3].metric("Avg Time Delta (mins)", f"{cur_avg:.2f}", f"{(cur_avg - prev_avg):+.2f}")
 
     # Benchmarks: selected store vs region and pan-india averages.
-    region = str(customer_df["region"].dropna().astype(str).iloc[0]) if not customer_df["region"].dropna().empty else "Unknown"
-    region_df = walkin_df[(walkin_df["region"] == region) & (walkin_df["is_customer"])].copy()
-    pan_df = walkin_df[walkin_df["is_customer"]].copy()
+    region = str(filtered_customers["region"].dropna().astype(str).iloc[0]) if not filtered_customers["region"].dropna().empty else "Unknown"
+    region_df = walkin_df[
+        (walkin_df["region"] == region)
+        & (walkin_df["is_customer"])
+        & (walkin_df["gender"].replace("", "Unknown").astype(str).str.title().isin(selected_genders))
+        & (walkin_df["age_band"].replace("", "Unknown").astype(str).isin(selected_ages))
+    ].copy()
+    pan_df = walkin_df[
+        (walkin_df["is_customer"])
+        & (walkin_df["gender"].replace("", "Unknown").astype(str).str.title().isin(selected_genders))
+        & (walkin_df["age_band"].replace("", "Unknown").astype(str).isin(selected_ages))
+    ].copy()
     bcols = st.columns(3)
     bcols[0].metric("Store Conversion", "N/A" if pd.isna(summary["conversion_rate"]) else f"{float(summary['conversion_rate']):.2%}")
     region_conv = _summarize_walkin_metrics(region_df).get("conversion_rate", np.nan)
@@ -3028,7 +3082,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     pan_conv = _summarize_walkin_metrics(pan_df).get("conversion_rate", np.nan)
     bcols[2].metric("Pan-India Avg Conversion", "N/A" if pd.isna(pan_conv) else f"{float(pan_conv):.2%}")
 
-    purchase_split = customer_df.groupby("purchase_signal_bag", as_index=False).agg(count=("walkin_key", "nunique"))
+    purchase_split = filtered_customers.groupby("purchase_signal_bag", as_index=False).agg(count=("walkin_key", "nunique"))
     st.markdown("**Purchase Signal Summary**")
     st.dataframe(purchase_split.sort_values("count", ascending=False), use_container_width=True, hide_index=True)
 

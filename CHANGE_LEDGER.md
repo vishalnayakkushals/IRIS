@@ -82,6 +82,20 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Store drill-down compare UX (auto period + gender/age slicers)
+
+- Summary:
+  - Replaced manual trend-granularity control in Store Drill-down with automatic grain selection based on chosen date filter mode/range.
+  - Added `Compare Against` period selector with automatic previous-period default and zero-baseline fallback when comparison period has no data.
+  - Added interactive `Gender Filter` and `Age Group Filter`; KPI/trend/benchmark tables now react instantly to these slicers (Power BI style behavior).
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Store Drill-down cleanup (removed two non-required tables)
 
 - Summary:
