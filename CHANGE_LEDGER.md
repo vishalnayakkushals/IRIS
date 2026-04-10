@@ -82,6 +82,21 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Store mapping crash fix + business-friendly store names + pipeline ETA
+
+- Summary:
+  - Fixed Streamlit session crash in Store Mapping (`st.session_state.map_drive_url cannot be modified after widget instantiation`) by separating prefill state from bound widget state and forcing safe rerun on store switch.
+  - Updated store selectors in Operations/Overview/Store Drill-down to display **Store Name (Store ID)** instead of only short code.
+  - Added default test-store hiding in Overview and Store Drill-down once non-test stores are present (`Include Test Stores` toggle retained).
+  - Added historical runtime estimate caption in `Operations > Manual data sync of IRIS` for on-fly runs.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Store trend granularity fix for multi-day visibility
 
 - Summary:

@@ -2488,6 +2488,23 @@ def _parse_dashboard_date(value: object) -> datetime | None:
     return parsed.to_pydatetime()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _store_name_map_cached(db_path_str: str) -> dict[str, str]:
+    db_path = Path(db_path_str).expanduser().resolve()
+    name_map: dict[str, str] = {}
+    for rec in list_stores(db_path):
+        sid = str(getattr(rec, "store_id", "") or "").strip()
+        sname = str(getattr(rec, "store_name", "") or "").strip()
+        if sid:
+            name_map[sid] = sname or sid
+    for row in list_store_master(db_path):
+        sid = str(row.get("store_id", "") or "").strip()
+        sname = str(row.get("gofrugal_name", "") or "").strip()
+        if sid and sname and (sid not in name_map or not name_map[sid] or name_map[sid] == sid):
+            name_map[sid] = sname
+    return name_map
+
+
 def _time_to_seconds(text: object) -> int | None:
     raw = str(text or "").strip()
     if not raw or raw.upper() == "NA":
@@ -2630,11 +2647,35 @@ def _render_overview(output: AnalysisOutput) -> None:
         st.warning("No walk-in session data found yet. Run on-fly pipeline for at least one store.")
         return
 
+    name_map = _store_name_map_cached(str(db_path))
+    non_test_exists = bool(
+        walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
+    )
+    include_test = st.checkbox(
+        "Include Test Stores",
+        value=not non_test_exists,
+        key="overview_include_test_stores",
+        help="Off by default once real stores exist.",
+    )
+    if not include_test and non_test_exists:
+        walkin_df = walkin_df[
+            ~walkin_df["store_id"].dropna().astype(str).str.upper().str.startswith("TEST_")
+        ].copy()
+        if walkin_df.empty:
+            st.info("No non-test store data found yet.")
+            return
+
     f1, f2, f3 = st.columns(3)
     store_options = ["All Stores"] + sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
     zone_options = ["All Zones"] + sorted(walkin_df["region"].dropna().astype(str).unique().tolist())
     state_options = ["All States"] + sorted(walkin_df["state"].dropna().astype(str).unique().tolist())
-    selected_store = f1.selectbox("Store", options=store_options, index=0, key="overview_store_filter")
+    selected_store = f1.selectbox(
+        "Store",
+        options=store_options,
+        index=0,
+        key="overview_store_filter",
+        format_func=lambda x: "All Stores" if x == "All Stores" else f"{name_map.get(x, x)} ({x})",
+    )
     selected_zone = f2.selectbox("Zone", options=zone_options, index=0, key="overview_zone_filter")
     selected_state = f3.selectbox("State", options=state_options, index=0, key="overview_state_filter")
 
@@ -2932,9 +2973,33 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     if walkin_df.empty:
         st.info("No walk-in session data found for drill-down yet.")
         return
+    name_map = _store_name_map_cached(str(db_path))
+    non_test_exists = bool(
+        walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
+    )
+    include_test = st.checkbox(
+        "Include Test Stores",
+        value=not non_test_exists,
+        key="store_detail_include_test_stores",
+        help="Off by default once real stores exist.",
+    )
+    if not include_test and non_test_exists:
+        walkin_df = walkin_df[
+            ~walkin_df["store_id"].dropna().astype(str).str.upper().str.startswith("TEST_")
+        ].copy()
+        if walkin_df.empty:
+            st.info("No non-test store data found yet.")
+            return
+
     s1, s2, s3 = st.columns(3)
     stores = sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
-    selected_store = s1.selectbox("Store", options=stores, index=0, key="store_walkin_select")
+    selected_store = s1.selectbox(
+        "Store",
+        options=stores,
+        index=0,
+        key="store_walkin_select",
+        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+    )
     s2.text_input("Zone", value="Select + Apply to view", disabled=True, key="store_detail_zone_view")
     s3.text_input("State", value="Select + Apply to view", disabled=True, key="store_detail_state_view")
 
@@ -3310,10 +3375,17 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     default_max = int(pd.to_numeric(cfg_settings.get("cfg_onfly_max_images", 100), errors="coerce") or 100)
     default_conf = float(pd.to_numeric(cfg_settings.get("cfg_onfly_conf", 0.18), errors="coerce") or 0.18)
 
+    name_map = _store_name_map_cached(str(db_path))
     known_stores = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
     store_options = known_stores if known_stores else [default_store]
     default_idx = store_options.index(default_store) if default_store in store_options else 0
-    run_store_id = st.selectbox("Store", options=store_options, index=default_idx, key="onfly_run_store_id")
+    run_store_id = st.selectbox(
+        "Store",
+        options=store_options,
+        index=default_idx,
+        key="onfly_run_store_id",
+        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+    )
     run_source_raw = st.text_input(
         "Source Path / Drive URL / Drive Folder ID",
         value=default_source,
@@ -3324,6 +3396,26 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     normalized_source = _normalize_onfly_source_input(run_source_raw)
     st.caption(f"Normalized Source: `{normalized_source}`")
     st.caption("If reports already exist: overwrite OFF -> reuses delta and skips cached; overwrite ON -> full reprocess.")
+
+    prior_runs = list_onfly_pipeline_runs(db_path=db_path, store_id=str(run_store_id).strip(), limit=40)
+    successful_runs = [r for r in prior_runs if str(r.get("status", "")).strip().lower() == "success"]
+    secs_per_img: list[float] = []
+    for r in successful_runs:
+        listed = int(pd.to_numeric(r.get("images_discovered", 0), errors="coerce") or 0)
+        started = _parse_iso_utc(r.get("started_at"))
+        ended = _parse_iso_utc(r.get("ended_at"))
+        if listed > 0 and started is not None and ended is not None and ended > started:
+            secs_per_img.append((ended - started).total_seconds() / float(listed))
+    if secs_per_img:
+        avg_spi = float(np.mean(secs_per_img))
+        eta_sec = int(round(avg_spi * max(1, int(default_max))))
+        eta_h = eta_sec // 3600
+        eta_m = (eta_sec % 3600) // 60
+        eta_s = eta_sec % 60
+        st.caption(
+            f"Estimated run time (historical avg): ~{eta_h:02d}:{eta_m:02d}:{eta_s:02d} "
+            f"for up to {int(default_max)} images."
+        )
 
     if st.button("Run Pipeline Now", key="onfly_pipeline_run_now_btn", type="primary"):
         if not str(run_store_id or "").strip():
@@ -5260,17 +5352,17 @@ def _prefill_store_mapping_fields(db_path: Path, store_id: str) -> None:
     if rec is not None:
         st.session_state["map_store_name"] = rec.store_name
         st.session_state["map_store_email"] = rec.email
-        st.session_state["map_drive_url"] = rec.drive_folder_url
+        st.session_state["map_drive_url_prefill"] = rec.drive_folder_url
         st.session_state["map_existing_drive_url"] = rec.drive_folder_url
     elif master is not None:
         st.session_state["map_store_name"] = str(master.get("gofrugal_name", "")).strip()
         st.session_state["map_store_email"] = str(master.get("store_email", "")).strip().lower()
-        st.session_state["map_drive_url"] = ""
+        st.session_state["map_drive_url_prefill"] = ""
         st.session_state["map_existing_drive_url"] = ""
     else:
         st.session_state["map_store_name"] = ""
         st.session_state["map_store_email"] = ""
-        st.session_state["map_drive_url"] = ""
+        st.session_state["map_drive_url_prefill"] = ""
         st.session_state["map_existing_drive_url"] = ""
     st.session_state["map_replace_drive_url"] = False
     st.session_state["map_last_store_id"] = sid
@@ -5329,6 +5421,7 @@ def _render_store_mapping(
         else []
     )
     store_ids = sorted(set([s.store_id for s in stores] + master_ids))
+    name_map = _store_name_map_cached(str(db_path))
     if not store_ids:
         st.info("No stores available. Load Store Master first.")
         return
@@ -5337,11 +5430,19 @@ def _render_store_mapping(
         st.session_state["map_store_id"] = store_ids[0]
     if st.session_state["map_store_id"] not in store_ids:
         st.session_state["map_store_id"] = store_ids[0]
-    current_sid = st.selectbox("Store", options=store_ids, key="map_store_id")
+    current_sid = st.selectbox(
+        "Store",
+        options=store_ids,
+        key="map_store_id",
+        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+    )
     if current_sid != st.session_state.get("map_last_store_id", ""):
         _prefill_store_mapping_fields(db_path=db_path, store_id=current_sid)
+        st.rerun()
 
     current_name = st.session_state.get("map_store_name", "").strip() or current_sid
+    if "map_drive_url" not in st.session_state:
+        st.session_state["map_drive_url"] = str(st.session_state.get("map_drive_url_prefill", "") or "")
     st.markdown(f"**Store Name:** {current_name}")
     st.text_input(
         "Source URL (Google Drive / AWS S3)",
@@ -5406,7 +5507,11 @@ def _render_store_mapping(
                     action_code="STORE_SAVED_WITH_AUTO_LOGIN",
                     store_id=sid,
                 )
-            _prefill_store_mapping_fields(db_path=db_path, store_id=sid)
+            st.session_state["map_store_name"] = sname
+            st.session_state["map_store_email"] = semail
+            st.session_state["map_drive_url_prefill"] = sdrive
+            st.session_state["map_existing_drive_url"] = sdrive
+            st.session_state["map_last_store_id"] = sid
             if auto_sync_after_save and sdrive:
                 matched = [s for s in list_stores(db_path) if s.store_id == sid]
                 if matched:
