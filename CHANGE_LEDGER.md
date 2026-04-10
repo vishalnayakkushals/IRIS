@@ -82,6 +82,25 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Overview/store filters: month range + manual dates + zone/state scope
+
+- Summary:
+  - Added business filter controls in Overview and Store Drill-down with Apply button flow:
+    - store selector
+    - zone selector
+    - state selector
+    - date filter modes: `Month Range`, `Manual Date Range`, and `Single Date`.
+  - Added month-to-month range filtering and manual from/to date filtering for trend and KPI calculations.
+  - Extended walk-in business dataset enrichment to include `state` from `store_master`.
+  - Added short-TTL caching to walk-in dataset loader to reduce repeated heavy reads and improve UI responsiveness.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Phase-1 hardening: TEST store visibility + walk-in speedups
 
 - Summary:

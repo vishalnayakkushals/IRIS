@@ -2590,11 +2590,15 @@ def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd
     if not store_master.empty:
         store_master["store_id"] = store_master["store_id"].astype(str).str.strip()
         store_master["zone"] = store_master.get("zone", "").fillna("").astype(str).str.strip()
-        df = df.merge(store_master[["store_id", "zone"]], on="store_id", how="left")
+        store_master["state"] = store_master.get("state", "").fillna("").astype(str).str.strip()
+        df = df.merge(store_master[["store_id", "zone", "state"]], on="store_id", how="left")
         df["region"] = df["zone"].fillna("").astype(str).str.strip()
+        df["state"] = df["state"].fillna("").astype(str).str.strip()
     else:
         df["region"] = ""
+        df["state"] = ""
     df.loc[df["region"] == "", "region"] = "Unknown"
+    df.loc[df["state"] == "", "state"] = "Unknown"
     return df
 
 
@@ -2626,8 +2630,57 @@ def _render_overview(output: AnalysisOutput) -> None:
         st.warning("No walk-in session data found yet. Run on-fly pipeline for at least one store.")
         return
 
-    customer_df = walkin_df[walkin_df["is_customer"]].copy()
-    overall = _summarize_walkin_metrics(walkin_df)
+    with st.form("overview_filters_form"):
+        f1, f2, f3 = st.columns(3)
+        store_options = ["All Stores"] + sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
+        zone_options = ["All Zones"] + sorted(walkin_df["region"].dropna().astype(str).unique().tolist())
+        state_options = ["All States"] + sorted(walkin_df["state"].dropna().astype(str).unique().tolist())
+        selected_store = f1.selectbox("Store", options=store_options, index=0, key="overview_store_filter")
+        selected_zone = f2.selectbox("Zone", options=zone_options, index=0, key="overview_zone_filter")
+        selected_state = f3.selectbox("State", options=state_options, index=0, key="overview_state_filter")
+
+        d1, d2, d3 = st.columns(3)
+        date_mode = d1.selectbox("Date Filter Type", options=["Month Range", "Manual Date Range", "Single Date"], key="overview_date_mode")
+        month_values = sorted(walkin_df["date_dt"].dropna().dt.strftime("%Y-%m").unique().tolist())
+        start_month = end_month = None
+        start_date = end_date = None
+        if date_mode == "Month Range":
+            if month_values:
+                start_month = d2.selectbox("From Month", options=month_values, index=0, key="overview_from_month")
+                end_month = d3.selectbox("To Month", options=month_values, index=len(month_values) - 1, key="overview_to_month")
+        elif date_mode == "Manual Date Range":
+            min_dt = walkin_df["date_dt"].dropna().min()
+            max_dt = walkin_df["date_dt"].dropna().max()
+            rng = d2.date_input(
+                "From / To Date",
+                value=(min_dt.date() if pd.notna(min_dt) else date.today(), max_dt.date() if pd.notna(max_dt) else date.today()),
+                key="overview_manual_range",
+            )
+            if isinstance(rng, tuple) and len(rng) == 2:
+                start_date, end_date = rng
+            else:
+                start_date = end_date = rng
+        else:
+            single = d2.date_input("Date", value=date.today(), key="overview_single_date")
+            start_date = end_date = single
+        apply_filters = st.form_submit_button("Apply")
+
+    scoped = walkin_df.copy()
+    if selected_store != "All Stores":
+        scoped = scoped[scoped["store_id"] == selected_store]
+    if selected_zone != "All Zones":
+        scoped = scoped[scoped["region"] == selected_zone]
+    if selected_state != "All States":
+        scoped = scoped[scoped["state"] == selected_state]
+    if date_mode == "Month Range" and start_month and end_month:
+        scoped = scoped[(scoped["date_dt"].dt.strftime("%Y-%m") >= str(start_month)) & (scoped["date_dt"].dt.strftime("%Y-%m") <= str(end_month))]
+    elif start_date and end_date:
+        sdt = pd.Timestamp(start_date)
+        edt = pd.Timestamp(end_date)
+        scoped = scoped[(scoped["date_dt"] >= sdt) & (scoped["date_dt"] <= edt)]
+
+    customer_df = scoped[scoped["is_customer"]].copy()
+    overall = _summarize_walkin_metrics(scoped)
     kcols = st.columns(4)
     kcols[0].metric("Total Groups", int(overall["groups"]))
     kcols[1].metric("Total Walk-ins", int(overall["walkins"]))
@@ -2673,7 +2726,7 @@ def _render_overview(output: AnalysisOutput) -> None:
 
     c1, c2, c3 = st.columns(3)
     granularity = c1.selectbox("Trend Granularity", options=["Day", "Month", "Year"], index=1, key="overview_granularity")
-    scope = c2.selectbox("Scope", options=["Store", "Region", "Pan India"], index=0, key="overview_scope")
+    scope = c2.selectbox("Compare Scope", options=["Store", "Region", "Pan India"], index=0, key="overview_scope")
     if scope == "Store":
         entities = sorted(customer_df["store_id"].dropna().astype(str).unique().tolist())
     elif scope == "Region":
@@ -2837,9 +2890,49 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     if walkin_df.empty:
         st.info("No walk-in session data found for drill-down yet.")
         return
-    stores = sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
-    selected_store = st.selectbox("Store", options=stores, index=0, key="store_walkin_select")
+    with st.form("store_detail_filters_form"):
+        s1, s2, s3 = st.columns(3)
+        stores = sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
+        selected_store = s1.selectbox("Store", options=stores, index=0, key="store_walkin_select")
+        store_region = str(walkin_df.loc[walkin_df["store_id"] == selected_store, "region"].dropna().astype(str).iloc[0]) if not walkin_df.loc[walkin_df["store_id"] == selected_store, "region"].dropna().empty else "Unknown"
+        store_state = str(walkin_df.loc[walkin_df["store_id"] == selected_store, "state"].dropna().astype(str).iloc[0]) if not walkin_df.loc[walkin_df["store_id"] == selected_store, "state"].dropna().empty else "Unknown"
+        s2.text_input("Zone", value=store_region, disabled=True, key="store_detail_zone_view")
+        s3.text_input("State", value=store_state, disabled=True, key="store_detail_state_view")
+
+        d1, d2, d3 = st.columns(3)
+        date_mode = d1.selectbox("Date Filter Type", options=["Month Range", "Manual Date Range", "Single Date"], key="store_date_mode")
+        sdf_base = walkin_df[walkin_df["store_id"] == selected_store].copy()
+        month_values = sorted(sdf_base["date_dt"].dropna().dt.strftime("%Y-%m").unique().tolist())
+        start_month = end_month = None
+        start_date = end_date = None
+        if date_mode == "Month Range":
+            if month_values:
+                start_month = d2.selectbox("From Month", options=month_values, index=0, key="store_from_month")
+                end_month = d3.selectbox("To Month", options=month_values, index=len(month_values) - 1, key="store_to_month")
+        elif date_mode == "Manual Date Range":
+            min_dt = sdf_base["date_dt"].dropna().min()
+            max_dt = sdf_base["date_dt"].dropna().max()
+            rng = d2.date_input(
+                "From / To Date",
+                value=(min_dt.date() if pd.notna(min_dt) else date.today(), max_dt.date() if pd.notna(max_dt) else date.today()),
+                key="store_manual_range",
+            )
+            if isinstance(rng, tuple) and len(rng) == 2:
+                start_date, end_date = rng
+            else:
+                start_date = end_date = rng
+        else:
+            single = d2.date_input("Date", value=date.today(), key="store_single_date")
+            start_date = end_date = single
+        st.form_submit_button("Apply")
+
     sdf = walkin_df[walkin_df["store_id"] == selected_store].copy()
+    if date_mode == "Month Range" and start_month and end_month:
+        sdf = sdf[(sdf["date_dt"].dt.strftime("%Y-%m") >= str(start_month)) & (sdf["date_dt"].dt.strftime("%Y-%m") <= str(end_month))]
+    elif start_date and end_date:
+        sdt = pd.Timestamp(start_date)
+        edt = pd.Timestamp(end_date)
+        sdf = sdf[(sdf["date_dt"] >= sdt) & (sdf["date_dt"] <= edt)]
     customer_df = sdf[sdf["is_customer"]].copy()
     if customer_df.empty:
         st.warning("Selected store has no analytics-eligible customer sessions yet.")
