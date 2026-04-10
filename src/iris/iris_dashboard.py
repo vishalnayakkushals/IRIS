@@ -111,7 +111,7 @@ NAV_TREE: dict[str, dict[str, list[str]]] = {
     "Operations": {
         "Store Setup": ["Store Mapping", "Store Camera Mapping", "Store Master"],
         "Workforce": ["Employee Management"],
-        "Pipeline": ["Maual data sync of IRIS"],
+        "Pipeline": ["Manual data sync of IRIS"],
     },
 }
 
@@ -139,7 +139,7 @@ COLOR_PRESETS: dict[str, str] = {
 
 LEGACY_PAGE_ALIAS = {
     "Pipeline Configuration": "Config",
-    "Pipeline Journey": "Maual data sync of IRIS",
+    "Pipeline Journey": "Manual data sync of IRIS",
     "Store Admin": "Store Mapping",
     "Auth/RBAC": "Role Permissions",
     "Camera Zones": "Store Camera Mapping",
@@ -2473,47 +2473,272 @@ def _sync_confirmed_feedback_export(db_path: Path) -> Path:
     return out_path
 
 
+def _parse_dashboard_date(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
+
+
+def _time_to_seconds(text: object) -> int | None:
+    raw = str(text or "").strip()
+    if not raw or raw.upper() == "NA":
+        return None
+    try:
+        hh, mm, ss = [int(x) for x in raw.split(":")]
+        return hh * 3600 + mm * 60 + ss
+    except Exception:
+        return None
+
+
+def _duration_minutes(row: pd.Series) -> float | None:
+    raw = pd.to_numeric([row.get("time_spent_mins", np.nan)], errors="coerce")[0]
+    if not pd.isna(raw) and float(raw) >= 0:
+        return float(raw)
+    entry_sec = _time_to_seconds(row.get("entry_time", ""))
+    exit_sec = _time_to_seconds(row.get("exit_time", ""))
+    if entry_sec is None or exit_sec is None:
+        return None
+    diff = exit_sec - entry_sec
+    if diff < 0:
+        return None
+    return round(diff / 60.0, 2)
+
+
+def _load_onfly_walkin_business_df(root_dir: Path, db_path: Path) -> pd.DataFrame:
+    base = root_dir / "exports" / "current" / "onfly"
+    if not base.exists():
+        return pd.DataFrame()
+    frames: list[pd.DataFrame] = []
+    for csv_path in sorted(base.glob("*/onfly_walkin_sessions.csv")):
+        try:
+            part = pd.read_csv(csv_path)
+        except Exception:
+            continue
+        if part.empty:
+            continue
+        part = part.copy()
+        store_from_path = csv_path.parent.name
+        if "store_id" not in part.columns:
+            part["store_id"] = store_from_path
+        part["store_id"] = part["store_id"].fillna(store_from_path).astype(str).str.strip()
+        part["store_id"] = part["store_id"].replace("", store_from_path)
+        frames.append(part)
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+    for col in [
+        "role",
+        "included_in_analytics",
+        "group_id",
+        "walkin_id",
+        "gender",
+        "age_band",
+        "purchase_signal_bag",
+        "entry_type",
+        "session_status",
+        "camera_id",
+    ]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    if "business_date" in df.columns:
+        date_series = df["business_date"]
+    elif "date" in df.columns:
+        date_series = df["date"]
+    elif "folder_name" in df.columns:
+        date_series = df["folder_name"]
+    else:
+        date_series = ""
+    df["date_raw"] = date_series
+    df["date_dt"] = df["date_raw"].map(_parse_dashboard_date)
+    df["date_label"] = df["date_dt"].map(lambda d: d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "")
+    df.loc[df["date_label"] == "", "date_label"] = df.loc[df["date_label"] == "", "date_raw"].astype(str)
+
+    df["role_norm"] = df["role"].str.upper()
+    df["included_norm"] = df["included_in_analytics"].str.lower()
+    df["is_customer"] = (df["role_norm"] == "CUSTOMER") & (df["included_norm"].isin({"yes", "true", "1"}))
+    df["is_conversion"] = (
+        df["purchase_signal_bag"].str.lower().isin({"yes", "true", "1"})
+        | df.get("event_type", pd.Series([""] * len(df))).astype(str).str.upper().eq("INSIDE_PURCHASING")
+    ) & df["is_customer"]
+
+    df["duration_mins"] = df.apply(_duration_minutes, axis=1)
+    valid_duration = pd.to_numeric(df["duration_mins"], errors="coerce")
+    df["duration_mins"] = np.where(valid_duration >= 0, valid_duration, np.nan)
+
+    # Customer-group correction at dashboard layer to avoid frame-wide grouping artifacts.
+    walkin_key = df["walkin_id"].where(df["walkin_id"] != "", df.get("image_id", pd.Series([""] * len(df))).astype(str))
+    df["walkin_key"] = walkin_key.astype(str)
+    group_key = df["group_id"].where(df["group_id"] != "", df["walkin_key"])
+    group_key = np.where(df["is_customer"], df["walkin_key"], group_key)
+    df["group_key"] = pd.Series(group_key).astype(str)
+
+    store_master = pd.DataFrame(list_store_master(db_path))
+    if not store_master.empty:
+        store_master["store_id"] = store_master["store_id"].astype(str).str.strip()
+        store_master["zone"] = store_master.get("zone", "").fillna("").astype(str).str.strip()
+        df = df.merge(store_master[["store_id", "zone"]], on="store_id", how="left")
+        df["region"] = df["zone"].fillna("").astype(str).str.strip()
+    else:
+        df["region"] = ""
+    df.loc[df["region"] == "", "region"] = "Unknown"
+    return df
+
+
+def _summarize_walkin_metrics(df: pd.DataFrame) -> dict[str, float]:
+    if df.empty:
+        return {"groups": 0, "walkins": 0, "avg_time_spent": 0.0, "conversion_rate": np.nan}
+    customer_df = df[df["is_customer"]].copy()
+    if customer_df.empty:
+        return {"groups": 0, "walkins": 0, "avg_time_spent": 0.0, "conversion_rate": np.nan}
+    walkins = int(customer_df["walkin_key"].nunique())
+    groups = int(customer_df["group_key"].nunique())
+    avg_time = float(pd.to_numeric(customer_df["duration_mins"], errors="coerce").dropna().mean() or 0.0)
+    conversions = int(customer_df["is_conversion"].sum())
+    conversion_rate = (float(conversions) / float(walkins)) if walkins > 0 else np.nan
+    return {
+        "groups": groups,
+        "walkins": walkins,
+        "avg_time_spent": round(avg_time, 2),
+        "conversion_rate": conversion_rate,
+    }
+
+
 def _render_overview(output: AnalysisOutput) -> None:
-    st.subheader("All Stores Summary")
-    if output.all_stores_summary.empty:
-        st.warning("No stores found for analysis.")
+    st.subheader("Overview")
+    root_dir = Path(str(st.session_state.get("ctrl_root_str", "data"))).resolve()
+    db_path = Path(str(st.session_state.get("db_path", root_dir / "store_registry.db"))).resolve()
+    walkin_df = _load_onfly_walkin_business_df(root_dir=root_dir, db_path=db_path)
+    if walkin_df.empty:
+        st.warning("No walk-in session data found yet. Run on-fly pipeline for at least one store.")
         return
 
-    df = output.all_stores_summary.copy()
-    st.dataframe(df, use_container_width=True)
+    customer_df = walkin_df[walkin_df["is_customer"]].copy()
+    overall = _summarize_walkin_metrics(walkin_df)
+    kcols = st.columns(4)
+    kcols[0].metric("Total Groups", int(overall["groups"]))
+    kcols[1].metric("Total Walk-ins", int(overall["walkins"]))
+    kcols[2].metric("Avg Time Spent (mins)", f"{float(overall['avg_time_spent']):.2f}")
+    kcols[3].metric("Conversion Rate", "N/A" if pd.isna(overall["conversion_rate"]) else f"{float(overall['conversion_rate']):.2%}")
 
-    leaderboard = df.sort_values(by="total_people", ascending=False)
-    chart = px.bar(
-        leaderboard,
-        x="store_id",
-        y="total_people",
-        color="store_id",
-        labels={"store_id": "Store", "total_people": "Total Detected People"},
-        title="Store Leaderboard by Customer Count",
+    if customer_df.empty:
+        st.info("Walk-in files exist, but no analytics-eligible customer sessions found.")
+        return
+
+    by_store = customer_df.groupby("store_id", as_index=False).agg(
+        total_groups=("group_key", "nunique"),
+        total_walkins=("walkin_key", "nunique"),
+        avg_time_spent=("duration_mins", "mean"),
+        conversions=("is_conversion", "sum"),
     )
-    chart.update_layout(showlegend=False)
-    st.plotly_chart(chart, use_container_width=True)
+    by_store["conversion_rate"] = np.where(
+        by_store["total_walkins"] > 0,
+        by_store["conversions"] / by_store["total_walkins"],
+        np.nan,
+    )
+    by_store["avg_time_spent"] = by_store["avg_time_spent"].fillna(0.0)
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Stores", f"{len(df)}")
-    metric_cols[1].metric("Total Images", f"{int(df['total_images'].sum())}")
-    metric_cols[2].metric("Relevant Images", f"{int(df['relevant_images'].sum())}")
-    metric_cols[3].metric("Detected People", f"{int(df['total_people'].sum())}")
-    if "estimated_visits" in df.columns:
-        total_visits = int(pd.to_numeric(df["estimated_visits"], errors="coerce").fillna(0).sum())
-        avg_bounce = pd.to_numeric(df.get("bounce_rate", pd.Series([], dtype=float)), errors="coerce").mean()
-        bounce_text = f"{float(avg_bounce):.2%}" if total_visits > 0 and not pd.isna(avg_bounce) else "N/A"
-        st.caption(
-            f"Estimated Visits: {total_visits} | "
-            f"Avg Bounce Rate: {bounce_text}"
+    best_conv = by_store.sort_values("conversion_rate", ascending=False).head(1)
+    best_crowd = by_store.sort_values("total_walkins", ascending=False).head(1)
+    low_conv = by_store.sort_values("conversion_rate", ascending=True).head(1)
+    info_cols = st.columns(3)
+    info_cols[0].metric(
+        "Highest Conversion Store",
+        str(best_conv["store_id"].iloc[0]) if not best_conv.empty else "N/A",
+        "N/A" if best_conv.empty or pd.isna(best_conv["conversion_rate"].iloc[0]) else f"{float(best_conv['conversion_rate'].iloc[0]):.2%}",
+    )
+    info_cols[1].metric(
+        "Highest Crowd Store",
+        str(best_crowd["store_id"].iloc[0]) if not best_crowd.empty else "N/A",
+        f"{int(best_crowd['total_walkins'].iloc[0])}" if not best_crowd.empty else "0",
+    )
+    info_cols[2].metric(
+        "Lowest Conversion Store",
+        str(low_conv["store_id"].iloc[0]) if not low_conv.empty else "N/A",
+        "N/A" if low_conv.empty or pd.isna(low_conv["conversion_rate"].iloc[0]) else f"{float(low_conv['conversion_rate'].iloc[0]):.2%}",
+    )
+
+    c1, c2, c3 = st.columns(3)
+    granularity = c1.selectbox("Trend Granularity", options=["Day", "Month", "Year"], index=1, key="overview_granularity")
+    scope = c2.selectbox("Scope", options=["Store", "Region", "Pan India"], index=0, key="overview_scope")
+    if scope == "Store":
+        entities = sorted(customer_df["store_id"].dropna().astype(str).unique().tolist())
+    elif scope == "Region":
+        entities = sorted(customer_df["region"].dropna().astype(str).unique().tolist())
+    else:
+        entities = ["Pan India"]
+    selected_entity = c3.selectbox("Entity", options=entities, index=0, key="overview_entity")
+
+    trend_df = customer_df.copy()
+    if scope == "Store":
+        trend_df = trend_df[trend_df["store_id"] == selected_entity]
+    elif scope == "Region":
+        trend_df = trend_df[trend_df["region"] == selected_entity]
+
+    trend_df = trend_df.dropna(subset=["date_dt"]).copy()
+    if trend_df.empty:
+        st.info("No date-parsed rows available for trend/compare.")
+    else:
+        if granularity == "Day":
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y-%m-%d")
+        elif granularity == "Month":
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y-%m")
+        else:
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y")
+
+        period_agg = trend_df.groupby("period", as_index=False).agg(
+            walkins=("walkin_key", "nunique"),
+            groups=("group_key", "nunique"),
+            avg_time_spent=("duration_mins", "mean"),
+            conversions=("is_conversion", "sum"),
         )
-    history_df = _load_model_accuracy_history(out_dir=Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))))
-    if not history_df.empty:
-        latest = history_df.sort_values(by=["snapshot_date", "snapshot_ts_utc"]).groupby("store_id", as_index=False).tail(1)
-        scored = float(pd.to_numeric(latest.get("scored_rows", 0), errors="coerce").fillna(0).sum())
-        matched = float(pd.to_numeric(latest.get("matched_rows", 0), errors="coerce").fillna(0).sum())
-        overall_acc = (matched * 100.0 / scored) if scored > 0 else 0.0
-        st.caption(f"Current Model Accuracy (feedback-based): {overall_acc:.2f}%  |  Open `Model Accuracy` page for trend.")
+        period_agg["conversion_rate"] = np.where(period_agg["walkins"] > 0, period_agg["conversions"] / period_agg["walkins"], np.nan)
+        period_agg = period_agg.sort_values("period")
+        st.plotly_chart(
+            px.line(
+                period_agg,
+                x="period",
+                y=["walkins", "groups"],
+                markers=True,
+                title=f"{scope} Trend ({selected_entity})",
+            ),
+            use_container_width=True,
+        )
+
+        if len(period_agg) >= 2:
+            current = period_agg.iloc[-1]
+            previous = period_agg.iloc[-2]
+            delta_walkins = int(current["walkins"] - previous["walkins"])
+            delta_conv = float(current["conversion_rate"] - previous["conversion_rate"]) if not pd.isna(current["conversion_rate"]) and not pd.isna(previous["conversion_rate"]) else np.nan
+            st.caption(
+                f"Period Delta ({current['period']} vs {previous['period']}): "
+                f"Walk-ins {delta_walkins:+d}, "
+                f"Conversion {'N/A' if pd.isna(delta_conv) else f'{delta_conv:+.2%}'}."
+            )
+
+    st.markdown("**Top Stores By Conversion**")
+    st.dataframe(
+        by_store.sort_values("conversion_rate", ascending=False).head(10),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Bottom Stores (Needs Attention)**")
+    st.dataframe(
+        by_store.sort_values("conversion_rate", ascending=True).head(10),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def _render_model_accuracy_overview(output: AnalysisOutput, db_path: Path, out_dir: Path) -> None:
@@ -2604,139 +2829,104 @@ def _render_model_accuracy_overview(output: AnalysisOutput, db_path: Path, out_d
 
 def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_dir: Path) -> None:
     st.subheader("Store Drill-down")
-    store_ids = sorted(output.stores.keys())
-    if not store_ids:
-        st.info("No per-store analysis available.")
+    db_path = Path(str(st.session_state.get("db_path", root_dir / "store_registry.db"))).resolve()
+    walkin_df = _load_onfly_walkin_business_df(root_dir=root_dir, db_path=db_path)
+    if walkin_df.empty:
+        st.info("No walk-in session data found for drill-down yet.")
+        return
+    stores = sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
+    selected_store = st.selectbox("Store", options=stores, index=0, key="store_walkin_select")
+    sdf = walkin_df[walkin_df["store_id"] == selected_store].copy()
+    customer_df = sdf[sdf["is_customer"]].copy()
+    if customer_df.empty:
+        st.warning("Selected store has no analytics-eligible customer sessions yet.")
         return
 
-    select_placeholder = "-- Select Store --"
-    selected_store = st.selectbox("Store", options=[select_placeholder, *store_ids], index=0, key="store_detail_select")
-    if selected_store == select_placeholder:
-        st.info("Select a store to load drill-down metrics.")
-        return
-    store_result = output.stores[selected_store]
-    image_df = _normalize_image_df(store_result.image_insights)
-    hotspot_df = store_result.camera_hotspots.copy()
-    customer_sessions_df = (
-        store_result.customer_sessions.copy()
-        if hasattr(store_result, "customer_sessions") and not store_result.customer_sessions.empty
-        else pd.DataFrame()
+    summary = _summarize_walkin_metrics(sdf)
+    kcols = st.columns(4)
+    kcols[0].metric("Total Groups", int(summary["groups"]))
+    kcols[1].metric("Total Walk-ins", int(summary["walkins"]))
+    kcols[2].metric("Avg Time Spent (mins)", f"{float(summary['avg_time_spent']):.2f}")
+    kcols[3].metric("Conversion Rate", "N/A" if pd.isna(summary["conversion_rate"]) else f"{float(summary['conversion_rate']):.2%}")
+
+    gender = (
+        customer_df.assign(gender=customer_df["gender"].replace("", "Unknown"))
+        .groupby("gender", as_index=False)
+        .agg(walkins=("walkin_key", "nunique"))
+        .sort_values("walkins", ascending=False)
     )
-
-    row = output.all_stores_summary[
-        output.all_stores_summary["store_id"] == selected_store
-    ].iloc[0]
-    estimated_visits = int(pd.to_numeric([row.get("estimated_visits", 0)], errors="coerce")[0] or 0)
-    bounce_rate_raw = pd.to_numeric([row.get("bounce_rate", np.nan)], errors="coerce")[0]
-    bounce_rate_text = "N/A" if estimated_visits <= 0 or pd.isna(bounce_rate_raw) else f"{float(bounce_rate_raw):.2%}"
-    daily_walkins = int(pd.to_numeric([row.get("daily_walkins", 0)], errors="coerce")[0] or 0)
-    daily_conversions = int(pd.to_numeric([row.get("daily_conversions", 0)], errors="coerce")[0] or 0)
-    daily_conversion_raw = pd.to_numeric([row.get("daily_conversion_rate", np.nan)], errors="coerce")[0]
-    daily_conversion_text = "N/A" if daily_walkins <= 0 or pd.isna(daily_conversion_raw) else f"{float(daily_conversion_raw):.2%}"
-
-    cols = st.columns(9)
-    cols[0].metric("Total Images", int(row["total_images"]))
-    cols[1].metric("Valid Images", int(row["valid_images"]))
-    cols[2].metric("Relevant Images", int(row["relevant_images"]))
-    cols[3].metric("Total People", int(row["total_people"]))
-    cols[4].metric("Estimated Visits", estimated_visits)
-    cols[5].metric("Avg Dwell (sec)", float(row.get("avg_dwell_sec", 0.0)))
-    cols[6].metric("Bounce Rate", bounce_rate_text)
-    cols[7].metric("Footfall", int(row.get("footfall", 0)))
-    cols[8].metric("LOS Alerts", int(row.get("loss_of_sale_alerts", 0)))
-    auth_token = str(st.session_state.get("session_token", "")).strip()
-    query_extra = f"&auth={quote(auth_token)}" if auth_token else ""
-    journey_link = (
-        f"?module=Reports&section=Business%20Health&page=Customer%20Journeys"
-        f"&store={quote(selected_store)}&customer_limit=80{query_extra}"
+    age = (
+        customer_df.assign(age_band=customer_df["age_band"].replace("", "Unknown"))
+        .groupby("age_band", as_index=False)
+        .agg(walkins=("walkin_key", "nunique"))
+        .sort_values("age_band")
     )
-    st.markdown(
-        f'<a href="{journey_link}" target="_self">Open customer-face validation (80 people)</a>',
-        unsafe_allow_html=True,
-    )
-    cols2 = st.columns(3)
-    cols2[0].metric("Daily Walk-ins (Actual)", daily_walkins)
-    cols2[1].metric("Daily Conversions", daily_conversions)
-    cols2[2].metric("Daily Conversion Rate", daily_conversion_text)
-    if estimated_visits <= 0:
-        st.info("No validated visits yet. Raw detections are available, but session-validated visit metrics are N/A.")
+    split_cols = st.columns(2)
+    split_cols[0].markdown("**Gender Split**")
+    split_cols[0].dataframe(gender, use_container_width=True, hide_index=True)
+    split_cols[1].markdown("**Age Group Split**")
+    split_cols[1].dataframe(age, use_container_width=True, hide_index=True)
 
-    business_kpi = _business_kpi_summary(image_df=image_df, customer_sessions_df=customer_sessions_df)
-
-    gender_counts = business_kpi["gender_counts"] if isinstance(business_kpi.get("gender_counts"), dict) else {}
-    gender_cols = st.columns(3)
-    gender_cols[0].metric("Male", int(gender_counts.get("male", 0)))
-    gender_cols[1].metric("Female", int(gender_counts.get("female", 0)))
-    gender_cols[2].metric("Unknown Gender", int(gender_counts.get("unknown", 0)))
-
-    age_counts = business_kpi["age_bucket_counts"] if isinstance(business_kpi.get("age_bucket_counts"), dict) else {}
-    if age_counts:
-        age_df = pd.DataFrame(
-            [{"age_group": str(k), "count": int(v)} for k, v in age_counts.items()]
-        ).sort_values(["age_group"])
-        st.markdown("**Age Group Count**")
-        st.dataframe(age_df, use_container_width=True, hide_index=True)
+    trend_grain = st.selectbox("Trend Granularity", options=["Day", "Month", "Year"], index=0, key="store_trend_grain")
+    trend_df = customer_df.dropna(subset=["date_dt"]).copy()
+    if trend_df.empty:
+        st.info("No valid date rows for trend.")
     else:
-        st.caption("Age group count not available (enable and configure age/gender model).")
-
-    if not hotspot_df.empty:
-        st.markdown("**Camera Hotspots**")
-        hotspot_chart = px.bar(
-            hotspot_df.sort_values(by="hotspot_rank"),
-            x="camera_id",
-            y="avg_people_per_relevant_image",
-            color="total_people",
-            labels={
-                "camera_id": "Camera",
-                "avg_people_per_relevant_image": "Avg People / Relevant Image",
-                "total_people": "Total People",
-            },
+        if trend_grain == "Day":
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y-%m-%d")
+        elif trend_grain == "Month":
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y-%m")
+        else:
+            trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y")
+        agg = trend_df.groupby("period", as_index=False).agg(
+            walkins=("walkin_key", "nunique"),
+            groups=("group_key", "nunique"),
+            avg_time_spent=("duration_mins", "mean"),
+            conversions=("is_conversion", "sum"),
         )
-        st.plotly_chart(hotspot_chart, use_container_width=True)
-
-    location_hotspot_df = (
-        store_result.location_hotspots.copy()
-        if hasattr(store_result, "location_hotspots") and not store_result.location_hotspots.empty
-        else pd.DataFrame()
-    )
-    if not location_hotspot_df.empty:
-        st.markdown("**Location Hotspots**")
-        loc_chart = px.bar(
-            location_hotspot_df.sort_values(by="hotspot_rank"),
-            x="location_name",
-            y="avg_people_per_relevant_image",
-            color="floor_name",
-            hover_data=["total_people", "avg_dwell_sec"],
-            labels={
-                "location_name": "Location",
-                "avg_people_per_relevant_image": "Avg People / Relevant Image",
-                "floor_name": "Floor",
-            },
+        agg["conversion_rate"] = np.where(agg["walkins"] > 0, agg["conversions"] / agg["walkins"], np.nan)
+        agg = agg.sort_values("period")
+        chart_cols = st.columns(2)
+        chart_cols[0].plotly_chart(
+            px.line(agg, x="period", y=["walkins", "groups"], markers=True, title="Walk-ins & Groups Trend"),
+            use_container_width=True,
         )
-        st.plotly_chart(loc_chart, use_container_width=True)
-
-    relevant_df = image_df[image_df["relevant"]].copy()
-    if "camera_id" not in relevant_df.columns:
-        relevant_df["camera_id"] = "UNKNOWN"
-    if not relevant_df.empty:
-        relevant_df["bucket"] = relevant_df["timestamp"].dt.floor(f"{time_bucket_minutes}min")
-        trend_df = (
-            relevant_df.groupby(["bucket", "camera_id"], as_index=False)
-            .agg(total_people=("person_count", "sum"))
-            .sort_values(by="bucket")
+        chart_cols[1].plotly_chart(
+            px.line(agg, x="period", y=["conversion_rate", "avg_time_spent"], markers=True, title="Conversion & Avg Time Trend"),
+            use_container_width=True,
         )
-        st.markdown("**Customer Trend by Time**")
-        trend_chart = px.line(
-            trend_df,
-            x="bucket",
-            y="total_people",
-            color="camera_id",
-            markers=True,
-            labels={"bucket": "Time Bucket", "total_people": "Detected People"},
-        )
-        st.plotly_chart(trend_chart, use_container_width=True)
 
-    st.caption("Detailed proof tables and data-health exports are available under `Reports > Business Health > Report Module`.")
+        if len(agg) >= 2:
+            cur = agg.iloc[-1]
+            prev = agg.iloc[-2]
+            delta_cols = st.columns(4)
+            delta_cols[0].metric("Walk-ins Delta", int(cur["walkins"]), int(cur["walkins"] - prev["walkins"]))
+            delta_cols[1].metric("Groups Delta", int(cur["groups"]), int(cur["groups"] - prev["groups"]))
+            conv_delta = np.nan if pd.isna(cur["conversion_rate"]) or pd.isna(prev["conversion_rate"]) else cur["conversion_rate"] - prev["conversion_rate"]
+            delta_cols[2].metric("Conversion Delta", "N/A" if pd.isna(cur["conversion_rate"]) else f"{float(cur['conversion_rate']):.2%}", "N/A" if pd.isna(conv_delta) else f"{float(conv_delta):+.2%}")
+            avg_delta = float(cur["avg_time_spent"] - prev["avg_time_spent"]) if not pd.isna(cur["avg_time_spent"]) and not pd.isna(prev["avg_time_spent"]) else 0.0
+            delta_cols[3].metric("Avg Time Delta (mins)", f"{float(cur['avg_time_spent']):.2f}", f"{avg_delta:+.2f}")
+
+    # Benchmarks: selected store vs region and pan-india averages.
+    region = str(customer_df["region"].dropna().astype(str).iloc[0]) if not customer_df["region"].dropna().empty else "Unknown"
+    region_df = walkin_df[(walkin_df["region"] == region) & (walkin_df["is_customer"])].copy()
+    pan_df = walkin_df[walkin_df["is_customer"]].copy()
+    bcols = st.columns(3)
+    bcols[0].metric("Store Conversion", "N/A" if pd.isna(summary["conversion_rate"]) else f"{float(summary['conversion_rate']):.2%}")
+    region_conv = _summarize_walkin_metrics(region_df).get("conversion_rate", np.nan)
+    bcols[1].metric("Region Avg Conversion", "N/A" if pd.isna(region_conv) else f"{float(region_conv):.2%}")
+    pan_conv = _summarize_walkin_metrics(pan_df).get("conversion_rate", np.nan)
+    bcols[2].metric("Pan-India Avg Conversion", "N/A" if pd.isna(pan_conv) else f"{float(pan_conv):.2%}")
+
+    session_split = customer_df.groupby("session_status", as_index=False).agg(count=("walkin_key", "nunique"))
+    entry_split = customer_df.groupby("entry_type", as_index=False).agg(count=("walkin_key", "nunique"))
+    purchase_split = customer_df.groupby("purchase_signal_bag", as_index=False).agg(count=("walkin_key", "nunique"))
+    st.markdown("**Session Close Type**")
+    st.dataframe(session_split.sort_values("count", ascending=False), use_container_width=True, hide_index=True)
+    st.markdown("**Entry Type Split**")
+    st.dataframe(entry_split.sort_values("count", ascending=False), use_container_width=True, hide_index=True)
+    st.markdown("**Purchase Signal Summary**")
+    st.dataframe(purchase_split.sort_values("count", ascending=False), use_container_width=True, hide_index=True)
 
 
 def _build_daily_proof_df(image_df: pd.DataFrame, store_result: object, store_id: str) -> pd.DataFrame:
@@ -2874,7 +3064,7 @@ def _build_gpt_frame_index(gpt_validation_df: pd.DataFrame) -> dict[tuple[str, s
 
 
 def _render_onfly_pipeline_journey(db_path: Path) -> None:
-    st.subheader("Maual data sync of IRIS")
+    st.subheader("Manual data sync of IRIS")
     st.caption("Live on-fly run visibility: stage status, counts, failures, and scheduler heartbeat.")
     st.markdown("**Run On-Fly Now**")
 
@@ -6838,7 +7028,7 @@ def main() -> None:
             employee_assets_root=employee_assets_root,
             root_dir=root_dir,
         )
-    elif current_page in {"Pipeline Journey", "Maual data sync of IRIS"}:
+    elif current_page in {"Pipeline Journey", "Manual data sync of IRIS", "Maual data sync of IRIS"}:
         _render_onfly_pipeline_journey(db_path=db_path)
 
     elif current_page == "Frame Review":

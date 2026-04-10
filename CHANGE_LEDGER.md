@@ -82,6 +82,22 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Phase-1 walk-in dashboard redesign (overview + drill-down + compare)
+
+- Summary:
+  - Reworked primary `Overview` and `Store Drill-down` dashboards to be walk-in/session-first using `onfly_walkin_sessions.csv` instead of image-centric KPIs.
+  - Added store/region/pan-India compare views, day/month/year trend selectors, period delta indicators, and top/bottom store ranking blocks.
+  - Ensured test-store (`TEST_STORE_D07`) visibility through on-fly walk-in dataset ingestion for selectors and KPIs.
+  - Added customer-group correction logic in on-fly export so suspicious frame-wide groups are split to walk-in level and staff/customer group mixing is prevented in customer analytics.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (code-only patch; restart-only deploy path).
+
 ### 2026-04-07 | Lightweight runtime automation + full-folder on-fly validation run
 
 - Summary:

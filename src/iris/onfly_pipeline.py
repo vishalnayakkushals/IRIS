@@ -289,6 +289,55 @@ def _ms_to_hms(ms: float) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
+def _apply_customer_group_correction(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize customer grouping for business exports."""
+    if df.empty or "group_id" not in df.columns:
+        return df
+
+    out = df.copy()
+    for col in ["role", "group_id", "walkin_id", "source_image_name", "store_id", "run_id"]:
+        if col not in out.columns:
+            out[col] = ""
+    out["role_norm"] = out["role"].astype(str).str.strip().str.upper()
+    out["group_id"] = out["group_id"].astype(str).str.strip()
+    out["walkin_id"] = out["walkin_id"].astype(str).str.strip()
+    out["source_image_name"] = out["source_image_name"].astype(str).str.strip()
+    out["raw_group_id"] = out["group_id"]
+
+    stats = (
+        out.assign(
+            is_customer=out["role_norm"].eq("CUSTOMER"),
+            is_staff=out["role_norm"].eq("STAFF"),
+        )
+        .groupby(["store_id", "run_id", "source_image_name", "group_id"], dropna=False, as_index=False)
+        .agg(customer_rows=("is_customer", "sum"), staff_rows=("is_staff", "sum"))
+    )
+    stats["preserve_group"] = (
+        (stats["group_id"].astype(str).str.strip() != "")
+        & (stats["customer_rows"] >= 2)
+        & (stats["customer_rows"] <= 4)
+        & (stats["staff_rows"] == 0)
+    )
+    key_cols = ["store_id", "run_id", "source_image_name", "group_id"]
+    out = out.merge(stats[key_cols + ["preserve_group"]], on=key_cols, how="left")
+    out["preserve_group"] = out["preserve_group"].fillna(False)
+
+    def _session_group(row: pd.Series) -> str:
+        walkin = str(row.get("walkin_id", "") or "").strip()
+        if walkin:
+            return walkin
+        image_id = str(row.get("image_id", "") or "").strip()
+        row_id = str(row.get("id", "") or "").strip()
+        return f"{image_id or 'session'}_{row_id or '0'}"
+
+    customer_mask = out["role_norm"].eq("CUSTOMER")
+    split_mask = customer_mask & ((out["group_id"] == "") | (~out["preserve_group"]))
+    if split_mask.any():
+        out.loc[split_mask, "group_id"] = out.loc[split_mask].apply(_session_group, axis=1)
+
+    return out.drop(columns=["role_norm", "preserve_group"])
+
+
 def _parse_date_token(token: str) -> date | None:
     text = str(token).strip()
     if not text:
@@ -1442,6 +1491,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         ).fetchall()
         if walkin_rows:
             walkin_df = pd.DataFrame([dict(r) for r in walkin_rows])
+            walkin_df = _apply_customer_group_correction(walkin_df)
             # Keep canonical export business-friendly by default.
             # Full audit trail remains available in a dedicated audit CSV.
             audit_only_cols = [
