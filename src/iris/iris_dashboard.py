@@ -2505,6 +2505,37 @@ def _store_name_map_cached(db_path_str: str) -> dict[str, str]:
     return name_map
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _store_meta_map_cached(db_path_str: str) -> dict[str, dict[str, str]]:
+    db_path = Path(db_path_str).expanduser().resolve()
+    meta: dict[str, dict[str, str]] = {}
+    for rec in list_stores(db_path):
+        sid = str(getattr(rec, "store_id", "") or "").strip()
+        if not sid:
+            continue
+        meta[sid] = {
+            "store_name": str(getattr(rec, "store_name", "") or "").strip() or sid,
+            "zone": "",
+            "state": "",
+        }
+    for row in list_store_master(db_path):
+        sid = str(row.get("store_id", "") or "").strip()
+        if not sid:
+            continue
+        if sid not in meta:
+            meta[sid] = {"store_name": sid, "zone": "", "state": ""}
+        sname = str(row.get("gofrugal_name", "") or "").strip()
+        zone = str(row.get("zone", "") or "").strip()
+        state = str(row.get("state", "") or "").strip()
+        if sname:
+            meta[sid]["store_name"] = sname
+        if zone:
+            meta[sid]["zone"] = zone
+        if state:
+            meta[sid]["state"] = state
+    return meta
+
+
 def _time_to_seconds(text: object) -> int | None:
     raw = str(text or "").strip()
     if not raw or raw.upper() == "NA":
@@ -2648,6 +2679,17 @@ def _render_overview(output: AnalysisOutput) -> None:
         return
 
     name_map = _store_name_map_cached(str(db_path))
+    meta_map = _store_meta_map_cached(str(db_path))
+    if "region" in walkin_df.columns:
+        walkin_df["region"] = walkin_df.apply(
+            lambda r: str(r.get("region", "") or "").strip() or str(meta_map.get(str(r.get("store_id", "")).strip(), {}).get("zone", "")).strip() or "Unknown",
+            axis=1,
+        )
+    if "state" in walkin_df.columns:
+        walkin_df["state"] = walkin_df.apply(
+            lambda r: str(r.get("state", "") or "").strip() or str(meta_map.get(str(r.get("store_id", "")).strip(), {}).get("state", "")).strip() or "Unknown",
+            axis=1,
+        )
     non_test_exists = bool(
         walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
     )
@@ -2667,8 +2709,17 @@ def _render_overview(output: AnalysisOutput) -> None:
 
     f1, f2, f3 = st.columns(3)
     store_options = ["All Stores"] + sorted(walkin_df["store_id"].dropna().astype(str).unique().tolist())
-    zone_options = ["All Zones"] + sorted(walkin_df["region"].dropna().astype(str).unique().tolist())
-    state_options = ["All States"] + sorted(walkin_df["state"].dropna().astype(str).unique().tolist())
+    zone_values = set(walkin_df["region"].dropna().astype(str).tolist())
+    state_values = set(walkin_df["state"].dropna().astype(str).tolist())
+    for sid, m in meta_map.items():
+        z = str(m.get("zone", "")).strip()
+        s = str(m.get("state", "")).strip()
+        if z:
+            zone_values.add(z)
+        if s:
+            state_values.add(s)
+    zone_options = ["All Zones"] + sorted([z for z in zone_values if str(z).strip()])
+    state_options = ["All States"] + sorted([s for s in state_values if str(s).strip()])
     selected_store = f1.selectbox(
         "Store",
         options=store_options,
@@ -2866,14 +2917,20 @@ def _render_overview(output: AnalysisOutput) -> None:
             )
 
     st.markdown("**Top Stores By Conversion**")
+    by_store["zone"] = by_store["store_id"].map(lambda sid: str(meta_map.get(str(sid), {}).get("zone", "")).strip() or "Unknown")
+    by_store["state"] = by_store["store_id"].map(lambda sid: str(meta_map.get(str(sid), {}).get("state", "")).strip() or "Unknown")
     st.dataframe(
-        by_store.sort_values("conversion_rate", ascending=False).head(10),
+        by_store.sort_values("conversion_rate", ascending=False).head(10)[
+            ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
+        ],
         use_container_width=True,
         hide_index=True,
     )
     st.markdown("**Bottom Stores (Needs Attention)**")
     st.dataframe(
-        by_store.sort_values("conversion_rate", ascending=True).head(10),
+        by_store.sort_values("conversion_rate", ascending=True).head(10)[
+            ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
+        ],
         use_container_width=True,
         hide_index=True,
     )
@@ -2974,6 +3031,7 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         st.info("No walk-in session data found for drill-down yet.")
         return
     name_map = _store_name_map_cached(str(db_path))
+    meta_map = _store_meta_map_cached(str(db_path))
     non_test_exists = bool(
         walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
     )
@@ -3060,8 +3118,8 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     end_date = date.fromisoformat(applied["end_date"]) if str(applied.get("end_date", "")).strip() else None
 
     # Refresh zone/state display for applied store selection.
-    store_region = str(walkin_df.loc[walkin_df["store_id"] == selected_store, "region"].dropna().astype(str).iloc[0]) if not walkin_df.loc[walkin_df["store_id"] == selected_store, "region"].dropna().empty else "Unknown"
-    store_state = str(walkin_df.loc[walkin_df["store_id"] == selected_store, "state"].dropna().astype(str).iloc[0]) if not walkin_df.loc[walkin_df["store_id"] == selected_store, "state"].dropna().empty else "Unknown"
+    store_region = str(meta_map.get(selected_store, {}).get("zone", "")).strip() or "Unknown"
+    store_state = str(meta_map.get(selected_store, {}).get("state", "")).strip() or "Unknown"
     s2.text_input("Zone (Applied)", value=store_region, disabled=True, key="store_detail_zone_applied_view")
     s3.text_input("State (Applied)", value=store_state, disabled=True, key="store_detail_state_applied_view")
 

@@ -82,6 +82,22 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Link Zone/State from Store Master into dashboard filters and rankings
+
+- Summary:
+  - Added cached store metadata map sourced from `store_master` + `stores`.
+  - Dashboard now backfills `Zone` and `State` from Store Master when walk-in rows are missing/blank for these fields.
+  - Overview filter dropdowns now include all available Zone/State values from Store Master.
+  - Overview Top/Bottom store ranking tables now show `zone` and `state` columns.
+  - Store Drill-down Zone/State display now uses Store Master metadata directly for reliable output.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Store mapping crash fix + business-friendly store names + pipeline ETA
 
 - Summary:
