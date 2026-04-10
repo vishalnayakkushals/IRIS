@@ -82,6 +82,23 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Drive-empty visibility guard in Pipeline Journey
+
+- Summary:
+  - Added explicit UI guard in `Operations > Manual data sync of IRIS`:
+    - when Google Drive source returns zero discovered files, UI now shows:
+      `No files visible from source (access/scope issue)`.
+  - Guard appears both:
+    - immediately after a manual run completes with `total_listed=0`
+    - in persisted Run Detail view for gdrive runs with zero discovered files.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Link Zone/State from Store Master into dashboard filters and rankings
 
 - Summary:

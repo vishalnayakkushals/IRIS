@@ -3546,6 +3546,11 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
                             f"relevant={summary.get('yolo_relevant', 0)}, "
                             f"gpt_done={summary.get('gpt_done', 0)}"
                         )
+                        if parse_drive_folder_id(normalized_source) and int(summary.get("total_listed", 0) or 0) == 0:
+                            st.warning(
+                                "No files visible from source (access/scope issue). "
+                                "Verify Drive folder sharing/API visibility and retry."
+                            )
                         out = summary.get("outputs", {}) if isinstance(summary.get("outputs", {}), dict) else {}
                         def _friendly(path_text: str) -> str:
                             p = _hostify(path_text)
@@ -3626,6 +3631,11 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     mcols[3].metric("Relevant", int(rr.get("images_relevant", 0)))
     mcols[4].metric("GPT Success", int(rr.get("gpt_success_count", 0)))
     mcols[5].metric("GPT Failed", int(rr.get("gpt_failed_count", 0)))
+    if str(rr.get("source_type", "")).strip().lower() == "gdrive" and int(rr.get("images_discovered", 0) or 0) == 0:
+        st.warning(
+            "No files visible from source (access/scope issue). "
+            "This run discovered zero files from Google Drive."
+        )
     st.caption(
         f"Status={rr.get('status', '')} | Current Stage={rr.get('current_stage', '')} | "
         f"Started={rr.get('started_at', '')} | Ended={rr.get('ended_at', '')}"
