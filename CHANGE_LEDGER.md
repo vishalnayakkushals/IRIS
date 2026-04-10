@@ -82,6 +82,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Store Drill-down cleanup (removed two non-required tables)
+
+- Summary:
+  - Removed `Session Close Type` and `Entry Type Split` tables from Store Drill-down to keep business view concise.
+  - Retained `Purchase Signal Summary` and primary KPI/trend sections.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Date filter UX cleanup (distinct month/manual/single modes)
 
 - Summary:
