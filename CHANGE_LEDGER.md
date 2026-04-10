@@ -82,6 +82,22 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Date filter UX cleanup (distinct month/manual/single modes)
+
+- Summary:
+  - Refined Overview and Store Drill-down date filtering so each mode has unique controls and behavior:
+    - `Month Range`: month-year selectors only (no calendar picker).
+    - `Manual Date Range`: separate `From Date` and `To Date` calendars.
+    - `Single Date`: one date picker only.
+  - Fixed month-range filtering to use full month boundaries (first day to month-end) for accurate period selection.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Overview/store filters: month range + manual dates + zone/state scope
 
 - Summary:

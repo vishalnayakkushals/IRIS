@@ -2641,25 +2641,30 @@ def _render_overview(output: AnalysisOutput) -> None:
 
         d1, d2, d3 = st.columns(3)
         date_mode = d1.selectbox("Date Filter Type", options=["Month Range", "Manual Date Range", "Single Date"], key="overview_date_mode")
-        month_values = sorted(walkin_df["date_dt"].dropna().dt.strftime("%Y-%m").unique().tolist())
+        month_dt = sorted({datetime(v.year, v.month, 1) for v in walkin_df["date_dt"].dropna().tolist()})
+        month_labels = [m.strftime("%b %Y") for m in month_dt]
+        month_map = {m.strftime("%b %Y"): m for m in month_dt}
         start_month = end_month = None
         start_date = end_date = None
         if date_mode == "Month Range":
-            if month_values:
-                start_month = d2.selectbox("From Month", options=month_values, index=0, key="overview_from_month")
-                end_month = d3.selectbox("To Month", options=month_values, index=len(month_values) - 1, key="overview_to_month")
+            if month_labels:
+                start_label = d2.selectbox("From Month", options=month_labels, index=0, key="overview_from_month_label")
+                end_label = d3.selectbox("To Month", options=month_labels, index=len(month_labels) - 1, key="overview_to_month_label")
+                start_month = month_map.get(start_label)
+                end_month = month_map.get(end_label)
         elif date_mode == "Manual Date Range":
             min_dt = walkin_df["date_dt"].dropna().min()
             max_dt = walkin_df["date_dt"].dropna().max()
-            rng = d2.date_input(
-                "From / To Date",
-                value=(min_dt.date() if pd.notna(min_dt) else date.today(), max_dt.date() if pd.notna(max_dt) else date.today()),
-                key="overview_manual_range",
+            start_date = d2.date_input(
+                "From Date",
+                value=min_dt.date() if pd.notna(min_dt) else date.today(),
+                key="overview_manual_from",
             )
-            if isinstance(rng, tuple) and len(rng) == 2:
-                start_date, end_date = rng
-            else:
-                start_date = end_date = rng
+            end_date = d3.date_input(
+                "To Date",
+                value=max_dt.date() if pd.notna(max_dt) else date.today(),
+                key="overview_manual_to",
+            )
         else:
             single = d2.date_input("Date", value=date.today(), key="overview_single_date")
             start_date = end_date = single
@@ -2673,7 +2678,9 @@ def _render_overview(output: AnalysisOutput) -> None:
     if selected_state != "All States":
         scoped = scoped[scoped["state"] == selected_state]
     if date_mode == "Month Range" and start_month and end_month:
-        scoped = scoped[(scoped["date_dt"].dt.strftime("%Y-%m") >= str(start_month)) & (scoped["date_dt"].dt.strftime("%Y-%m") <= str(end_month))]
+        start_bound = pd.Timestamp(datetime(start_month.year, start_month.month, 1))
+        end_bound = pd.Timestamp(datetime(end_month.year, end_month.month, 1) + pd.offsets.MonthEnd(1))
+        scoped = scoped[(scoped["date_dt"] >= start_bound) & (scoped["date_dt"] <= end_bound)]
     elif start_date and end_date:
         sdt = pd.Timestamp(start_date)
         edt = pd.Timestamp(end_date)
@@ -2902,25 +2909,30 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         d1, d2, d3 = st.columns(3)
         date_mode = d1.selectbox("Date Filter Type", options=["Month Range", "Manual Date Range", "Single Date"], key="store_date_mode")
         sdf_base = walkin_df[walkin_df["store_id"] == selected_store].copy()
-        month_values = sorted(sdf_base["date_dt"].dropna().dt.strftime("%Y-%m").unique().tolist())
+        month_dt = sorted({datetime(v.year, v.month, 1) for v in sdf_base["date_dt"].dropna().tolist()})
+        month_labels = [m.strftime("%b %Y") for m in month_dt]
+        month_map = {m.strftime("%b %Y"): m for m in month_dt}
         start_month = end_month = None
         start_date = end_date = None
         if date_mode == "Month Range":
-            if month_values:
-                start_month = d2.selectbox("From Month", options=month_values, index=0, key="store_from_month")
-                end_month = d3.selectbox("To Month", options=month_values, index=len(month_values) - 1, key="store_to_month")
+            if month_labels:
+                start_label = d2.selectbox("From Month", options=month_labels, index=0, key="store_from_month_label")
+                end_label = d3.selectbox("To Month", options=month_labels, index=len(month_labels) - 1, key="store_to_month_label")
+                start_month = month_map.get(start_label)
+                end_month = month_map.get(end_label)
         elif date_mode == "Manual Date Range":
             min_dt = sdf_base["date_dt"].dropna().min()
             max_dt = sdf_base["date_dt"].dropna().max()
-            rng = d2.date_input(
-                "From / To Date",
-                value=(min_dt.date() if pd.notna(min_dt) else date.today(), max_dt.date() if pd.notna(max_dt) else date.today()),
-                key="store_manual_range",
+            start_date = d2.date_input(
+                "From Date",
+                value=min_dt.date() if pd.notna(min_dt) else date.today(),
+                key="store_manual_from",
             )
-            if isinstance(rng, tuple) and len(rng) == 2:
-                start_date, end_date = rng
-            else:
-                start_date = end_date = rng
+            end_date = d3.date_input(
+                "To Date",
+                value=max_dt.date() if pd.notna(max_dt) else date.today(),
+                key="store_manual_to",
+            )
         else:
             single = d2.date_input("Date", value=date.today(), key="store_single_date")
             start_date = end_date = single
@@ -2928,7 +2940,9 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
 
     sdf = walkin_df[walkin_df["store_id"] == selected_store].copy()
     if date_mode == "Month Range" and start_month and end_month:
-        sdf = sdf[(sdf["date_dt"].dt.strftime("%Y-%m") >= str(start_month)) & (sdf["date_dt"].dt.strftime("%Y-%m") <= str(end_month))]
+        start_bound = pd.Timestamp(datetime(start_month.year, start_month.month, 1))
+        end_bound = pd.Timestamp(datetime(end_month.year, end_month.month, 1) + pd.offsets.MonthEnd(1))
+        sdf = sdf[(sdf["date_dt"] >= start_bound) & (sdf["date_dt"] <= end_bound)]
     elif start_date and end_date:
         sdt = pd.Timestamp(start_date)
         edt = pd.Timestamp(end_date)
