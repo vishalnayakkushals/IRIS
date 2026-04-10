@@ -2513,8 +2513,10 @@ def _duration_minutes(row: pd.Series) -> float | None:
     return round(diff / 60.0, 2)
 
 
-def _load_onfly_walkin_business_df(root_dir: Path, db_path: Path) -> pd.DataFrame:
-    base = root_dir / "exports" / "current" / "onfly"
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd.DataFrame:
+    base = Path(exports_dir_str).expanduser().resolve() / "onfly"
+    db_path = Path(db_path_str).expanduser().resolve()
     if not base.exists():
         return pd.DataFrame()
     frames: list[pd.DataFrame] = []
@@ -2617,9 +2619,9 @@ def _summarize_walkin_metrics(df: pd.DataFrame) -> dict[str, float]:
 
 def _render_overview(output: AnalysisOutput) -> None:
     st.subheader("Overview")
-    root_dir = Path(str(st.session_state.get("ctrl_root_str", "data"))).resolve()
-    db_path = Path(str(st.session_state.get("db_path", root_dir / "store_registry.db"))).resolve()
-    walkin_df = _load_onfly_walkin_business_df(root_dir=root_dir, db_path=db_path)
+    out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
+    db_path = Path(str(st.session_state.get("db_path", out_dir.parent / "store_registry.db"))).resolve()
+    walkin_df = _load_onfly_walkin_business_df(str(out_dir), str(db_path))
     if walkin_df.empty:
         st.warning("No walk-in session data found yet. Run on-fly pipeline for at least one store.")
         return
@@ -2829,8 +2831,9 @@ def _render_model_accuracy_overview(output: AnalysisOutput, db_path: Path, out_d
 
 def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_dir: Path) -> None:
     st.subheader("Store Drill-down")
-    db_path = Path(str(st.session_state.get("db_path", root_dir / "store_registry.db"))).resolve()
-    walkin_df = _load_onfly_walkin_business_df(root_dir=root_dir, db_path=db_path)
+    out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
+    db_path = Path(str(st.session_state.get("db_path", out_dir.parent / "store_registry.db"))).resolve()
+    walkin_df = _load_onfly_walkin_business_df(str(out_dir), str(db_path))
     if walkin_df.empty:
         st.info("No walk-in session data found for drill-down yet.")
         return

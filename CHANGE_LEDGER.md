@@ -82,6 +82,21 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Phase-1 hardening: TEST store visibility + walk-in speedups
+
+- Summary:
+  - Fixed walk-in dashboard data source path to use exports root directly so `TEST_STORE_D07` shows up in Overview and Store Drill-down selectors.
+  - Added short-TTL cached loading for on-fly walk-in business dataset to reduce repeated disk/DB work and improve page load responsiveness.
+  - Hardened customer group correction so non-customer rows get isolated `NON_CUSTOMER_*` groups and customer groups no longer mix with staff/unconfirmed entities in business exports.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None (restart-only; no dependency or Dockerfile changes).
+
 ### 2026-04-10 | Phase-1 walk-in dashboard redesign (overview + drill-down + compare)
 
 - Summary:

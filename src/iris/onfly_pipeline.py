@@ -334,6 +334,13 @@ def _apply_customer_group_correction(df: pd.DataFrame) -> pd.DataFrame:
     split_mask = customer_mask & ((out["group_id"] == "") | (~out["preserve_group"]))
     if split_mask.any():
         out.loc[split_mask, "group_id"] = out.loc[split_mask].apply(_session_group, axis=1)
+    # Keep non-customer entities explicitly isolated from customer groups.
+    non_customer_mask = ~customer_mask
+    if non_customer_mask.any():
+        out.loc[non_customer_mask, "group_id"] = out.loc[non_customer_mask].apply(
+            lambda r: f"NON_CUSTOMER_{str(r.get('id', '') or '').strip() or str(r.get('walkin_id', '') or '').strip() or '0'}",
+            axis=1,
+        )
 
     return out.drop(columns=["role_norm", "preserve_group"])
 
