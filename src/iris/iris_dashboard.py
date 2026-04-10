@@ -3065,14 +3065,23 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     split_cols[1].markdown("**Age Group Split**")
     split_cols[1].dataframe(age, use_container_width=True, hide_index=True)
 
-    trend_grain = "Day"
+    trend_grain_default = "Day"
     if date_mode == "Month Range":
-        trend_grain = "Month"
+        if start_month and end_month:
+            month_span = (end_month.year - start_month.year) * 12 + (end_month.month - start_month.month) + 1
+            trend_grain_default = "Year" if month_span >= 18 else ("Month" if month_span >= 3 else "Day")
+        else:
+            trend_grain_default = "Month"
     elif date_mode == "Manual Date Range":
         if start_date and end_date:
             day_span = abs((pd.Timestamp(end_date) - pd.Timestamp(start_date)).days)
-            trend_grain = "Year" if day_span >= 365 else ("Month" if day_span >= 60 else "Day")
-    st.caption(f"Trend grain auto-selected: **{trend_grain}**")
+            trend_grain_default = "Year" if day_span >= 365 else ("Month" if day_span >= 60 else "Day")
+    trend_grain = st.selectbox(
+        "Trend Granularity",
+        options=["Day", "Month", "Year"],
+        index=["Day", "Month", "Year"].index(trend_grain_default),
+        key="store_trend_granularity",
+    )
 
     trend_df = filtered_customers.dropna(subset=["date_dt"]).copy()
     if trend_df.empty:

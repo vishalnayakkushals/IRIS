@@ -82,6 +82,23 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Store trend granularity fix for multi-day visibility
+
+- Summary:
+  - Fixed Store Drill-down trend collapsing to a single point by restoring explicit `Trend Granularity` selector (`Day/Month/Year`).
+  - Improved default granularity logic for `Month Range`:
+    - same/short month span defaults to `Day`
+    - medium span defaults to `Month`
+    - long span defaults to `Year`
+  - This ensures April 2–6 style data is visible day-wise instead of being auto-collapsed to monthly single-point trend.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Store Drill-down cleanup (removed purchase signal table)
 
 - Summary:
