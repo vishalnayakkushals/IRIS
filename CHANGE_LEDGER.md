@@ -82,6 +82,21 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Dashboard filter apply-state fix (same-output issue)
+
+- Summary:
+  - Fixed Overview and Store Drill-down returning repeated/same outputs by introducing explicit `Apply` behavior that commits filter state before KPI/trend computation.
+  - Added guardrails so stale applied values are auto-corrected when Store/Zone/State options change.
+  - Added “Applied Filters” captions to make active filter context visible and auditable during analysis.
+  - Updated Store Drill-down to show Zone/State for the applied store selection.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Store drill-down compare UX (auto period + gender/age slicers)
 
 - Summary:
