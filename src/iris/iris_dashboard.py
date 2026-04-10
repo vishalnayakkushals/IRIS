@@ -3145,11 +3145,6 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     pan_conv = _summarize_walkin_metrics(pan_df).get("conversion_rate", np.nan)
     bcols[2].metric("Pan-India Avg Conversion", "N/A" if pd.isna(pan_conv) else f"{float(pan_conv):.2%}")
 
-    purchase_split = filtered_customers.groupby("purchase_signal_bag", as_index=False).agg(count=("walkin_key", "nunique"))
-    st.markdown("**Purchase Signal Summary**")
-    st.dataframe(purchase_split.sort_values("count", ascending=False), use_container_width=True, hide_index=True)
-
-
 def _build_daily_proof_df(image_df: pd.DataFrame, store_result: object, store_id: str) -> pd.DataFrame:
     daily_proof_df = (
         store_result.daily_proof.copy()

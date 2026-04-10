@@ -82,6 +82,18 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-10 | Store Drill-down cleanup (removed purchase signal table)
+
+- Summary:
+  - Removed `Purchase Signal Summary` from Store Drill-down to keep the page focused on requested walk-in KPIs and trend/compare sections only.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None.
+
 ### 2026-04-10 | Dashboard filter apply-state fix (same-output issue)
 
 - Summary:
