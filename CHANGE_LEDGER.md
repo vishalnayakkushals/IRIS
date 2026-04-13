@@ -2180,3 +2180,15 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None. UI-only behavior change; pipeline backend unchanged.
 
+### 2026-04-13 | Commit pending
+- Summary:
+  - Added web-only go-live migration checklist for moving IRIS to a complete browser-operated system (no Docker on business-user machines).
+  - Checklist covers runtime split, managed infra, auth, source connectors, pipeline idempotency/versioning, observability, reporting, security, and release gates.
+- Changed Paths:
+  - `docs/process/web_independent_go_live_checklist.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Documentation only.
+
