@@ -3430,7 +3430,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     cfg_settings = get_app_settings(db_path)
     default_store = str(cfg_settings.get("cfg_onfly_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
     default_source = str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip() or "https://drive.google.com/drive/folders/1Wd8X8t-wF_HhPQPYuuFHjqTq6Ojc3Nnw"
-    default_max = int(pd.to_numeric(cfg_settings.get("cfg_onfly_max_images", 100), errors="coerce") or 100)
+    default_max = int(pd.to_numeric(cfg_settings.get("cfg_onfly_max_images", 0), errors="coerce") or 0)
     default_conf = float(pd.to_numeric(cfg_settings.get("cfg_onfly_conf", 0.18), errors="coerce") or 0.18)
 
     name_map = _store_name_map_cached(str(db_path))
@@ -3450,6 +3450,17 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         key="onfly_run_source_input",
         help="Supports full Drive URL, folder key only, local folder path, or image folder path.",
     )
+    run_max_images = int(
+        st.number_input(
+            "Max Images (0 = full folder)",
+            min_value=0,
+            max_value=50000,
+            value=max(0, int(default_max)),
+            step=10,
+            key="onfly_run_max_images",
+            help="Set to 0 to process complete folder. Set a positive number to cap processing.",
+        )
+    )
     run_overwrite = st.checkbox("Overwrite existing processed data", value=False, key="onfly_run_overwrite")
     normalized_source = _normalize_onfly_source_input(run_source_raw)
     st.caption(f"Normalized Source: `{normalized_source}`")
@@ -3466,14 +3477,17 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             secs_per_img.append((ended - started).total_seconds() / float(listed))
     if secs_per_img:
         avg_spi = float(np.mean(secs_per_img))
-        eta_sec = int(round(avg_spi * max(1, int(default_max))))
-        eta_h = eta_sec // 3600
-        eta_m = (eta_sec % 3600) // 60
-        eta_s = eta_sec % 60
-        st.caption(
-            f"Estimated run time (historical avg): ~{eta_h:02d}:{eta_m:02d}:{eta_s:02d} "
-            f"for up to {int(default_max)} images."
-        )
+        if int(run_max_images) > 0:
+            eta_sec = int(round(avg_spi * int(run_max_images)))
+            eta_h = eta_sec // 3600
+            eta_m = (eta_sec % 3600) // 60
+            eta_s = eta_sec % 60
+            st.caption(
+                f"Estimated run time (historical avg): ~{eta_h:02d}:{eta_m:02d}:{eta_s:02d} "
+                f"for up to {int(run_max_images)} images."
+            )
+        else:
+            st.caption("Estimated run time: full-folder mode enabled (0 = no cap).")
 
     if st.button("Run Pipeline Now", key="onfly_pipeline_run_now_btn", type="primary"):
         if not str(run_store_id or "").strip():
@@ -3525,7 +3539,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
                     out_dir=out_root,
                     detector_type="yolo",
                     conf_threshold=float(default_conf),
-                    max_images=int(default_max),
+                    max_images=int(run_max_images),
                     gpt_enabled=bool(okey),
                     openai_api_key=okey,
                     openai_model=str(os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"),

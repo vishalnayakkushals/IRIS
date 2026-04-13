@@ -2166,3 +2166,17 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars.
 
+### 2026-04-13 | Commit pending
+- Summary:
+  - Updated `Operations > Maual data sync of IRIS` run form to support complete-folder processing from web UI.
+  - Added `Max Images (0 = full folder)` control so users can run uncapped scans without PowerShell commands.
+  - Changed default on-fly max images fallback from `100` to `0` (full-folder mode by default).
+  - Updated ETA text to handle both capped and full-folder modes clearly.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - None. UI-only behavior change; pipeline backend unchanged.
+
