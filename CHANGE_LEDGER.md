@@ -45,6 +45,7 @@ It records what changed, where it changed, and why.
 | `tests/test_iris_analysis.py` | Analysis pipeline and detector tests. |
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
+| `tests/test_onfly_pipeline.py` | On-fly pipeline regression tests for YOLO/GPT gating, state transitions, and export behavior. |
 | `release-notes/2026-04-01-onfly-pipeline.md` | Release-note summary for the on-fly pipeline rollout and deprecation note for bulk upload nav. |
 | `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
@@ -81,6 +82,20 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-23 | Commit pending
+- Summary:
+  - Fixed on-fly GPT gating so newly relevant images from the current YOLO pass no longer skip GPT because of stale stored relevance.
+  - Split GPT work decision from relevance decision: version/state determines whether GPT work is needed, and current-run YOLO determines whether the image is relevant enough to run GPT.
+  - Added a regression test covering the exact stale-row scenario: previously irrelevant stored state, current YOLO detects a person, GPT must run in the same pipeline execution.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `tests/test_onfly_pipeline.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `tests/test_onfly_pipeline.py`
+- Infra/Config Impact:
+  - No new env vars or services.
 
 ### 2026-04-10 | Drive-empty visibility guard in Pipeline Journey
 

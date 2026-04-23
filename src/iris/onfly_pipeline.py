@@ -950,8 +950,17 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             done_gpt = str(row["gpt_status"] or "") == "done"
             existing_relevant = int(row["yolo_relevant"] or 0)
             yolo_needed = cfg.force_reprocess or not (done_yolo and row_yolo_version == yolo_version)
-            gpt_needed = bool(cfg.gpt_enabled and existing_relevant == 1 and (cfg.force_reprocess or yolo_needed or not (done_gpt and row_gpt_version == gpt_version)))
-            if (not yolo_needed) and (not gpt_needed):
+            # Decide GPT work from version/state first. Relevance is finalized only after the
+            # current-run YOLO pass, otherwise stale DB state can suppress GPT incorrectly.
+            gpt_work_needed = bool(
+                cfg.gpt_enabled
+                and (
+                    cfg.force_reprocess
+                    or yolo_needed
+                    or not (done_gpt and row_gpt_version == gpt_version)
+                )
+            )
+            if (not yolo_needed) and (not gpt_work_needed):
                 skipped += 1
                 _append_pipeline_event(
                     conn,
@@ -1081,6 +1090,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="YOLO skipped (version match)",
                     payload={"yolo_version": yolo_version, "stored_yolo_version": row_yolo_version, "relevant": int(relevant)},
                 )
+            gpt_needed = bool(cfg.gpt_enabled and relevant == 1 and gpt_work_needed)
+
             if relevant == 1 and cfg.keep_relevant_dir is not None:
                 cfg.keep_relevant_dir.mkdir(parents=True, exist_ok=True)
                 try:
