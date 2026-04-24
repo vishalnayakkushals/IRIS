@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import threading
 import time
 from typing import Any
 from uuid import uuid4
@@ -35,6 +36,8 @@ _SQLITE_TRANSIENT_ERRORS = (
     "database is locked",
     "database is busy",
 )
+_INIT_DB_LOCK = threading.Lock()
+_INITIALIZED_DB_PATHS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,23 @@ class UserRecord:
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {str(row[1]) for row in rows}
+
+
+def _has_core_schema(db_path: Path) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('stores', 'roles', 'app_settings')"
+            ).fetchall()
+            return {str(row[0]) for row in rows} == {"stores", "roles", "app_settings"}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
 
 
 def _sqlite_connect(db_path: Path, timeout: float = 30.0, retries: int = 6) -> sqlite3.Connection:
@@ -162,406 +182,428 @@ def optimize_store_image_files(store_dir: Path, max_dimension: int = 1280, quali
 
 
 def init_db(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _sqlite_connect(db_path)
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS stores (
-                store_id TEXT PRIMARY KEY,
-                store_name TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                drive_folder_url TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+    db_path = Path(db_path)
+    cache_key = str(db_path.resolve())
+    if cache_key in _INITIALIZED_DB_PATHS and db_path.exists():
+        return
+    if _has_core_schema(db_path):
+        _INITIALIZED_DB_PATHS.add(cache_key)
+        return
+
+    with _INIT_DB_LOCK:
+        if cache_key in _INITIALIZED_DB_PATHS and db_path.exists():
+            return
+        if _has_core_schema(db_path):
+            _INITIALIZED_DB_PATHS.add(cache_key)
+            return
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _sqlite_connect(db_path)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS stores (
+                    store_id TEXT PRIMARY KEY,
+                    store_name TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    drive_folder_url TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS store_master (
+                    store_id TEXT PRIMARY KEY,
+                    short_code TEXT,
+                    gofrugal_name TEXT,
+                    outlet_id TEXT,
+                    city TEXT,
+                    state TEXT,
+                    zone TEXT,
+                    country TEXT,
+                    mobile_no TEXT,
+                    store_email TEXT,
+                    cluster_manager TEXT,
+                    area_manager TEXT,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS store_sync_state (
+                    store_id TEXT PRIMARY KEY,
+                    source_provider TEXT NOT NULL DEFAULT 'none',
+                    source_uri TEXT NOT NULL DEFAULT '',
+                    last_status TEXT NOT NULL DEFAULT 'never',
+                    synced_files INTEGER NOT NULL DEFAULT 0,
+                    last_message TEXT NOT NULL DEFAULT '',
+                    last_sync_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS store_source_file_index (
+                    store_id TEXT NOT NULL,
+                    source_provider TEXT NOT NULL,
+                    source_file_id TEXT NOT NULL,
+                    source_name TEXT NOT NULL DEFAULT '',
+                    relative_path TEXT NOT NULL DEFAULT '',
+                    source_link TEXT NOT NULL DEFAULT '',
+                    local_path TEXT NOT NULL DEFAULT '',
+                    file_ext TEXT NOT NULL DEFAULT '',
+                    local_size_bytes INTEGER NOT NULL DEFAULT 0,
+                    is_present INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    last_download_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(store_id, source_provider, source_file_id)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_file_index_store_provider_present "
+                "ON store_source_file_index(store_id, source_provider, is_present)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS store_master (
-                store_id TEXT PRIMARY KEY,
-                short_code TEXT,
-                gofrugal_name TEXT,
-                outlet_id TEXT,
-                city TEXT,
-                state TEXT,
-                zone TEXT,
-                country TEXT,
-                mobile_no TEXT,
-                store_email TEXT,
-                cluster_manager TEXT,
-                area_manager TEXT,
-                updated_at TEXT NOT NULL
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_id TEXT NOT NULL,
+                    employee_name TEXT NOT NULL,
+                    image_path TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(store_id) REFERENCES stores(store_id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_employees_store_id ON employees(store_id)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS camera_configs (
+                    store_id TEXT NOT NULL,
+                    camera_id TEXT NOT NULL,
+                    camera_role TEXT NOT NULL DEFAULT 'INSIDE',
+                    floor_name TEXT NOT NULL DEFAULT '',
+                    location_name TEXT NOT NULL DEFAULT '',
+                    entry_line_x REAL NOT NULL DEFAULT 0.5,
+                    entry_direction TEXT NOT NULL DEFAULT 'OUTSIDE_TO_INSIDE',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(store_id, camera_id),
+                    FOREIGN KEY(store_id) REFERENCES stores(store_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS location_master (
+                    store_id TEXT NOT NULL,
+                    floor_name TEXT NOT NULL DEFAULT 'Ground',
+                    location_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(store_id, floor_name, location_name),
+                    FOREIGN KEY(store_id) REFERENCES stores(store_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    store_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS roles (
+                    role_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role_name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS role_permissions (
+                    role_id INTEGER NOT NULL,
+                    permission_code TEXT NOT NULL,
+                    can_read INTEGER NOT NULL DEFAULT 0,
+                    can_write INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(role_id, permission_code),
+                    FOREIGN KEY(role_id) REFERENCES roles(role_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    user_id INTEGER NOT NULL,
+                    role_id INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, role_id),
+                    FOREIGN KEY(user_id) REFERENCES users(user_id),
+                    FOREIGN KEY(role_id) REFERENCES roles(role_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_store_access (
+                    user_id INTEGER NOT NULL,
+                    store_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, store_id),
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS licenses (
+                    license_id TEXT PRIMARY KEY,
+                    store_id TEXT NOT NULL,
+                    license_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(store_id) REFERENCES stores(store_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS license_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    license_id TEXT NOT NULL,
+                    old_status TEXT NOT NULL,
+                    new_status TEXT NOT NULL,
+                    actor_email TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(license_id) REFERENCES licenses(license_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_routes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(store_id, channel, target)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_id TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    routed_to TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_activity (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_email TEXT NOT NULL,
+                    action_code TEXT NOT NULL,
+                    store_id TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_versions (
+                    model_id TEXT PRIMARY KEY,
+                    model_name TEXT NOT NULL,
+                    version_tag TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    artifact_path TEXT NOT NULL DEFAULT '',
+                    rollback_target_model_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(model_name, version_tag)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    token TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS qa_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_id TEXT NOT NULL,
+                    capture_date TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    camera_id TEXT NOT NULL DEFAULT '',
+                    track_id TEXT NOT NULL DEFAULT '',
+                    predicted_label TEXT NOT NULL DEFAULT '',
+                    corrected_label TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.8,
+                    model_version TEXT NOT NULL DEFAULT '',
+                    drive_link TEXT NOT NULL DEFAULT '',
+                    needs_review INTEGER NOT NULL DEFAULT 0,
+                    review_status TEXT NOT NULL DEFAULT 'pending',
+                    comment TEXT NOT NULL DEFAULT '',
+                    actor_email TEXT NOT NULL,
+                    reviewer_email TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS qa_false_positive_signatures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_id TEXT NOT NULL,
+                    camera_id TEXT NOT NULL DEFAULT '',
+                    box_json TEXT NOT NULL DEFAULT '[]',
+                    hash64 TEXT NOT NULL DEFAULT '',
+                    hash_size INTEGER NOT NULL DEFAULT 64,
+                    hamming_threshold INTEGER NOT NULL DEFAULT 10,
+                    source_feedback_id INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fp_sig_store_camera_active "
+                "ON qa_false_positive_signatures(store_id, camera_id, is_active)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS store_sync_state (
-                store_id TEXT PRIMARY KEY,
-                source_provider TEXT NOT NULL DEFAULT 'none',
-                source_uri TEXT NOT NULL DEFAULT '',
-                last_status TEXT NOT NULL DEFAULT 'never',
-                synced_files INTEGER NOT NULL DEFAULT 0,
-                last_message TEXT NOT NULL DEFAULT '',
-                last_sync_at TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL
+            if "is_active" not in _table_columns(conn, "employees"):
+                conn.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            if "updated_at" not in _table_columns(conn, "employees"):
+                conn.execute("ALTER TABLE employees ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+            missing_employee_updates = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM employees WHERE updated_at = ''"
+                ).fetchone()[0]
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS store_source_file_index (
-                store_id TEXT NOT NULL,
-                source_provider TEXT NOT NULL,
-                source_file_id TEXT NOT NULL,
-                source_name TEXT NOT NULL DEFAULT '',
-                relative_path TEXT NOT NULL DEFAULT '',
-                source_link TEXT NOT NULL DEFAULT '',
-                local_path TEXT NOT NULL DEFAULT '',
-                file_ext TEXT NOT NULL DEFAULT '',
-                local_size_bytes INTEGER NOT NULL DEFAULT 0,
-                is_present INTEGER NOT NULL DEFAULT 0,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                last_download_at TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY(store_id, source_provider, source_file_id)
+            if missing_employee_updates:
+                conn.execute("UPDATE employees SET updated_at = created_at WHERE updated_at = ''")
+            if "floor_name" not in _table_columns(conn, "camera_configs"):
+                conn.execute("ALTER TABLE camera_configs ADD COLUMN floor_name TEXT NOT NULL DEFAULT ''")
+            if "location_name" not in _table_columns(conn, "camera_configs"):
+                conn.execute("ALTER TABLE camera_configs ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
+            qa_feedback_cols = _table_columns(conn, "qa_feedback")
+            if "model_version" not in qa_feedback_cols:
+                conn.execute("ALTER TABLE qa_feedback ADD COLUMN model_version TEXT NOT NULL DEFAULT ''")
+            if "drive_link" not in qa_feedback_cols:
+                conn.execute("ALTER TABLE qa_feedback ADD COLUMN drive_link TEXT NOT NULL DEFAULT ''")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pipeline_run_log (
+                    run_id       TEXT PRIMARY KEY,
+                    job_key      TEXT NOT NULL,
+                    job_name     TEXT NOT NULL,
+                    store_id     TEXT NOT NULL DEFAULT 'TEST_STORE_D07',
+                    status       TEXT NOT NULL DEFAULT 'queued',
+                    remarks      TEXT NOT NULL DEFAULT '',
+                    triggered_by TEXT NOT NULL DEFAULT 'scheduler',
+                    started_at   TEXT NOT NULL DEFAULT '',
+                    completed_at TEXT NOT NULL DEFAULT '',
+                    result_json  TEXT NOT NULL DEFAULT '{}',
+                    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_job "
+                "ON pipeline_run_log(job_key, created_at DESC)"
             )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_source_file_index_store_provider_present "
-            "ON store_source_file_index(store_id, source_provider, is_present)"
-        )
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS employees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                employee_name TEXT NOT NULL,
-                image_path TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(store_id) REFERENCES stores(store_id)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS onfly_pipeline_runs (
+                    run_id TEXT PRIMARY KEY,
+                    store_id TEXT NOT NULL,
+                    business_date TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL,
+                    source_uri TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    current_stage TEXT NOT NULL DEFAULT '',
+                    images_discovered INTEGER NOT NULL DEFAULT 0,
+                    images_skipped INTEGER NOT NULL DEFAULT 0,
+                    images_processed INTEGER NOT NULL DEFAULT 0,
+                    images_relevant INTEGER NOT NULL DEFAULT 0,
+                    images_irrelevant INTEGER NOT NULL DEFAULT 0,
+                    gpt_success_count INTEGER NOT NULL DEFAULT 0,
+                    gpt_failed_count INTEGER NOT NULL DEFAULT 0,
+                    report_image_results_csv TEXT NOT NULL DEFAULT '',
+                    report_walkin_sessions_csv TEXT NOT NULL DEFAULT '',
+                    report_store_date_csv TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    error_trace TEXT NOT NULL DEFAULT '',
+                    retry_status TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL DEFAULT '',
+                    last_heartbeat_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_employees_store_id ON employees(store_id)")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS camera_configs (
-                store_id TEXT NOT NULL,
-                camera_id TEXT NOT NULL,
-                camera_role TEXT NOT NULL DEFAULT 'INSIDE',
-                floor_name TEXT NOT NULL DEFAULT '',
-                location_name TEXT NOT NULL DEFAULT '',
-                entry_line_x REAL NOT NULL DEFAULT 0.5,
-                entry_direction TEXT NOT NULL DEFAULT 'OUTSIDE_TO_INSIDE',
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(store_id, camera_id),
-                FOREIGN KEY(store_id) REFERENCES stores(store_id)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_store_started "
+                "ON onfly_pipeline_runs(store_id, started_at DESC)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS location_master (
-                store_id TEXT NOT NULL,
-                floor_name TEXT NOT NULL DEFAULT 'Ground',
-                location_name TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(store_id, floor_name, location_name),
-                FOREIGN KEY(store_id) REFERENCES stores(store_id)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_status_updated "
+                "ON onfly_pipeline_runs(status, updated_at DESC)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL UNIQUE,
-                full_name TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                store_id TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS onfly_pipeline_run_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    image_id TEXT NOT NULL DEFAULT '',
+                    image_name TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    error_trace TEXT NOT NULL DEFAULT '',
+                    attempt_no INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+                """
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS roles (
-                role_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role_name TEXT NOT NULL UNIQUE,
-                description TEXT NOT NULL DEFAULT ''
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_created "
+                "ON onfly_pipeline_run_events(run_id, created_at ASC)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS role_permissions (
-                role_id INTEGER NOT NULL,
-                permission_code TEXT NOT NULL,
-                can_read INTEGER NOT NULL DEFAULT 0,
-                can_write INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(role_id, permission_code),
-                FOREIGN KEY(role_id) REFERENCES roles(role_id)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_stage_created "
+                "ON onfly_pipeline_run_events(run_id, stage, created_at ASC)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_roles (
-                user_id INTEGER NOT NULL,
-                role_id INTEGER NOT NULL,
-                PRIMARY KEY(user_id, role_id),
-                FOREIGN KEY(user_id) REFERENCES users(user_id),
-                FOREIGN KEY(role_id) REFERENCES roles(role_id)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS onfly_report_index (
+                    store_id TEXT NOT NULL,
+                    business_date TEXT NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT '',
+                    image_results_csv TEXT NOT NULL DEFAULT '',
+                    walkin_sessions_csv TEXT NOT NULL DEFAULT '',
+                    store_date_csv TEXT NOT NULL DEFAULT '',
+                    summary_json TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(store_id, business_date)
+                )
+                """
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_store_access (
-                user_id INTEGER NOT NULL,
-                store_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY(user_id, store_id),
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS licenses (
-                license_id TEXT PRIMARY KEY,
-                store_id TEXT NOT NULL,
-                license_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                created_by TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(store_id) REFERENCES stores(store_id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS license_audit (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                license_id TEXT NOT NULL,
-                old_status TEXT NOT NULL,
-                new_status TEXT NOT NULL,
-                actor_email TEXT NOT NULL,
-                note TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(license_id) REFERENCES licenses(license_id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alert_routes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                target TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                UNIQUE(store_id, channel, target)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alert_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                alert_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                routed_to TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_activity (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                actor_email TEXT NOT NULL,
-                action_code TEXT NOT NULL,
-                store_id TEXT NOT NULL DEFAULT '',
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_versions (
-                model_id TEXT PRIMARY KEY,
-                model_name TEXT NOT NULL,
-                version_tag TEXT NOT NULL,
-                metrics_json TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL,
-                artifact_path TEXT NOT NULL DEFAULT '',
-                rollback_target_model_id TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(model_name, version_tag)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                token TEXT PRIMARY KEY,
-                email TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS app_settings (
-                setting_key TEXT PRIMARY KEY,
-                setting_value TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS qa_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                capture_date TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                camera_id TEXT NOT NULL DEFAULT '',
-                track_id TEXT NOT NULL DEFAULT '',
-                predicted_label TEXT NOT NULL DEFAULT '',
-                corrected_label TEXT NOT NULL DEFAULT '',
-                confidence REAL NOT NULL DEFAULT 0.8,
-                model_version TEXT NOT NULL DEFAULT '',
-                drive_link TEXT NOT NULL DEFAULT '',
-                needs_review INTEGER NOT NULL DEFAULT 0,
-                review_status TEXT NOT NULL DEFAULT 'pending',
-                comment TEXT NOT NULL DEFAULT '',
-                actor_email TEXT NOT NULL,
-                reviewer_email TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                reviewed_at TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS qa_false_positive_signatures (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                camera_id TEXT NOT NULL DEFAULT '',
-                box_json TEXT NOT NULL DEFAULT '[]',
-                hash64 TEXT NOT NULL DEFAULT '',
-                hash_size INTEGER NOT NULL DEFAULT 64,
-                hamming_threshold INTEGER NOT NULL DEFAULT 10,
-                source_feedback_id INTEGER NOT NULL DEFAULT 0,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_fp_sig_store_camera_active "
-            "ON qa_false_positive_signatures(store_id, camera_id, is_active)"
-        )
-        if "is_active" not in _table_columns(conn, "employees"):
-            conn.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
-        if "updated_at" not in _table_columns(conn, "employees"):
-            conn.execute("ALTER TABLE employees ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
-        conn.execute("UPDATE employees SET updated_at = created_at WHERE updated_at = ''")
-        if "floor_name" not in _table_columns(conn, "camera_configs"):
-            conn.execute("ALTER TABLE camera_configs ADD COLUMN floor_name TEXT NOT NULL DEFAULT ''")
-        if "location_name" not in _table_columns(conn, "camera_configs"):
-            conn.execute("ALTER TABLE camera_configs ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
-        qa_feedback_cols = _table_columns(conn, "qa_feedback")
-        if "model_version" not in qa_feedback_cols:
-            conn.execute("ALTER TABLE qa_feedback ADD COLUMN model_version TEXT NOT NULL DEFAULT ''")
-        if "drive_link" not in qa_feedback_cols:
-            conn.execute("ALTER TABLE qa_feedback ADD COLUMN drive_link TEXT NOT NULL DEFAULT ''")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_run_log (
-                run_id       TEXT PRIMARY KEY,
-                job_key      TEXT NOT NULL,
-                job_name     TEXT NOT NULL,
-                store_id     TEXT NOT NULL DEFAULT 'TEST_STORE_D07',
-                status       TEXT NOT NULL DEFAULT 'queued',
-                remarks      TEXT NOT NULL DEFAULT '',
-                triggered_by TEXT NOT NULL DEFAULT 'scheduler',
-                started_at   TEXT NOT NULL DEFAULT '',
-                completed_at TEXT NOT NULL DEFAULT '',
-                result_json  TEXT NOT NULL DEFAULT '{}',
-                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_job "
-            "ON pipeline_run_log(job_key, created_at DESC)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_pipeline_runs (
-                run_id TEXT PRIMARY KEY,
-                store_id TEXT NOT NULL,
-                business_date TEXT NOT NULL DEFAULT '',
-                source_type TEXT NOT NULL,
-                source_uri TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'queued',
-                current_stage TEXT NOT NULL DEFAULT '',
-                images_discovered INTEGER NOT NULL DEFAULT 0,
-                images_skipped INTEGER NOT NULL DEFAULT 0,
-                images_processed INTEGER NOT NULL DEFAULT 0,
-                images_relevant INTEGER NOT NULL DEFAULT 0,
-                images_irrelevant INTEGER NOT NULL DEFAULT 0,
-                gpt_success_count INTEGER NOT NULL DEFAULT 0,
-                gpt_failed_count INTEGER NOT NULL DEFAULT 0,
-                report_image_results_csv TEXT NOT NULL DEFAULT '',
-                report_walkin_sessions_csv TEXT NOT NULL DEFAULT '',
-                report_store_date_csv TEXT NOT NULL DEFAULT '',
-                error_message TEXT NOT NULL DEFAULT '',
-                error_trace TEXT NOT NULL DEFAULT '',
-                retry_status TEXT NOT NULL DEFAULT '',
-                started_at TEXT NOT NULL,
-                ended_at TEXT NOT NULL DEFAULT '',
-                last_heartbeat_at TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_store_started "
-            "ON onfly_pipeline_runs(store_id, started_at DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_status_updated "
-            "ON onfly_pipeline_runs(status, updated_at DESC)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_pipeline_run_events (
-                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                image_id TEXT NOT NULL DEFAULT '',
-                image_name TEXT NOT NULL DEFAULT '',
-                message TEXT NOT NULL DEFAULT '',
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                error_message TEXT NOT NULL DEFAULT '',
-                error_trace TEXT NOT NULL DEFAULT '',
-                attempt_no INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_created "
-            "ON onfly_pipeline_run_events(run_id, created_at ASC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_stage_created "
-            "ON onfly_pipeline_run_events(run_id, stage, created_at ASC)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_report_index (
-                store_id TEXT NOT NULL,
-                business_date TEXT NOT NULL,
-                run_id TEXT NOT NULL DEFAULT '',
-                image_results_csv TEXT NOT NULL DEFAULT '',
-                walkin_sessions_csv TEXT NOT NULL DEFAULT '',
-                store_date_csv TEXT NOT NULL DEFAULT '',
-                summary_json TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(store_id, business_date)
-            )
-            """
-        )
-        _seed_defaults(conn)
-        for commit_attempt in range(1, 8):
-            try:
-                conn.commit()
-                break
-            except sqlite3.OperationalError as exc:
-                text = str(exc).lower()
-                transient = any(token in text for token in _SQLITE_TRANSIENT_ERRORS)
-                if transient and commit_attempt < 7:
-                    time.sleep(0.2 * commit_attempt)
-                    continue
-                raise
-    finally:
-        conn.close()
+            _seed_defaults(conn)
+            for commit_attempt in range(1, 8):
+                try:
+                    conn.commit()
+                    _INITIALIZED_DB_PATHS.add(cache_key)
+                    break
+                except sqlite3.OperationalError as exc:
+                    text = str(exc).lower()
+                    transient = any(token in text for token in _SQLITE_TRANSIENT_ERRORS)
+                    if transient and commit_attempt < 7:
+                        time.sleep(0.2 * commit_attempt)
+                        continue
+                    raise
+        finally:
+            conn.close()
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -1191,25 +1233,34 @@ def get_app_settings(db_path: Path) -> dict[str, str]:
 def upsert_app_settings(db_path: Path, settings: dict[str, str]) -> None:
     init_db(db_path)
     now = _now_utc()
-    conn = _sqlite_connect(db_path)
-    try:
-        for key, value in settings.items():
-            normalized_key = str(key).strip()
-            if not normalized_key:
+    for attempt in range(1, 7):
+        conn = _sqlite_connect(db_path)
+        try:
+            for key, value in settings.items():
+                normalized_key = str(key).strip()
+                if not normalized_key:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO app_settings(setting_key, setting_value, updated_at)
+                    VALUES(?,?,?)
+                    ON CONFLICT(setting_key) DO UPDATE SET
+                        setting_value=excluded.setting_value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (normalized_key, str(value).strip(), now),
+                )
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            text = str(exc).lower()
+            transient = any(token in text for token in _SQLITE_TRANSIENT_ERRORS)
+            if transient and attempt < 6:
+                time.sleep(0.2 * attempt)
                 continue
-            conn.execute(
-                """
-                INSERT INTO app_settings(setting_key, setting_value, updated_at)
-                VALUES(?,?,?)
-                ON CONFLICT(setting_key) DO UPDATE SET
-                    setting_value=excluded.setting_value,
-                    updated_at=excluded.updated_at
-                """,
-                (normalized_key, str(value).strip(), now),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+            raise
+        finally:
+            conn.close()
 
 
 def list_onfly_pipeline_runs(

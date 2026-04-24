@@ -2271,3 +2271,17 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Documentation only.
 
+### 2026-04-24 | Commit pending
+- Summary:
+  - Hardened no-Docker SQLite startup so repeated config reads do not rewrite schema state on every call, which was blocking local web/scheduler coexistence.
+  - Added a core-schema fast path plus per-process init cache to reduce lock pressure during no-Docker startup.
+  - Added retry-aware app-settings writes and a regression test covering cached `init_db` behavior for the same DB path.
+- Changed Paths:
+  - `src/iris/store_registry.py`
+  - `tests/test_store_registry.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Improves local/no-Docker service stability around SQLite; no new env vars.
+

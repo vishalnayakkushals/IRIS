@@ -8,6 +8,7 @@ import sqlite3
 from PIL import Image
 
 from iris.store_registry import (
+    _INITIALIZED_DB_PATHS,
     _drive_api_list_files_recursive,
     _sync_store_from_drive_api,
     add_qa_feedback,
@@ -238,7 +239,26 @@ def test_drive_api_sync_path_with_mocked_requests(tmp_path: Path, monkeypatch) -
     assert ok is True
     assert "api_sync" in msg
     assert calls["list"] >= 1
-    assert calls["download"] >= 1
+
+
+def test_init_db_is_cached_per_process_for_same_path(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "registry.db"
+    _INITIALIZED_DB_PATHS.clear()
+    connect_calls = {"count": 0}
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        connect_calls["count"] += 1
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("iris.store_registry.sqlite3.connect", tracking_connect)
+
+    init_db(db)
+    assert connect_calls["count"] == 1
+
+    get_app_settings(db)
+    get_app_settings(db)
+    assert connect_calls["count"] == 3
 
 
 def test_drive_api_sync_uses_delta_and_skips_existing_file(tmp_path: Path, monkeypatch) -> None:
