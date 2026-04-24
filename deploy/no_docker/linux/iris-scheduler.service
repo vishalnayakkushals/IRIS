@@ -1,0 +1,16 @@
+[Unit]
+Description=IRIS Core Scheduler Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/iris/app
+Environment=IRIS_ENV_FILE=/opt/iris/shared/iris.env
+ExecStart=/opt/iris/app/.venv/bin/python /opt/iris/app/scripts/start_scheduler_worker_service.py
+Restart=always
+RestartSec=5
+User=iris
+Group=iris
+
+[Install]
+WantedBy=multi-user.target

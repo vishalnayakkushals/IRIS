@@ -50,13 +50,25 @@ It records what changed, where it changed, and why.
 | `release-notes/2026-04-01-onfly-pipeline.md` | Release-note summary for the on-fly pipeline rollout and deprecation note for bulk upload nav. |
 | `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
+| `scripts/start_web_app.py` | No-Docker Streamlit launcher that loads managed env/config and exposes IRIS as a browser-accessible web app. |
+| `scripts/start_scheduler_worker_service.py` | No-Docker launcher for the core background scheduler worker using managed runtime paths. |
+| `scripts/start_onfly_scheduler_service.py` | No-Docker launcher for the DB-backed on-fly scheduler worker using managed runtime paths. |
 | `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
 | `scripts/scan_b2b_template.py` | External B2B template + SOP scanner that generates IRIS-ready incorporation reports (JSON + Markdown). |
 | `scripts/setup_local_env.ps1` | Local-only secure env bootstrapper: reads API keys from key files and writes `.env.local` for Docker/run commands. |
 | `scripts/optimize_docker_runtime.ps1` | Lightweight runtime switcher: stops optional high-memory services and keeps only core on-fly services running. |
 | `src/iris/onfly_pipeline.py` | Lightweight URL-first runtime: source listing, YOLO relevance, optional GPT pass, idempotent state, and store/date exports. |
+| `src/iris/runtime_bootstrap.py` | Shared no-Docker runtime bootstrap: env-file loading and persistent path resolution for web/scheduler startup. |
 | `docs/process/onfly_pipeline_logic.md` | Canonical human-readable on-fly logic reference (stage flow, timestamp rules, session behavior, and output artifacts). |
 | `docs/process/onfly_independent_app_checklist.md` | Readiness checklist for moving on-fly workflow to an independent app mode (no manual shell dependency). |
+| `deploy/no_docker/README.md` | No-Docker deployment guide covering web app, schedulers, persistent layout, and VM service topology. |
+| `deploy/no_docker/.env.example` | No-Docker environment template for persistent paths, browser port, and server-side secrets. |
+| `deploy/no_docker/linux/iris-web.service` | Linux `systemd` template for the IRIS web app service. |
+| `deploy/no_docker/linux/iris-scheduler.service` | Linux `systemd` template for the IRIS core scheduler worker. |
+| `deploy/no_docker/linux/iris-onfly-scheduler.service` | Linux `systemd` template for the IRIS on-fly scheduler worker. |
+| `deploy/no_docker/windows/install_nssm_services.ps1` | Windows NSSM installer for IRIS no-Docker services. |
+| `deploy/no_docker/windows/README.md` | Windows no-Docker service setup notes for IRIS. |
+| `tests/test_runtime_bootstrap.py` | Regression tests for no-Docker env-file loading and persistent runtime path resolution. |
 | `CTO/scripts/perf_common.py` | Shared isolated CTO log utilities (single JSONL sink, path setup, run id, percentile). |
 | `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
 | `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
@@ -83,6 +95,42 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-24 | Commit pending
+- Summary:
+  - Added a no-Docker deployment pack so IRIS can run as a browser-accessible Python web app plus separate scheduler workers without depending on Docker.
+  - Introduced managed runtime bootstrap helpers for env-file loading and persistent path resolution, and wired the dashboard to honor no-Docker runtime path overrides.
+  - Added Linux `systemd` and Windows NSSM deployment templates, plus regression tests for runtime bootstrap behavior.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `src/iris/runtime_bootstrap.py`
+  - `scripts/start_web_app.py`
+  - `scripts/start_scheduler_worker_service.py`
+  - `scripts/start_onfly_scheduler_service.py`
+  - `deploy/no_docker/.env.example`
+  - `deploy/no_docker/README.md`
+  - `deploy/no_docker/linux/iris-web.service`
+  - `deploy/no_docker/linux/iris-scheduler.service`
+  - `deploy/no_docker/linux/iris-onfly-scheduler.service`
+  - `deploy/no_docker/windows/install_nssm_services.ps1`
+  - `deploy/no_docker/windows/README.md`
+  - `tests/test_runtime_bootstrap.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `src/iris/runtime_bootstrap.py`
+  - `scripts/start_web_app.py`
+  - `scripts/start_scheduler_worker_service.py`
+  - `scripts/start_onfly_scheduler_service.py`
+  - `deploy/no_docker/.env.example`
+  - `deploy/no_docker/README.md`
+  - `deploy/no_docker/linux/iris-web.service`
+  - `deploy/no_docker/linux/iris-scheduler.service`
+  - `deploy/no_docker/linux/iris-onfly-scheduler.service`
+  - `deploy/no_docker/windows/install_nssm_services.ps1`
+  - `deploy/no_docker/windows/README.md`
+  - `tests/test_runtime_bootstrap.py`
+- Infra/Config Impact:
+  - Added no-Docker runtime env/path contract through `IRIS_ENV_FILE`, `IRIS_DATA_DIR`, `IRIS_DB_PATH`, `IRIS_STORES_ROOT`, `IRIS_EXPORT_DIR`, `IRIS_EMPLOYEE_ASSETS_DIR`, `IRIS_STREAMLIT_HOST`, and `IRIS_STREAMLIT_PORT`.
 
 ### 2026-04-24 | Commit pending
 - Summary:

@@ -29,6 +29,7 @@ from iris.iris_analysis import (
     parse_filename,
 )
 from iris.onfly_pipeline import OnFlyConfig, run_onfly_pipeline
+from iris.runtime_bootstrap import load_env_file, resolve_runtime_paths
 from iris.store_registry import (
     add_qa_feedback,
     add_false_positive_signature,
@@ -7295,6 +7296,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     return bool(rerun_clicked)
 
 def main() -> None:
+    load_env_file()
     st.set_page_config(
         page_title="IRIS Store Analysis Dashboard",
         layout="wide",
@@ -7302,13 +7304,14 @@ def main() -> None:
     )
     _ensure_session_state()
 
-    app_dir = Path(__file__).resolve().parents[2]
-    data_dir = app_dir / "data"
-    default_stores_root = data_dir / "stores"
-    default_exports_dir = data_dir / "exports" / "current"
-    db_path = app_dir / "data" / "store_registry.db"
+    runtime_paths = resolve_runtime_paths()
+    app_dir = runtime_paths["app_dir"]
+    data_dir = runtime_paths["data_dir"]
+    default_stores_root = runtime_paths["stores_root"]
+    default_exports_dir = runtime_paths["exports_dir"]
+    db_path = runtime_paths["db_path"]
     data_root = default_stores_root
-    employee_assets_root = data_dir / "employee_assets"
+    employee_assets_root = runtime_paths["employee_assets_dir"]
     data_root.mkdir(parents=True, exist_ok=True)
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
