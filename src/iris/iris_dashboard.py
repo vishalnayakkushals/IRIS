@@ -202,6 +202,26 @@ CONFIG_DEFAULTS: dict[str, str] = {
     "cfg_scheduler_next_run_at": "",
     "cfg_scheduler_last_run_at": "",
     "cfg_scheduler_last_summary_json": "",
+    "cfg_onfly_scheduler_enabled": "1",
+    "cfg_onfly_scheduler_store_id": "TEST_STORE_D07",
+    "cfg_onfly_scheduler_source_url": "",
+    "cfg_onfly_scheduler_hourly_minutes": "60",
+    "cfg_onfly_scheduler_nightly_run_at": "03:00",
+    "cfg_onfly_scheduler_tz": "Asia/Kolkata",
+    "cfg_onfly_scheduler_max_images": "0",
+    "cfg_onfly_scheduler_conf": "0.18",
+    "cfg_onfly_scheduler_detector": "yolo",
+    "cfg_onfly_scheduler_enable_gpt": "1",
+    "cfg_onfly_scheduler_allow_fallback": "0",
+    "cfg_onfly_scheduler_pipeline_version": "onfly_v1",
+    "cfg_onfly_scheduler_yolo_version": "",
+    "cfg_onfly_scheduler_gpt_version": "",
+    "cfg_onfly_scheduler_out_dir": "",
+    "cfg_onfly_next_run_at": "",
+    "cfg_onfly_next_nightly_at": "",
+    "cfg_onfly_last_run_at": "",
+    "cfg_onfly_last_summary_json": "",
+    "cfg_onfly_scheduler_history_json": "[]",
 }
 
 
@@ -3414,7 +3434,6 @@ def _build_gpt_frame_index(gpt_validation_df: pd.DataFrame) -> dict[tuple[str, s
 def _render_onfly_pipeline_journey(db_path: Path) -> None:
     st.subheader("Manual data sync of IRIS")
     st.caption("Live on-fly run visibility: stage status, counts, failures, and scheduler heartbeat.")
-    st.markdown("**Run On-Fly Now**")
 
     def _normalize_onfly_source_input(value: str) -> str:
         raw = str(value or "").strip()
@@ -3428,15 +3447,221 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         return raw
 
     cfg_settings = get_app_settings(db_path)
-    default_store = str(cfg_settings.get("cfg_onfly_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
-    default_source = str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip() or "https://drive.google.com/drive/folders/1Wd8X8t-wF_HhPQPYuuFHjqTq6Ojc3Nnw"
-    default_max = int(pd.to_numeric(cfg_settings.get("cfg_onfly_max_images", 0), errors="coerce") or 0)
-    default_conf = float(pd.to_numeric(cfg_settings.get("cfg_onfly_conf", 0.18), errors="coerce") or 0.18)
-
     name_map = _store_name_map_cached(str(db_path))
     known_stores = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
+    scheduler_default_store = str(cfg_settings.get("cfg_onfly_scheduler_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
+    scheduler_default_source = (
+        str(cfg_settings.get("cfg_onfly_scheduler_source_url", "") or "").strip()
+        or str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip()
+        or "https://drive.google.com/drive/folders/1Wd8X8t-wF_HhPQPYuuFHjqTq6Ojc3Nnw"
+    )
+    default_store = (
+        str(cfg_settings.get("cfg_onfly_store_id", "") or "").strip()
+        or scheduler_default_store
+        or "TEST_STORE_D07"
+    )
+    default_source = (
+        str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip()
+        or scheduler_default_source
+    )
+    default_max = int(
+        pd.to_numeric(
+            cfg_settings.get("cfg_onfly_max_images", cfg_settings.get("cfg_onfly_scheduler_max_images", 0)),
+            errors="coerce",
+        )
+        or 0
+    )
+    default_conf = float(
+        pd.to_numeric(
+            cfg_settings.get("cfg_onfly_conf", cfg_settings.get("cfg_onfly_scheduler_conf", 0.18)),
+            errors="coerce",
+        )
+        or 0.18
+    )
     store_options = known_stores if known_stores else [default_store]
     default_idx = store_options.index(default_store) if default_store in store_options else 0
+    scheduler_default_idx = store_options.index(scheduler_default_store) if scheduler_default_store in store_options else 0
+
+    def _scheduler_label(next_run_text: str, nightly_text: str, last_run_text: str, enabled: bool, hourly_minutes: int, nightly_at: str, tz_name: str) -> None:
+        status_cols = st.columns(4)
+        active_label = "Enabled" if enabled else "Disabled"
+        status_cols[0].metric("Active Schedule", active_label, f"Hourly {int(hourly_minutes)} min | Nightly {nightly_at} {tz_name}")
+        status_cols[1].metric("Next Run", next_run_text or "Not scheduled")
+        status_cols[2].metric("Next Nightly", nightly_text or "Not scheduled")
+        status_cols[3].metric("Last Run", last_run_text or "Never")
+
+    st.markdown("**On-Fly Scheduler Settings**")
+    with st.form("onfly_scheduler_settings_form", clear_on_submit=False):
+        scheduler_form_cols = st.columns([1, 1])
+        scheduler_enabled = scheduler_form_cols[0].toggle(
+            "Enable On-Fly Scheduler",
+            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True),
+            help="If ON, `iris-onfly-scheduler` will pick the job configuration from DB and run hourly/nightly automatically.",
+        )
+        scheduler_store_id = scheduler_form_cols[0].selectbox(
+            "Scheduled Store",
+            options=store_options,
+            index=scheduler_default_idx,
+            format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+            key="cfg_onfly_scheduler_store_select",
+        )
+        scheduler_source_url = scheduler_form_cols[0].text_input(
+            "Scheduled Source Path / Drive URL / Drive Folder ID",
+            value=scheduler_default_source,
+            key="cfg_onfly_scheduler_source_input",
+            help="Browser-managed scheduler source. Supports Drive URL, folder ID, local path, or date-folder path.",
+        )
+        scheduler_out_dir = scheduler_form_cols[0].text_input(
+            "Output Directory",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_out_dir", "") or "").strip(),
+            key="cfg_onfly_scheduler_out_dir_input",
+            help="Optional. Leave blank to use the standard on-fly export folder.",
+        )
+        scheduler_hourly_minutes = int(
+            scheduler_form_cols[1].number_input(
+                "Hourly Interval (minutes)",
+                min_value=5,
+                max_value=1440,
+                step=5,
+                value=int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_hourly_minutes", 60), errors="coerce") or 60),
+                key="cfg_onfly_scheduler_hourly_input",
+            )
+        )
+        scheduler_nightly_at = scheduler_form_cols[1].text_input(
+            "Nightly Run At (HH:MM)",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_nightly_run_at", "03:00") or "03:00").strip(),
+            key="cfg_onfly_scheduler_nightly_input",
+            help="24-hour format. Example: 03:00",
+        )
+        scheduler_tz = scheduler_form_cols[1].text_input(
+            "Scheduler Timezone",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_tz", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+            key="cfg_onfly_scheduler_tz_input",
+        )
+        scheduler_max_images = int(
+            scheduler_form_cols[1].number_input(
+                "Max Images Per Scheduled Run (0 = full folder)",
+                min_value=0,
+                max_value=50000,
+                step=10,
+                value=int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_max_images", 0), errors="coerce") or 0),
+                key="cfg_onfly_scheduler_max_input",
+            )
+        )
+        scheduler_conf = float(
+            scheduler_form_cols[1].number_input(
+                "YOLO Confidence",
+                min_value=0.01,
+                max_value=0.99,
+                step=0.01,
+                value=float(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_conf", 0.18), errors="coerce") or 0.18),
+                key="cfg_onfly_scheduler_conf_input",
+            )
+        )
+        scheduler_detector = scheduler_form_cols[1].selectbox(
+            "Detector",
+            options=["yolo"],
+            index=0,
+            key="cfg_onfly_scheduler_detector_select",
+            help="On-fly scheduler is currently designed for YOLO-first relevance.",
+        )
+        scheduler_enable_gpt = scheduler_form_cols[1].toggle(
+            "Enable GPT After Relevance",
+            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_enable_gpt", True),
+            key="cfg_onfly_scheduler_enable_gpt_toggle",
+        )
+        scheduler_allow_fallback = scheduler_form_cols[1].toggle(
+            "Allow Detector Fallback",
+            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_allow_fallback", False),
+            key="cfg_onfly_scheduler_allow_fallback_toggle",
+            help="If ON, scheduler may fall back when YOLO runtime is unavailable. Recommended OFF for stricter cloud runs.",
+        )
+        version_cols = st.columns(3)
+        scheduler_pipeline_version = version_cols[0].text_input(
+            "Pipeline Version",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_pipeline_version", "onfly_v1") or "onfly_v1").strip(),
+            key="cfg_onfly_scheduler_pipeline_version_input",
+        )
+        scheduler_yolo_version = version_cols[1].text_input(
+            "YOLO Version",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_yolo_version", "") or "").strip(),
+            key="cfg_onfly_scheduler_yolo_version_input",
+            help="Optional. If changed, delta logic can re-run YOLO only.",
+        )
+        scheduler_gpt_version = version_cols[2].text_input(
+            "GPT Version",
+            value=str(cfg_settings.get("cfg_onfly_scheduler_gpt_version", "") or "").strip(),
+            key="cfg_onfly_scheduler_gpt_version_input",
+            help="Optional. If changed, delta logic can re-run GPT without redoing YOLO.",
+        )
+        save_scheduler = st.form_submit_button("Save On-Fly Scheduler Settings", type="primary")
+
+    if save_scheduler:
+        nightly_ok = bool(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(scheduler_nightly_at or "").strip()))
+        if not nightly_ok:
+            st.error("Nightly Run At must be in HH:MM 24-hour format. Example: 03:00")
+        else:
+            scheduler_payload = {
+                "cfg_onfly_scheduler_enabled": "1" if scheduler_enabled else "0",
+                "cfg_onfly_scheduler_store_id": str(scheduler_store_id).strip(),
+                "cfg_onfly_scheduler_source_url": _normalize_onfly_source_input(scheduler_source_url),
+                "cfg_onfly_scheduler_hourly_minutes": str(int(scheduler_hourly_minutes)),
+                "cfg_onfly_scheduler_nightly_run_at": str(scheduler_nightly_at).strip(),
+                "cfg_onfly_scheduler_tz": str(scheduler_tz).strip() or "Asia/Kolkata",
+                "cfg_onfly_scheduler_max_images": str(int(scheduler_max_images)),
+                "cfg_onfly_scheduler_conf": f"{float(scheduler_conf):.2f}",
+                "cfg_onfly_scheduler_detector": str(scheduler_detector).strip() or "yolo",
+                "cfg_onfly_scheduler_enable_gpt": "1" if scheduler_enable_gpt else "0",
+                "cfg_onfly_scheduler_allow_fallback": "1" if scheduler_allow_fallback else "0",
+                "cfg_onfly_scheduler_pipeline_version": str(scheduler_pipeline_version).strip() or "onfly_v1",
+                "cfg_onfly_scheduler_yolo_version": str(scheduler_yolo_version).strip(),
+                "cfg_onfly_scheduler_gpt_version": str(scheduler_gpt_version).strip(),
+                "cfg_onfly_scheduler_out_dir": str(scheduler_out_dir).strip(),
+                # keep manual run page aligned with scheduler defaults for browser-only operation
+                "cfg_onfly_store_id": str(scheduler_store_id).strip(),
+                "cfg_onfly_source_url": _normalize_onfly_source_input(scheduler_source_url),
+                "cfg_onfly_max_images": str(int(scheduler_max_images)),
+                "cfg_onfly_conf": f"{float(scheduler_conf):.2f}",
+            }
+            upsert_app_settings(db_path=db_path, settings=scheduler_payload)
+            st.success("On-fly scheduler settings saved to DB. `iris-onfly-scheduler` will now read these browser-managed values.")
+            cfg_settings = get_app_settings(db_path)
+
+    next_run_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_next_run_at", ""))
+    next_nightly_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_next_nightly_at", ""))
+    last_run_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_last_run_at", ""))
+    _scheduler_label(
+        next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "",
+        next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_nightly_dt else "",
+        last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if last_run_dt else "",
+        _setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True),
+        int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_hourly_minutes", 60), errors="coerce") or 60),
+        str(cfg_settings.get("cfg_onfly_scheduler_nightly_run_at", "03:00") or "03:00").strip(),
+        str(cfg_settings.get("cfg_onfly_scheduler_tz", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+    )
+    st.caption(
+        f"Active Store: `{cfg_settings.get('cfg_onfly_scheduler_store_id', scheduler_default_store)}` | "
+        f"Source: `{_normalize_onfly_source_input(str(cfg_settings.get('cfg_onfly_scheduler_source_url', scheduler_default_source) or scheduler_default_source))}`"
+    )
+    last_summary_raw = str(cfg_settings.get("cfg_onfly_last_summary_json", "") or "").strip()
+    if last_summary_raw:
+        try:
+            last_summary = json.loads(last_summary_raw)
+        except Exception:
+            last_summary = {"status": "unknown", "message": last_summary_raw[:500]}
+        summary_cols = st.columns([1, 3])
+        summary_cols[0].markdown(f"**Last Result**  \n`{str(last_summary.get('status', 'unknown')).upper()}`")
+        summary_cols[1].markdown(
+            f"**Last Scheduler Summary**  \n"
+            f"Mode: `{last_summary.get('mode', 'n/a')}` | "
+            f"Return code: `{last_summary.get('returncode', 'n/a')}`"
+        )
+        stderr_tail = str(last_summary.get("stderr_tail", "") or "").strip()
+        if stderr_tail:
+            st.code(stderr_tail[-800:], language="text")
+
+    st.markdown("---")
+    st.markdown("**Run On-Fly Now**")
     run_store_id = st.selectbox(
         "Store",
         options=store_options,

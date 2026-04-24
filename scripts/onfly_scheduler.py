@@ -17,6 +17,25 @@ if str(SRC_DIR) not in sys.path:
 from iris.store_registry import get_app_settings, upsert_app_settings  # noqa: E402
 
 
+ONFLY_SCHEDULER_DEFAULTS: dict[str, object] = {
+    "enabled": True,
+    "store_id": "TEST_STORE_D07",
+    "source_url": "",
+    "out_dir": "",
+    "tz_name": "Asia/Kolkata",
+    "hourly_minutes": 60,
+    "nightly_at": "03:00",
+    "max_images": 0,
+    "enable_gpt": True,
+    "detector": "yolo",
+    "conf": "0.18",
+    "pipeline_version": "onfly_v1",
+    "yolo_version": "",
+    "gpt_version": "",
+    "allow_fallback": False,
+}
+
+
 def _truthy(value: object, default: bool = False) -> bool:
     if value is None:
         return bool(default)
@@ -43,6 +62,100 @@ def _parse_hhmm(text: str) -> tuple[int, int]:
     return int(hh), int(mm)
 
 
+def _load_onfly_scheduler_config(db_path: Path) -> dict[str, object]:
+    settings = get_app_settings(db_path)
+
+    def _read_str(primary_key: str, fallback_key: str | None = None, default: str = "") -> str:
+        primary = str(settings.get(primary_key, "") or "").strip()
+        if primary:
+            return primary
+        if fallback_key:
+            secondary = str(settings.get(fallback_key, "") or "").strip()
+            if secondary:
+                return secondary
+        return default
+
+    cfg: dict[str, object] = {
+        "enabled": _truthy(settings.get("cfg_onfly_scheduler_enabled", "1"), default=bool(ONFLY_SCHEDULER_DEFAULTS["enabled"])),
+        "store_id": _read_str(
+            "cfg_onfly_scheduler_store_id",
+            "cfg_onfly_store_id",
+            str(ONFLY_SCHEDULER_DEFAULTS["store_id"]),
+        ),
+        "source_url": _read_str(
+            "cfg_onfly_scheduler_source_url",
+            "cfg_onfly_source_url",
+            str(ONFLY_SCHEDULER_DEFAULTS["source_url"]),
+        ),
+        "out_dir": _read_str(
+            "cfg_onfly_scheduler_out_dir",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["out_dir"]),
+        ),
+        "tz_name": _read_str(
+            "cfg_onfly_scheduler_tz",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["tz_name"]),
+        ),
+        "hourly_minutes": max(
+            5,
+            _safe_int(
+                settings.get("cfg_onfly_scheduler_hourly_minutes", ONFLY_SCHEDULER_DEFAULTS["hourly_minutes"]),
+                int(ONFLY_SCHEDULER_DEFAULTS["hourly_minutes"]),
+            ),
+        ),
+        "nightly_at": _read_str(
+            "cfg_onfly_scheduler_nightly_run_at",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["nightly_at"]),
+        ),
+        "max_images": max(
+            0,
+            _safe_int(
+                settings.get("cfg_onfly_scheduler_max_images", ONFLY_SCHEDULER_DEFAULTS["max_images"]),
+                int(ONFLY_SCHEDULER_DEFAULTS["max_images"]),
+            ),
+        ),
+        "enable_gpt": _truthy(
+            settings.get("cfg_onfly_scheduler_enable_gpt", "1"),
+            default=bool(ONFLY_SCHEDULER_DEFAULTS["enable_gpt"]),
+        ),
+        "detector": _read_str(
+            "cfg_onfly_scheduler_detector",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["detector"]),
+        ),
+        "conf": _read_str(
+            "cfg_onfly_scheduler_conf",
+            "cfg_onfly_conf",
+            str(ONFLY_SCHEDULER_DEFAULTS["conf"]),
+        ),
+        "pipeline_version": _read_str(
+            "cfg_onfly_scheduler_pipeline_version",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["pipeline_version"]),
+        ),
+        "yolo_version": _read_str(
+            "cfg_onfly_scheduler_yolo_version",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["yolo_version"]),
+        ),
+        "gpt_version": _read_str(
+            "cfg_onfly_scheduler_gpt_version",
+            None,
+            str(ONFLY_SCHEDULER_DEFAULTS["gpt_version"]),
+        ),
+        "allow_fallback": _truthy(
+            settings.get("cfg_onfly_scheduler_allow_fallback", "0"),
+            default=bool(ONFLY_SCHEDULER_DEFAULTS["allow_fallback"]),
+        ),
+    }
+    out_dir = str(cfg.get("out_dir", "") or "").strip()
+    if not out_dir:
+        cfg["out_dir"] = str((db_path.parent / "exports" / "current" / "onfly").resolve())
+    return cfg
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="On-fly scheduler (hourly + nightly catch-up)")
     parser.add_argument("--db", type=Path, default=Path("data/store_registry.db"))
@@ -59,21 +172,22 @@ def _run_command(command: list[str]) -> tuple[int, str, str]:
 
 
 def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
-    enabled = _truthy(os.getenv("ONFLY_ENABLED", "1"), default=True)
-    store_id = str(os.getenv("ONFLY_STORE_ID", "TEST_STORE_D07")).strip() or "TEST_STORE_D07"
-    source_url = str(os.getenv("ONFLY_SOURCE_URL", "")).strip()
-    out_dir = str(os.getenv("ONFLY_OUT_DIR", "/app/data/exports/current/onfly")).strip()
-    tz_name = str(os.getenv("ONFLY_TZ", "Asia/Kolkata")).strip() or "Asia/Kolkata"
-    hourly_minutes = max(5, _safe_int(os.getenv("ONFLY_HOURLY_MINUTES", "60"), 60))
-    nightly_at = str(os.getenv("ONFLY_NIGHTLY_RUN_AT", "03:00")).strip() or "03:00"
-    max_images = max(1, min(100, _safe_int(os.getenv("ONFLY_MAX_IMAGES", "100"), 100)))
-    enable_gpt = _truthy(os.getenv("GPT_VISION_ENABLED", "0"), default=False)
-    detector = str(os.getenv("ONFLY_DETECTOR", "yolo")).strip() or "yolo"
-    conf = str(os.getenv("ONFLY_CONF", "0.18")).strip() or "0.18"
-    version = str(os.getenv("ONFLY_PIPELINE_VERSION", "onfly_v1")).strip() or "onfly_v1"
-    yolo_version = str(os.getenv("ONFLY_YOLO_VERSION", "")).strip()
-    gpt_version = str(os.getenv("ONFLY_GPT_VERSION", "")).strip()
-    allow_fallback = _truthy(os.getenv("ONFLY_ALLOW_DETECTOR_FALLBACK", "0"), default=False)
+    scheduler_cfg = _load_onfly_scheduler_config(args.db)
+    enabled = bool(scheduler_cfg["enabled"])
+    store_id = str(scheduler_cfg["store_id"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["store_id"])
+    source_url = str(scheduler_cfg["source_url"]).strip()
+    out_dir = str(scheduler_cfg["out_dir"]).strip()
+    tz_name = str(scheduler_cfg["tz_name"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["tz_name"])
+    hourly_minutes = int(scheduler_cfg["hourly_minutes"])
+    nightly_at = str(scheduler_cfg["nightly_at"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["nightly_at"])
+    max_images = int(scheduler_cfg["max_images"])
+    enable_gpt = bool(scheduler_cfg["enable_gpt"])
+    detector = str(scheduler_cfg["detector"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["detector"])
+    conf = str(scheduler_cfg["conf"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["conf"])
+    version = str(scheduler_cfg["pipeline_version"]).strip() or str(ONFLY_SCHEDULER_DEFAULTS["pipeline_version"])
+    yolo_version = str(scheduler_cfg["yolo_version"]).strip()
+    gpt_version = str(scheduler_cfg["gpt_version"]).strip()
+    allow_fallback = bool(scheduler_cfg["allow_fallback"])
 
     settings = get_app_settings(args.db)
     key_hourly = f"cfg_onfly_last_hourly__{store_id}"
@@ -87,7 +201,7 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
 
     if not enabled:
         next_nightly = _next_local_time(now_local, hh, mm).astimezone(timezone.utc).isoformat()
-        upsert_app_settings(args.db, {"cfg_onfly_next_nightly_at": next_nightly})
+        upsert_app_settings(args.db, {"cfg_onfly_next_nightly_at": next_nightly, "cfg_onfly_next_run_at": ""})
         return False, max(5, int(args.poll_seconds))
 
     if not source_url:
@@ -121,12 +235,23 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
     elif run_hourly:
         mode = "hourly"
     else:
-        next_due = min(
-            _next_local_time(now_local, hh, mm),
-            now_local + timedelta(minutes=hourly_minutes),
+        next_nightly_local = _next_local_time(now_local, hh, mm)
+        if last_hourly:
+            try:
+                next_hourly_utc = datetime.fromisoformat(last_hourly) + timedelta(minutes=hourly_minutes)
+            except Exception:
+                next_hourly_utc = datetime.now(tz=timezone.utc) + timedelta(minutes=hourly_minutes)
+        else:
+            next_hourly_utc = datetime.now(tz=timezone.utc)
+        next_due_utc = min(next_hourly_utc, next_nightly_local.astimezone(timezone.utc))
+        wait = max(5, min(int(args.poll_seconds), max(5, int((next_due_utc - datetime.now(tz=timezone.utc)).total_seconds()))))
+        upsert_app_settings(
+            args.db,
+            {
+                "cfg_onfly_next_run_at": next_due_utc.isoformat(),
+                "cfg_onfly_next_nightly_at": next_nightly_local.astimezone(timezone.utc).isoformat(),
+            },
         )
-        wait = max(5, min(int(args.poll_seconds), int((next_due - now_local).total_seconds())))
-        upsert_app_settings(args.db, {"cfg_onfly_next_run_at": next_due.astimezone(timezone.utc).isoformat()})
         return False, wait
 
     command = [

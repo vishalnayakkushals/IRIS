@@ -46,6 +46,7 @@ It records what changed, where it changed, and why.
 | `tests/test_store_registry.py` | Registry, sync, access-control, and persistence tests. |
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
 | `tests/test_onfly_pipeline.py` | On-fly pipeline regression tests for YOLO/GPT gating, state transitions, and export behavior. |
+| `tests/test_onfly_scheduler.py` | DB-backed on-fly scheduler regression tests for browser-managed schedule loading. |
 | `release-notes/2026-04-01-onfly-pipeline.md` | Release-note summary for the on-fly pipeline rollout and deprecation note for bulk upload nav. |
 | `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
@@ -82,6 +83,21 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-24 | Commit pending
+- Summary:
+  - Added full browser-managed On-Fly Scheduler Settings inside `Operations > Manual data sync of IRIS`.
+  - Scheduler settings now persist store/source/hourly/nightly/runtime knobs in app settings DB and surface active schedule, next run, next nightly, and last run directly in UI.
+  - Switched `scripts/onfly_scheduler.py` from env-driven store/source/timing reads to DB-backed configuration loading, with a regression test for scheduler config hydration.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/onfly_scheduler.py`
+  - `tests/test_onfly_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `tests/test_onfly_scheduler.py`
+- Infra/Config Impact:
+  - `iris-onfly-scheduler` now reads schedule configuration from DB-backed app settings instead of environment variables for store/source/hourly/nightly/runtime selection.
 
 ### 2026-04-23 | Commit pending
 - Summary:

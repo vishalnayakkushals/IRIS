@@ -468,6 +468,86 @@ def init_db(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_pipeline_run_log_job "
             "ON pipeline_run_log(job_key, created_at DESC)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onfly_pipeline_runs (
+                run_id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                business_date TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL,
+                source_uri TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                current_stage TEXT NOT NULL DEFAULT '',
+                images_discovered INTEGER NOT NULL DEFAULT 0,
+                images_skipped INTEGER NOT NULL DEFAULT 0,
+                images_processed INTEGER NOT NULL DEFAULT 0,
+                images_relevant INTEGER NOT NULL DEFAULT 0,
+                images_irrelevant INTEGER NOT NULL DEFAULT 0,
+                gpt_success_count INTEGER NOT NULL DEFAULT 0,
+                gpt_failed_count INTEGER NOT NULL DEFAULT 0,
+                report_image_results_csv TEXT NOT NULL DEFAULT '',
+                report_walkin_sessions_csv TEXT NOT NULL DEFAULT '',
+                report_store_date_csv TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                error_trace TEXT NOT NULL DEFAULT '',
+                retry_status TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL DEFAULT '',
+                last_heartbeat_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_store_started "
+            "ON onfly_pipeline_runs(store_id, started_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_runs_status_updated "
+            "ON onfly_pipeline_runs(status, updated_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onfly_pipeline_run_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                image_id TEXT NOT NULL DEFAULT '',
+                image_name TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT NOT NULL DEFAULT '',
+                error_trace TEXT NOT NULL DEFAULT '',
+                attempt_no INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_created "
+            "ON onfly_pipeline_run_events(run_id, created_at ASC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_stage_created "
+            "ON onfly_pipeline_run_events(run_id, stage, created_at ASC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onfly_report_index (
+                store_id TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                run_id TEXT NOT NULL DEFAULT '',
+                image_results_csv TEXT NOT NULL DEFAULT '',
+                walkin_sessions_csv TEXT NOT NULL DEFAULT '',
+                store_date_csv TEXT NOT NULL DEFAULT '',
+                summary_json TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(store_id, business_date)
+            )
+            """
+        )
         _seed_defaults(conn)
         for commit_attempt in range(1, 8):
             try:
@@ -1127,6 +1207,132 @@ def upsert_app_settings(db_path: Path, settings: dict[str, str]) -> None:
                 """,
                 (normalized_key, str(value).strip(), now),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_onfly_pipeline_runs(
+    db_path: Path,
+    store_id: str = "",
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = _sqlite_connect(db_path)
+    try:
+        params: list[object] = []
+        query = "SELECT * FROM onfly_pipeline_runs"
+        if str(store_id).strip():
+            query += " WHERE store_id=?"
+            params.append(str(store_id).strip())
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        cur = conn.execute(query, tuple(params))
+        rows = cur.fetchall()
+        cols = [str(c[0]) for c in (cur.description or [])]
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_onfly_pipeline_run_events(
+    db_path: Path,
+    run_id: str,
+    limit: int = 2000,
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    rid = str(run_id).strip()
+    if not rid:
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        cur = conn.execute(
+            "SELECT * FROM onfly_pipeline_run_events WHERE run_id=? ORDER BY created_at ASC, event_id ASC LIMIT ?",
+            (rid, max(1, int(limit))),
+        )
+        rows = cur.fetchall()
+        cols = [str(c[0]) for c in (cur.description or [])]
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_onfly_report_index(
+    db_path: Path,
+    store_id: str,
+    business_date: str = "",
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    sid = str(store_id).strip()
+    if not sid:
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        if str(business_date).strip():
+            cur = conn.execute(
+                """
+                SELECT * FROM onfly_report_index
+                WHERE store_id=? AND business_date=?
+                ORDER BY updated_at DESC
+                """,
+                (sid, str(business_date).strip()),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT * FROM onfly_report_index
+                WHERE store_id=?
+                ORDER BY updated_at DESC
+                """,
+                (sid,),
+            )
+        rows = cur.fetchall()
+        cols = [str(c[0]) for c in (cur.description or [])]
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_onfly_report_index(
+    db_path: Path,
+    *,
+    store_id: str,
+    business_date: str,
+    run_id: str,
+    image_results_csv: str,
+    walkin_sessions_csv: str,
+    store_date_csv: str,
+    summary_json: str,
+) -> None:
+    init_db(db_path)
+    now = _now_utc()
+    conn = _sqlite_connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO onfly_report_index(
+                store_id,business_date,run_id,image_results_csv,walkin_sessions_csv,store_date_csv,summary_json,updated_at
+            )
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(store_id,business_date) DO UPDATE SET
+                run_id=excluded.run_id,
+                image_results_csv=excluded.image_results_csv,
+                walkin_sessions_csv=excluded.walkin_sessions_csv,
+                store_date_csv=excluded.store_date_csv,
+                summary_json=excluded.summary_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                str(store_id).strip(),
+                str(business_date).strip(),
+                str(run_id).strip(),
+                str(image_results_csv).strip(),
+                str(walkin_sessions_csv).strip(),
+                str(store_date_csv).strip(),
+                str(summary_json).strip(),
+                now,
+            ),
+        )
         conn.commit()
     finally:
         conn.close()
