@@ -477,6 +477,12 @@ class GDriveClient:
                 )
                 if media.status_code == 200 and "text/html" not in str(media.headers.get("content-type", "")).lower():
                     return media.content
+                direct = requests.get(
+                    f"https://lh3.googleusercontent.com/d/{fid}",
+                    timeout=(10, 25),
+                )
+                if direct.status_code == 200 and "text/html" not in str(direct.headers.get("content-type", "")).lower():
+                    return direct.content
                 fallback = requests.get(
                     "https://drive.google.com/uc",
                     params={"id": fid, "export": "download"},
