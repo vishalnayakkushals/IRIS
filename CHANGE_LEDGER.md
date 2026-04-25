@@ -101,7 +101,7 @@ Use this template for each new change:
   - Added quota-aware GPT fallback behavior so on-fly runs keep YOLO results intact, mark GPT quota failures explicitly, and queue GPT-only retries instead of misreporting full failure.
   - Surfaced GPT quota retry state clearly in the Pipeline Journey UI with queue counts, retry warnings, and partial-run messaging for browser-only visibility.
   - Updated the on-fly scheduler to read run summaries, detect queued GPT retries, and advance the next retry cycle automatically when quota becomes available.
-  - Enabled SQLite WAL mode on the shared registry/on-fly connections to reduce browser-vs-scheduler lock contention in no-Docker runtime.
+  - Enabled SQLite WAL mode plus autocommit-style shared connections on the registry/on-fly paths to reduce browser-vs-scheduler lock contention in no-Docker runtime.
 - Changed Paths:
   - `src/iris/store_registry.py`
   - `src/iris/onfly_pipeline.py`

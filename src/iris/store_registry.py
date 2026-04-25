@@ -102,7 +102,7 @@ def _sqlite_connect(db_path: Path, timeout: float = 30.0, retries: int = 6) -> s
     last_error: Exception | None = None
     for attempt in range(1, max(1, int(retries)) + 1):
         try:
-            conn = sqlite3.connect(db_path, timeout=float(timeout))
+            conn = sqlite3.connect(db_path, timeout=float(timeout), isolation_level=None)
             conn.execute("PRAGMA busy_timeout=30000")
             try:
                 conn.execute("PRAGMA journal_mode=WAL")
