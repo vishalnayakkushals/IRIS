@@ -55,7 +55,8 @@ def test_onfly_scheduler_reads_store_source_and_timing_from_db(tmp_path: Path) -
     assert cfg["yolo_version"] == "yolo_v5"
     assert cfg["gpt_version"] == "gpt_v9"
     assert cfg["allow_fallback"] is True
-    assert str(cfg["out_dir"]).endswith("exports\\current\\onfly")
+    out_dir = Path(cfg["out_dir"])
+    assert out_dir.parts[-3:] == ("exports", "current", "onfly")
 
 
 def test_onfly_scheduler_parses_summary_and_accelerates_quota_retry() -> None:

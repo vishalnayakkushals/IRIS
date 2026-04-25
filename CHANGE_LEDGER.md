@@ -103,6 +103,7 @@ Use this template for each new change:
   - Updated the on-fly scheduler to read run summaries, detect queued GPT retries, and advance the next retry cycle automatically when quota becomes available.
   - Enabled SQLite WAL mode plus autocommit-style shared connections on the registry/on-fly paths to reduce browser-vs-scheduler lock contention in no-Docker runtime.
   - Added a public-Drive image download fallback via `lh3.googleusercontent.com` so open-shared Google Drive folders list and fetch reliably during on-fly runs.
+  - Fixed the on-fly scheduler regression test to use OS-neutral path assertions so GitHub Actions Linux runs match Windows-local behavior.
 - Changed Paths:
   - `src/iris/store_registry.py`
   - `src/iris/onfly_pipeline.py`
