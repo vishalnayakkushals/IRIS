@@ -948,6 +948,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_done = 0
         gpt_failed = 0
         gpt_retry_pending = 0
+        gpt_quota_unavailable = False
+        gpt_quota_error = ""
         bytes_cache: dict[str, bytes] = {}
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
@@ -1127,18 +1129,26 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     image_name=item.image_name,
                     message="GPT analysis started",
                 )
-                g0 = time.perf_counter()
-                try:
-                    gpt = _openai_eval(cfg, image_bytes, item.image_name)
-                    gstatus = "done"
-                    gerr = ""
-                except Exception as exc:
-                    gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
-                    gerr = str(exc)
-                    gstatus = "quota_pending_retry" if _is_gpt_quota_error(gerr) else "failed"
-                timings["gpt_ms"] += round((time.perf_counter() - g0) * 1000.0, 2)
+                if gpt_quota_unavailable:
+                    gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_quota_waiting", "walkins": []}
+                    gstatus = "quota_pending_retry"
+                    gerr = gpt_quota_error or "GPT quota unavailable"
+                else:
+                    g0 = time.perf_counter()
+                    try:
+                        gpt = _openai_eval(cfg, image_bytes, item.image_name)
+                        gstatus = "done"
+                        gerr = ""
+                    except Exception as exc:
+                        gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
+                        gerr = str(exc)
+                        gstatus = "quota_pending_retry" if _is_gpt_quota_error(gerr) else "failed"
+                        if gstatus == "quota_pending_retry":
+                            gpt_quota_unavailable = True
+                            gpt_quota_error = gerr
+                    timings["gpt_ms"] += round((time.perf_counter() - g0) * 1000.0, 2)
                 gpt_done += int(gstatus == "done")
-                gpt_failed += int(gstatus != "done")
+                gpt_failed += int(gstatus == "failed")
                 gpt_retry_pending += int(gstatus == "quota_pending_retry")
                 # Extract per-customer walkins before serialising to gpt_result_json
                 walkins = gpt.pop("walkins", [])
@@ -1585,7 +1595,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             if gpt_retry_pending > 0
             else ""
         )
-        summary_status = "partial" if gpt_retry_pending > 0 else "success"
+        summary_status = "partial" if (gpt_retry_pending > 0 or gpt_failed > 0) else "success"
         summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_retry_pending": gpt_retry_pending, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
         summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

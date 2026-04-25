@@ -170,8 +170,8 @@ def test_onfly_runs_gpt_when_current_yolo_turns_stale_irrelevant_row_relevant(tm
 def test_onfly_marks_quota_errors_for_retry_without_changing_yolo_role(tmp_path: Path, monkeypatch) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True, exist_ok=True)
-    image_path = source_dir / "2026-04-23_09-30-19_D01-1.jpg"
-    Image.new("RGB", (32, 32), color="white").save(image_path)
+    for name in ["2026-04-23_09-30-19_D01-1.jpg", "2026-04-23_09-31-20_D01-2.jpg"]:
+        Image.new("RGB", (32, 32), color="white").save(source_dir / name)
 
     db_path = tmp_path / "store_registry.db"
     out_dir = tmp_path / "exports"
@@ -179,7 +179,10 @@ def test_onfly_marks_quota_errors_for_retry_without_changing_yolo_role(tmp_path:
 
     monkeypatch.setattr("iris.onfly_pipeline.build_detector", lambda *args, **kwargs: (_FakeDetector(), ""))
 
+    calls = {"count": 0}
+
     def _quota_raise(cfg, image_bytes, image_name):
+        calls["count"] += 1
         raise RuntimeError('OpenAI error 429: {"error":{"code":"insufficient_quota"}}')
 
     monkeypatch.setattr("iris.onfly_pipeline._openai_eval", _quota_raise)
@@ -205,29 +208,27 @@ def test_onfly_marks_quota_errors_for_retry_without_changing_yolo_role(tmp_path:
         )
     )
 
-    assert summary["yolo_relevant"] == 1
+    assert summary["yolo_relevant"] == 2
     assert summary["gpt_done"] == 0
-    assert summary["gpt_retry_pending"] == 1
+    assert summary["gpt_retry_pending"] == 2
     assert summary["status"] == "partial"
+    assert calls["count"] == 1
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         state = conn.execute(
-            "SELECT yolo_status, yolo_relevant, gpt_status, gpt_error FROM onfly_image_state WHERE store_id=?",
+            "SELECT COUNT(*) FROM onfly_image_state WHERE store_id=? AND yolo_status='done' AND yolo_relevant=1 AND gpt_status='quota_pending_retry'",
             ("TEST_STORE_D07",),
         ).fetchone()
         assert state is not None
-        assert str(state["yolo_status"]) == "done"
-        assert int(state["yolo_relevant"]) == 1
-        assert str(state["gpt_status"]) == "quota_pending_retry"
-        assert "insufficient_quota" in str(state["gpt_error"])
+        assert int(state[0]) == 2
 
         queue_row = conn.execute(
-            "SELECT status FROM onfly_task_queue WHERE stage='chatgpt' ORDER BY updated_at DESC LIMIT 1"
+            "SELECT COUNT(*) FROM onfly_task_queue WHERE stage='chatgpt' AND status='waiting_quota'"
         ).fetchone()
         assert queue_row is not None
-        assert str(queue_row["status"]) == "waiting_quota"
+        assert int(queue_row[0]) == 2
 
         run_row = conn.execute(
             "SELECT status, retry_status FROM onfly_pipeline_runs WHERE run_id=?",
