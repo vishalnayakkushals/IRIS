@@ -430,46 +430,80 @@ body, .stApp {{
     background: {bg};
     font-family: {font_stack};
 }}
-.block-container {{padding-top: 0.2rem; padding-bottom: 0.8rem;}}
+.block-container {{padding-top: 0.1rem; padding-bottom: 0.7rem;}}
 div[data-testid="stToolbar"] {{visibility: hidden; height: 0; position: fixed;}}
 header[data-testid="stHeader"] {{height: 0.1rem;}}
 .iris-header {{
     background: {surface};
     border: 1px solid #d7dee8;
     border-radius: 8px;
-    padding: 0.35rem 0.55rem;
-    margin: 0 0 0.3rem 0;
+    padding: 0.18rem 0.45rem;
+    margin: 0 0 0.18rem 0;
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    min-height: 56px;
+    justify-content: space-between;
+    min-height: 42px;
+}}
+.iris-header-left {{
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+}}
+.iris-header-right {{
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
 }}
 .iris-brand-fallback {{
-    width: 42px;
-    height: 42px;
-    border-radius: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
     background: {nav};
     color: #ffffff;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.86rem;
+    font-size: 0.68rem;
     font-weight: 700;
+    flex: 0 0 24px;
 }}
 .iris-app-name {{
-    font-size: 1.12rem;
+    font-size: 0.95rem;
     font-weight: 800;
     letter-spacing: 0.02rem;
     color: #1d2d3f;
+    line-height: 1.1;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }}
 .iris-header-logo {{
-    width: 42px;
-    height: 42px;
+    width: 24px;
+    height: 24px;
     object-fit: contain;
     border-radius: 6px;
     background: #ffffff;
     border: 1px solid #e2e8f0;
-    padding: 2px;
+    padding: 1px;
+    display: block;
+    flex: 0 0 24px;
+}}
+.iris-header .st-emotion-cache-1wmy9hl, .iris-header .st-emotion-cache-ocqkz7 {{
+    gap: 0.35rem;
+}}
+.iris-header + div {{
+    margin-top: 0 !important;
+}}
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {{
+    margin-top: 0.15rem;
+    margin-bottom: 0.35rem;
+}}
+p {{
+    margin-top: 0.1rem;
+    margin-bottom: 0.35rem;
 }}
 .iris-nav .iris-menu {{background: {nav};}}
 .iris-nav .iris-module.active .iris-module-label, .iris-nav .iris-module:hover .iris-module-label {{background: {accent};}}
@@ -538,20 +572,41 @@ def _resolve_logo_file(logo_path: str) -> Path | None:
     return None
 
 
+def _logo_file_data_uri(logo_file: Path) -> str:
+    try:
+        raw = logo_file.read_bytes()
+        suffix = logo_file.suffix.lower()
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(suffix, "image/png")
+        encoded = base64.b64encode(raw).decode("ascii")
+        return f"data:{mime};base64,{encoded}"
+    except Exception:
+        return ""
+
+
 def _render_brand_identity(app_name: str, logo_path: str) -> None:
     app_label = (str(app_name or "").strip() or "IRIS")[:60]
     logo_file = _resolve_logo_file(logo_path=logo_path)
-    brand_cols = st.columns([1, 7], gap="small")
-    with brand_cols[0]:
-        if logo_file:
-            try:
-                st.image(str(logo_file), width=54)
-            except Exception:
-                st.markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="iris-brand-fallback">IR</div>', unsafe_allow_html=True)
-    with brand_cols[1]:
-        st.markdown(f"### {app_label}")
+    logo_html = '<div class="iris-brand-fallback">IR</div>'
+    if logo_file:
+        logo_src = _logo_file_data_uri(logo_file)
+        if logo_src:
+            logo_html = f'<img src="{logo_src}" alt="logo" class="iris-header-logo" />'
+    st.markdown(
+        (
+            '<div class="iris-header">'
+            '<div class="iris-header-left">'
+            f'{logo_html}'
+            f'<div class="iris-app-name">{html.escape(app_label)}</div>'
+            '</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def _frame_review_link(store_id: str, frame_idx: int, auth_token: str) -> str:

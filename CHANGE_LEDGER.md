@@ -102,6 +102,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-26 | Commit pending
+- Summary:
+  - Fixed Organisation-driven header branding so the saved logo path renders reliably even when the stored path is an older `/app/data/...` runtime path.
+  - Replaced the oversized Streamlit brand block with a compact small-logo + app-name header and tightened top-page spacing without changing other page logic.
+  - Restarted the local no-Docker web runtime and verified the updated app is live on `http://localhost:8765`.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
 ### 2026-04-25 | Commit pending
 - Summary:
   - Simplified IRIS manual data sync so scheduler source comes from `Store Mapping`, the sync page shows a clearer storewise status table, and users can sync/run RR Nagar without re-entering paths.
