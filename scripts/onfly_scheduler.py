@@ -171,6 +171,21 @@ def _run_command(command: list[str]) -> tuple[int, str, str]:
     return int(proc.returncode), str(proc.stdout or "")[-3000:], str(proc.stderr or "")[-3000:]
 
 
+def _parse_run_summary(stdout_tail: str) -> dict[str, object]:
+    raw = str(stdout_tail or "").strip()
+    if not raw:
+        return {}
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(raw[start : end + 1])
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
 def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
     scheduler_cfg = _load_onfly_scheduler_config(args.db)
     enabled = bool(scheduler_cfg["enabled"])
@@ -286,6 +301,8 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         command.append("--allow-detector-fallback")
     rc, out_tail, err_tail = _run_command(command)
     now_utc = datetime.now(tz=timezone.utc)
+    parsed_summary = _parse_run_summary(out_tail)
+    gpt_retry_pending = int(parsed_summary.get("gpt_retry_pending", 0) or 0) if parsed_summary else 0
     history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]").strip()
     try:
         history = json.loads(history_raw)
@@ -299,17 +316,26 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
             "mode": mode,
             "store_id": store_id,
             "returncode": int(rc),
-            "status": "ok" if rc == 0 else "error",
+            "status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
             "stdout_tail": out_tail[-600:],
             "stderr_tail": err_tail[-600:],
+            "gpt_retry_pending": gpt_retry_pending,
         }
     )
     history = history[-40:]
     updates = {
         key_hourly: now_utc.isoformat(),
         "cfg_onfly_last_run_at": now_utc.isoformat(),
+        "cfg_onfly_last_status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
         "cfg_onfly_last_summary_json": json.dumps(
-            {"status": "ok" if rc == 0 else "error", "mode": mode, "returncode": rc, "stdout_tail": out_tail, "stderr_tail": err_tail},
+            {
+                "status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
+                "mode": mode,
+                "returncode": rc,
+                "stdout_tail": out_tail,
+                "stderr_tail": err_tail,
+                "gpt_retry_pending": gpt_retry_pending,
+            },
             separators=(",", ":"),
         ),
         "cfg_onfly_scheduler_history_json": json.dumps(history, separators=(",", ":")),
@@ -318,7 +344,10 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         updates[key_nightly] = now_local.date().isoformat()
     next_nightly = _next_local_time(now_local, hh, mm).astimezone(timezone.utc).isoformat()
     updates["cfg_onfly_next_nightly_at"] = next_nightly
-    updates["cfg_onfly_next_run_at"] = (now_utc + timedelta(minutes=hourly_minutes)).isoformat()
+    if gpt_retry_pending > 0:
+        updates["cfg_onfly_next_run_at"] = (now_utc + timedelta(minutes=5)).isoformat()
+    else:
+        updates["cfg_onfly_next_run_at"] = (now_utc + timedelta(minutes=hourly_minutes)).isoformat()
     upsert_app_settings(args.db, updates)
     return True, max(5, int(args.poll_seconds))
 

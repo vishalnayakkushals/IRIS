@@ -728,6 +728,21 @@ def _json_compact(payload: dict[str, Any] | None) -> str:
         return "{}"
 
 
+def _is_gpt_quota_error(text: str) -> bool:
+    msg = str(text or "").lower()
+    return any(
+        token in msg
+        for token in [
+            "insufficient_quota",
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "429",
+            "billing",
+        ]
+    )
+
+
 def _create_pipeline_run(
     conn: sqlite3.Connection,
     *,
@@ -932,6 +947,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         yolo_relevant = 0
         gpt_done = 0
         gpt_failed = 0
+        gpt_retry_pending = 0
         bytes_cache: dict[str, bytes] = {}
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
@@ -1118,11 +1134,12 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     gerr = ""
                 except Exception as exc:
                     gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
-                    gstatus = "failed"
                     gerr = str(exc)
+                    gstatus = "quota_pending_retry" if _is_gpt_quota_error(gerr) else "failed"
                 timings["gpt_ms"] += round((time.perf_counter() - g0) * 1000.0, 2)
                 gpt_done += int(gstatus == "done")
                 gpt_failed += int(gstatus != "done")
+                gpt_retry_pending += int(gstatus == "quota_pending_retry")
                 # Extract per-customer walkins before serialising to gpt_result_json
                 walkins = gpt.pop("walkins", [])
                 gpt_summary = json.dumps(gpt, separators=(',', ':'))
@@ -1330,19 +1347,40 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                             walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
                         ),
                     )
-                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status=gstatus, error=gerr)
+                queue_status = "waiting_quota" if gstatus == "quota_pending_retry" else gstatus
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status=queue_status, error=gerr)
                 _append_pipeline_event(
                     conn,
                     run_id=run_id,
                     stage=stage,
-                    event_type="success" if gstatus == "done" else "failure",
+                    event_type="success" if gstatus == "done" else ("retry" if gstatus == "quota_pending_retry" else "failure"),
                     image_id=item.image_id,
                     image_name=item.image_name,
-                    message="GPT analysis completed" if gstatus == "done" else "GPT analysis failed",
-                    payload={"walkins": len(walkins), "customer_count": int(gpt.get("customer_count", 0)), "staff_count": int(gpt.get("staff_count", 0))},
+                    message=(
+                        "GPT analysis completed"
+                        if gstatus == "done"
+                        else ("GPT quota unavailable; queued for retry" if gstatus == "quota_pending_retry" else "GPT analysis failed")
+                    ),
+                    payload={
+                        "walkins": len(walkins),
+                        "customer_count": int(gpt.get("customer_count", 0)),
+                        "staff_count": int(gpt.get("staff_count", 0)),
+                        "gpt_status": gstatus,
+                    },
                     error_message=str(gerr)[:1000],
                 )
-                _update_pipeline_run(conn, run_id, gpt_success_count=gpt_done, gpt_failed_count=gpt_failed)
+                retry_status = (
+                    f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry"
+                    if gpt_retry_pending > 0
+                    else ""
+                )
+                _update_pipeline_run(
+                    conn,
+                    run_id,
+                    gpt_success_count=gpt_done,
+                    gpt_failed_count=gpt_failed,
+                    retry_status=retry_status,
+                )
                 if cfg.gpt_rate_limit_rps > 0:
                     time.sleep(1.0 / max(0.01, float(cfg.gpt_rate_limit_rps)))
             elif relevant == 1 and cfg.gpt_enabled and not gpt_needed:
@@ -1542,7 +1580,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         )
         total_ms = round((time.perf_counter() - perf0) * 1000.0, 2)
         ended_at = _now()
-        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
+        retry_status = (
+            f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry"
+            if gpt_retry_pending > 0
+            else ""
+        )
+        summary_status = "partial" if gpt_retry_pending > 0 else "success"
+        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_retry_pending": gpt_retry_pending, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
         summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         summary["outputs"]["run_summary_json"] = str(summary_path.resolve())
@@ -1615,7 +1659,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         _update_pipeline_run(
             conn,
             run_id,
-            status="success",
+            status=summary_status,
             current_stage=stage,
             ended_at=ended_at,
             images_discovered=len(images),
@@ -1628,6 +1672,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             report_image_results_csv=str(image_results_path.resolve()),
             report_walkin_sessions_csv=str(walkin_sessions_path.resolve()) if walkin_rows else "",
             report_store_date_csv=str(report_actual_path.resolve()),
+            retry_status=retry_status,
         )
         conn.execute("INSERT OR REPLACE INTO onfly_run_metrics(run_id,store_id,run_mode,source_provider,started_at,ended_at,total_listed,new_images,skipped_cached,yolo_done,yolo_relevant,gpt_done,total_ms,list_ms,download_ms,yolo_ms,gpt_ms,report_ms,status,summary_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (run_id, cfg.store_id, cfg.run_mode, client.provider, started_at, ended_at, len(images), new_images, skipped, yolo_done, yolo_relevant, gpt_done, total_ms, timings["list_ms"], timings["download_ms"], timings["yolo_ms"], timings["gpt_ms"], timings["report_ms"], "ok", json.dumps(summary, separators=(',', ':'))))
         conn.commit()

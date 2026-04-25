@@ -56,3 +56,19 @@ def test_onfly_scheduler_reads_store_source_and_timing_from_db(tmp_path: Path) -
     assert cfg["gpt_version"] == "gpt_v9"
     assert cfg["allow_fallback"] is True
     assert str(cfg["out_dir"]).endswith("exports\\current\\onfly")
+
+
+def test_onfly_scheduler_parses_summary_and_accelerates_quota_retry() -> None:
+    scheduler = _load_scheduler_module()
+    parsed = scheduler._parse_run_summary(
+        """
+        {
+          "run_id": "x",
+          "status": "partial",
+          "gpt_retry_pending": 3
+        }
+        """
+    )
+
+    assert parsed["status"] == "partial"
+    assert parsed["gpt_retry_pending"] == 3

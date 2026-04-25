@@ -96,6 +96,23 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-25 | Commit pending
+- Summary:
+  - Added quota-aware GPT fallback behavior so on-fly runs keep YOLO results intact, mark GPT quota failures explicitly, and queue GPT-only retries instead of misreporting full failure.
+  - Surfaced GPT quota retry state clearly in the Pipeline Journey UI with queue counts, retry warnings, and partial-run messaging for browser-only visibility.
+  - Updated the on-fly scheduler to read run summaries, detect queued GPT retries, and advance the next retry cycle automatically when quota becomes available.
+- Changed Paths:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/onfly_scheduler.py`
+  - `src/iris/iris_dashboard.py`
+  - `tests/test_onfly_pipeline.py`
+  - `tests/test_onfly_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
 ### 2026-04-24 | Commit pending
 - Summary:
   - Added a no-Docker deployment pack so IRIS can run as a browser-accessible Python web app plus separate scheduler workers without depending on Docker.

@@ -3491,6 +3491,30 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         status_cols[2].metric("Next Nightly", nightly_text or "Not scheduled")
         status_cols[3].metric("Last Run", last_run_text or "Never")
 
+    def _queue_snapshot(store_id: str = "") -> dict[str, int]:
+        query = """
+            SELECT
+                SUM(CASE WHEN status='waiting_quota' THEN 1 ELSE 0 END) AS waiting_quota,
+                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                COUNT(*) AS total
+            FROM onfly_task_queue
+        """
+        params: tuple[Any, ...] = ()
+        if str(store_id or "").strip():
+            query += " WHERE store_id=?"
+            params = (str(store_id).strip(),)
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(query, params).fetchone()
+        if row is None:
+            return {"waiting_quota": 0, "pending": 0, "failed": 0, "total": 0}
+        return {
+            "waiting_quota": int(row[0] or 0),
+            "pending": int(row[1] or 0),
+            "failed": int(row[2] or 0),
+            "total": int(row[3] or 0),
+        }
+
     st.markdown("**On-Fly Scheduler Settings**")
     with st.form("onfly_scheduler_settings_form", clear_on_submit=False):
         scheduler_form_cols = st.columns([1, 1])
@@ -3644,6 +3668,12 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         f"Active Store: `{cfg_settings.get('cfg_onfly_scheduler_store_id', scheduler_default_store)}` | "
         f"Source: `{_normalize_onfly_source_input(str(cfg_settings.get('cfg_onfly_scheduler_source_url', scheduler_default_source) or scheduler_default_source))}`"
     )
+    active_queue = _queue_snapshot(str(cfg_settings.get("cfg_onfly_scheduler_store_id", "") or "").strip())
+    queue_cols = st.columns(4)
+    queue_cols[0].metric("Queued GPT Retry", int(active_queue.get("waiting_quota", 0)))
+    queue_cols[1].metric("Other Pending Tasks", int(active_queue.get("pending", 0)))
+    queue_cols[2].metric("Failed Queue Items", int(active_queue.get("failed", 0)))
+    queue_cols[3].metric("Total Queue Rows", int(active_queue.get("total", 0)))
     last_summary_raw = str(cfg_settings.get("cfg_onfly_last_summary_json", "") or "").strip()
     if last_summary_raw:
         try:
@@ -3657,6 +3687,10 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             f"Mode: `{last_summary.get('mode', 'n/a')}` | "
             f"Return code: `{last_summary.get('returncode', 'n/a')}`"
         )
+        if int(last_summary.get("gpt_retry_pending", 0) or 0) > 0:
+            st.warning(
+                f"GPT quota is currently unavailable. {int(last_summary.get('gpt_retry_pending', 0) or 0)} image(s) are queued and will retry automatically on the next scheduler cycle."
+            )
         stderr_tail = str(last_summary.get("stderr_tail", "") or "").strip()
         if stderr_tail:
             st.code(stderr_tail[-800:], language="text")
@@ -3779,13 +3813,20 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
                         progress.progress(15, text="SKIP_CHECK: checking delta")
                         summary = run_onfly_pipeline(cfg)
                         progress.progress(100, text="Done")
-                        st.success(
+                        base_msg = (
                             "Run complete: "
                             f"listed={summary.get('total_listed', 0)}, "
                             f"new={summary.get('new_images', 0)}, "
                             f"relevant={summary.get('yolo_relevant', 0)}, "
                             f"gpt_done={summary.get('gpt_done', 0)}"
                         )
+                        if str(summary.get("status", "success") or "success").strip().lower() == "partial":
+                            st.warning(base_msg)
+                        else:
+                            st.success(base_msg)
+                        retry_note = str(summary.get("retry_status", "") or "").strip()
+                        if retry_note:
+                            st.warning(retry_note)
                         if parse_drive_folder_id(normalized_source) and int(summary.get("total_listed", 0) or 0) == 0:
                             st.warning(
                                 "No files visible from source (access/scope issue). "
@@ -3841,6 +3882,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         "business_date",
         "source_type",
         "status",
+        "retry_status",
         "current_stage",
         "images_discovered",
         "images_skipped",
@@ -3871,6 +3913,11 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     mcols[3].metric("Relevant", int(rr.get("images_relevant", 0)))
     mcols[4].metric("GPT Success", int(rr.get("gpt_success_count", 0)))
     mcols[5].metric("GPT Failed", int(rr.get("gpt_failed_count", 0)))
+    queue_info = _queue_snapshot(str(rr.get("store_id", "") or "").strip())
+    qcols = st.columns(3)
+    qcols[0].metric("Queued For GPT Retry", int(queue_info.get("waiting_quota", 0)))
+    qcols[1].metric("Pending Queue", int(queue_info.get("pending", 0)))
+    qcols[2].metric("Queue Failures", int(queue_info.get("failed", 0)))
     if str(rr.get("source_type", "")).strip().lower() == "gdrive" and int(rr.get("images_discovered", 0) or 0) == 0:
         st.warning(
             "No files visible from source (access/scope issue). "
@@ -3880,6 +3927,10 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         f"Status={rr.get('status', '')} | Current Stage={rr.get('current_stage', '')} | "
         f"Started={rr.get('started_at', '')} | Ended={rr.get('ended_at', '')}"
     )
+    if str(rr.get("retry_status", "") or "").strip():
+        st.warning(str(rr.get("retry_status", "")).strip())
+    if int(queue_info.get("waiting_quota", 0)) > 0:
+        st.info("YOLO results are already saved. GPT-only retry will run automatically when quota becomes available again.")
 
     st.markdown("**Report Paths**")
     st.code(

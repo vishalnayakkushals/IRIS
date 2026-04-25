@@ -165,3 +165,76 @@ def test_onfly_runs_gpt_when_current_yolo_turns_stale_irrelevant_row_relevant(tm
         assert int(walkin_count) == 1
     finally:
         conn.close()
+
+
+def test_onfly_marks_quota_errors_for_retry_without_changing_yolo_role(tmp_path: Path, monkeypatch) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    image_path = source_dir / "2026-04-23_09-30-19_D01-1.jpg"
+    Image.new("RGB", (32, 32), color="white").save(image_path)
+
+    db_path = tmp_path / "store_registry.db"
+    out_dir = tmp_path / "exports"
+    init_onfly_tables(db_path)
+
+    monkeypatch.setattr("iris.onfly_pipeline.build_detector", lambda *args, **kwargs: (_FakeDetector(), ""))
+
+    def _quota_raise(cfg, image_bytes, image_name):
+        raise RuntimeError('OpenAI error 429: {"error":{"code":"insufficient_quota"}}')
+
+    monkeypatch.setattr("iris.onfly_pipeline._openai_eval", _quota_raise)
+
+    summary = run_onfly_pipeline(
+        OnFlyConfig(
+            store_id="TEST_STORE_D07",
+            source_uri=str(source_dir),
+            db_path=db_path,
+            out_dir=out_dir,
+            detector_type="yolo",
+            conf_threshold=0.18,
+            max_images=0,
+            gpt_enabled=True,
+            openai_api_key="test-key",
+            openai_model="gpt-4.1-mini",
+            pipeline_version="onfly_v1",
+            yolo_version="onfly_v1",
+            gpt_version="onfly_v2",
+            force_reprocess=False,
+            allow_detector_fallback=True,
+            run_mode="test",
+        )
+    )
+
+    assert summary["yolo_relevant"] == 1
+    assert summary["gpt_done"] == 0
+    assert summary["gpt_retry_pending"] == 1
+    assert summary["status"] == "partial"
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        state = conn.execute(
+            "SELECT yolo_status, yolo_relevant, gpt_status, gpt_error FROM onfly_image_state WHERE store_id=?",
+            ("TEST_STORE_D07",),
+        ).fetchone()
+        assert state is not None
+        assert str(state["yolo_status"]) == "done"
+        assert int(state["yolo_relevant"]) == 1
+        assert str(state["gpt_status"]) == "quota_pending_retry"
+        assert "insufficient_quota" in str(state["gpt_error"])
+
+        queue_row = conn.execute(
+            "SELECT status FROM onfly_task_queue WHERE stage='chatgpt' ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        assert queue_row is not None
+        assert str(queue_row["status"]) == "waiting_quota"
+
+        run_row = conn.execute(
+            "SELECT status, retry_status FROM onfly_pipeline_runs WHERE run_id=?",
+            (summary["run_id"],),
+        ).fetchone()
+        assert run_row is not None
+        assert str(run_row["status"]) == "partial"
+        assert "queued for retry" in str(run_row["retry_status"])
+    finally:
+        conn.close()
