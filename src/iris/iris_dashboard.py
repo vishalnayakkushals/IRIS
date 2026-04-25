@@ -153,6 +153,7 @@ LEGACY_PAGE_ALIAS = {
 }
 
 PIPELINE_PRESET_DEFAULT = "Full Scan (Dev)"
+DEFAULT_PRIMARY_STORE_ID = "BLRRRN"
 PIPELINE_PRESETS: dict[str, dict[str, object]] = {
     "Full Scan (Dev)": {
         "ctrl_max_images_per_store": 0,
@@ -205,7 +206,7 @@ CONFIG_DEFAULTS: dict[str, str] = {
     "cfg_scheduler_last_run_at": "",
     "cfg_scheduler_last_summary_json": "",
     "cfg_onfly_scheduler_enabled": "1",
-    "cfg_onfly_scheduler_store_id": "TEST_STORE_D07",
+    "cfg_onfly_scheduler_store_id": DEFAULT_PRIMARY_STORE_ID,
     "cfg_onfly_scheduler_source_url": "",
     "cfg_onfly_scheduler_hourly_minutes": "60",
     "cfg_onfly_scheduler_nightly_run_at": "03:00",
@@ -309,6 +310,24 @@ LEGACY_OUTPUT_PAGES = {
     "Customer Journeys",
     "Frame Review",
 }
+
+
+def _is_test_store_id(store_id: object) -> bool:
+    sid = str(store_id or "").strip().upper()
+    return sid.startswith("TEST_") or sid == "TEST_STORE_D07"
+
+
+def _visible_store_ids(store_ids: list[object]) -> list[str]:
+    cleaned = sorted({str(s).strip() for s in store_ids if str(s).strip() and not _is_test_store_id(s)})
+    return cleaned
+
+
+def _store_label(store_id: object, name_map: dict[str, str], include_code: bool = False) -> str:
+    sid = str(store_id or "").strip()
+    full_name = str(name_map.get(sid, sid) or sid).strip() or sid
+    if include_code and sid and full_name != sid:
+        return f"{full_name} ({sid})"
+    return full_name or sid
 
 
 def _is_yolo_available() -> bool:
@@ -1425,6 +1444,48 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     out["location_name"] = out["location_name"].fillna("").astype(str)
     out.loc[out["location_name"].str.strip() == "", "location_name"] = out["camera_id"].astype(str)
     return out
+
+
+def _load_onfly_image_results_for_store(base_out_dir: Path, store_id: str) -> pd.DataFrame:
+    store_out = base_out_dir / "onfly" / str(store_id).strip()
+    image_out = store_out / "onfly_image_results.csv"
+    if not image_out.exists():
+        return pd.DataFrame()
+    try:
+        raw = pd.read_csv(image_out)
+    except Exception:
+        return pd.DataFrame()
+    if raw.empty:
+        return pd.DataFrame()
+    out = raw.copy()
+    if "image_name" in out.columns and "filename" not in out.columns:
+        out["filename"] = out["image_name"]
+    if "Date" in out.columns and "capture_date" not in out.columns:
+        parsed = pd.to_datetime(out["Date"], errors="coerce", dayfirst=True)
+        out["capture_date"] = parsed.dt.date.astype(str)
+    if "timestamp_hint" in out.columns and "timestamp" not in out.columns:
+        out["timestamp"] = pd.to_datetime(out["timestamp_hint"], errors="coerce")
+    if "source_url" in out.columns and "drive_link" not in out.columns:
+        out["drive_link"] = out["source_url"]
+    if "folder_name" in out.columns and "source_folder" not in out.columns:
+        out["source_folder"] = out["folder_name"]
+    if "yolo_error" in out.columns and "detection_error" not in out.columns:
+        out["detection_error"] = out["yolo_error"]
+    if "gpt_error" in out.columns:
+        out["detection_error"] = out.get("detection_error", "").fillna("").astype(str)
+        out["detection_error"] = out["detection_error"].mask(
+            out["detection_error"].str.strip() == "",
+            out["gpt_error"].fillna("").astype(str),
+        )
+    if "is_valid" not in out.columns:
+        out["is_valid"] = True
+    if "reject_reason" not in out.columns:
+        out["reject_reason"] = ""
+    if "relative_path" in out.columns and "path" not in out.columns:
+        out["path"] = out["relative_path"].map(
+            lambda p: str((Path("data") / "stores" / str(store_id).strip() / str(p or "")).resolve()) if str(p or "").strip() else ""
+        )
+    return _normalize_image_df(out)
 
 
 def _top_gender_label(gender_payload: object) -> str:
@@ -2898,7 +2959,7 @@ def _render_overview(output: AnalysisOutput) -> None:
         options=store_options,
         index=0,
         key="overview_store_filter",
-        format_func=lambda x: "All Stores" if x == "All Stores" else f"{name_map.get(x, x)} ({x})",
+        format_func=lambda x: "All Stores" if x == "All Stores" else _store_label(x, name_map, include_code=False),
     )
     selected_zone = f2.selectbox("Zone", options=zone_options, index=0, key="overview_zone_filter")
     selected_state = f3.selectbox("State", options=state_options, index=0, key="overview_state_filter")
@@ -3648,7 +3709,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     cfg_settings = get_app_settings(db_path)
     name_map = _store_name_map_cached(str(db_path))
     known_stores = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
-    scheduler_default_store = str(cfg_settings.get("cfg_onfly_scheduler_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
+    scheduler_default_store = str(cfg_settings.get("cfg_onfly_scheduler_store_id", "") or DEFAULT_PRIMARY_STORE_ID).strip() or DEFAULT_PRIMARY_STORE_ID
     scheduler_default_source = (
         str(cfg_settings.get("cfg_onfly_scheduler_source_url", "") or "").strip()
         or str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip()
@@ -3657,7 +3718,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     default_store = (
         str(cfg_settings.get("cfg_onfly_store_id", "") or "").strip()
         or scheduler_default_store
-        or "TEST_STORE_D07"
+        or DEFAULT_PRIMARY_STORE_ID
     )
     default_source = (
         str(cfg_settings.get("cfg_onfly_source_url", "") or "").strip()
@@ -3718,7 +3779,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         options=store_options,
         index=scheduler_default_idx,
         key="onfly_status_store_select",
-        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+        format_func=lambda x: _store_label(x, name_map, include_code=False),
     )
     scheduler_store_id = str(cfg_settings.get("cfg_onfly_scheduler_store_id", scheduler_default_store) or scheduler_default_store).strip()
     mapped_source = _mapped_source_for_store(selected_store_id)
@@ -4172,10 +4233,11 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
     st.subheader("Report Module")
     st.caption("Choose store/date and download report data for offline analysis.")
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
+    name_map = _store_name_map_cached(str(db_path))
 
     select_placeholder = "-- Select --"
-    mapped_store_ids = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
-    store_ids = sorted(set(list(output.stores.keys()) + mapped_store_ids))
+    mapped_store_ids = _visible_store_ids([str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()])
+    store_ids = _visible_store_ids(list(output.stores.keys()) + mapped_store_ids)
     if not store_ids:
         st.info("No stores found. Map at least one store first.")
         return
@@ -4184,6 +4246,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         options=[select_placeholder, *store_ids],
         index=0,
         key="report_module_store_v2",
+        format_func=lambda x: x if x == select_placeholder else _store_label(x, name_map, include_code=False),
     )
     if selected_store == select_placeholder:
         st.info("Select a store to load report options.")
@@ -4198,7 +4261,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         )
         daily_proof_df = _build_daily_proof_df(image_df=image_df, store_result=store_result, store_id=selected_store)
     else:
-        image_df = pd.DataFrame()
+        image_df = _load_onfly_image_results_for_store(out_dir, selected_store)
         customer_sessions_df = pd.DataFrame()
         daily_proof_df = pd.DataFrame()
     summary_rows = output.all_stores_summary[output.all_stores_summary["store_id"] == selected_store]
@@ -4439,16 +4502,16 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         ]
         report_df = report_df[[col for col in proof_columns if col in report_df.columns]].copy()
     elif selected_report == "Data Health":
-        report_df = image_df[
-            [
-                "capture_date",
-                "filename",
-                "camera_id",
-                "is_valid",
-                "reject_reason",
-                "detection_error",
-            ]
-        ].copy()
+        health_columns = [
+            "capture_date",
+            "filename",
+            "camera_id",
+            "is_valid",
+            "reject_reason",
+            "detection_error",
+        ]
+        available_health_cols = [col for col in health_columns if col in image_df.columns]
+        report_df = image_df[available_health_cols].copy() if available_health_cols else pd.DataFrame()
         report_df.insert(0, "store_id", selected_store)
     elif selected_report == "Location Hotspots":
         report_df = (
@@ -4540,14 +4603,25 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
         return
 
     select_placeholder = "-- Select Store --"
-    store_ids = sorted(output.stores.keys())
+    name_map = _store_name_map_cached(str(db_path))
+    mapped_store_ids = _visible_store_ids([str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()])
+    store_ids = _visible_store_ids(list(output.stores.keys()) + mapped_store_ids)
     preselected_store = _query_value("store", "").strip()
     store_options = [select_placeholder, *store_ids]
     default_value = preselected_store if preselected_store in store_ids else select_placeholder
     default_index = store_options.index(default_value)
-    sid = st.selectbox("Store", options=store_options, index=default_index, key="qa_store_v2")
+    sid = st.selectbox(
+        "Store",
+        options=store_options,
+        index=default_index,
+        key="qa_store_v2",
+        format_func=lambda x: x if x == select_placeholder else _store_label(x, name_map, include_code=False),
+    )
     if sid == select_placeholder:
         st.info("Select a store to load pending review rows.")
+        return
+    if sid not in output.stores:
+        st.info("Detailed frame review is available after classic analysis export is generated for this store.")
         return
     runtime_settings = _ensure_config_defaults(db_path)
     cfg_auto_confirm = _setting_bool(runtime_settings, "cfg_feedback_auto_confirm", True)
@@ -5502,17 +5576,43 @@ def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str
 def _render_customer_journeys(output: AnalysisOutput, root_dir: Path) -> None:
     st.subheader("Customer Journey Verification")
     if not output.stores:
-        st.info("No store analysis loaded.")
-        return
+        st.info("No customer-journey analysis loaded.")
     select_placeholder = "-- Select Store --"
-    store_ids = sorted(output.stores.keys())
+    db_path = resolve_runtime_paths()["db_path"]
+    name_map = _store_name_map_cached(str(db_path))
+    mapped_store_ids = _visible_store_ids([str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()])
+    store_ids = _visible_store_ids(list(output.stores.keys()) + mapped_store_ids)
+    if not store_ids:
+        st.info("No stores available.")
+        return
     preselected_store = _query_value("store", "").strip()
     store_options = [select_placeholder, *store_ids]
     default_value = preselected_store if preselected_store in store_ids else select_placeholder
     default_index = store_options.index(default_value)
-    sid = st.selectbox("Store", options=store_options, index=default_index, key="journey_store_v2")
+    sid = st.selectbox(
+        "Store",
+        options=store_options,
+        index=default_index,
+        key="journey_store_v2",
+        format_func=lambda x: x if x == select_placeholder else _store_label(x, name_map, include_code=False),
+    )
     if sid == select_placeholder:
         st.info("Select a store to load customer journey verification.")
+        return
+    if sid not in output.stores:
+        onfly_df = _load_onfly_image_results_for_store(
+            Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve(),
+            sid,
+        )
+        if not onfly_df.empty:
+            latest_dates = sorted({str(v).strip() for v in onfly_df.get("capture_date", pd.Series(dtype=str)).tolist() if str(v).strip()}, reverse=True)
+            latest_label = latest_dates[0] if latest_dates else "available"
+            st.info(
+                f"{_store_label(sid, name_map)} has YOLO/on-fly output for {latest_label}. "
+                "Customer Journey needs customer-session style output, so use Report Module > On-Fly Image Results for now."
+            )
+        else:
+            st.info("Customer journey output is not available yet for this store.")
         return
     auth_token = str(st.session_state.get("session_token", "") or "").strip()
     image_df = _normalize_image_df(output.stores[sid].image_insights)
@@ -5648,6 +5748,8 @@ def _render_quality_summary(output: AnalysisOutput) -> None:
     if not output.stores:
         st.info("No store analysis loaded.")
         return
+    db_path = resolve_runtime_paths()["db_path"]
+    name_map = _store_name_map_cached(str(db_path))
 
     quality_rows: list[dict[str, object]] = []
     for store_id, result in output.stores.items():
@@ -5660,7 +5762,7 @@ def _render_quality_summary(output: AnalysisOutput) -> None:
         )
         quality_rows.append(
             {
-                "store_id": store_id,
+                "store_name": _store_label(store_id, name_map, include_code=False),
                 "total_images": total,
                 "invalid_images": invalid,
                 "bad_filename": bad_filename,
@@ -5668,7 +5770,7 @@ def _render_quality_summary(output: AnalysisOutput) -> None:
             }
         )
 
-    quality_df = pd.DataFrame(quality_rows).sort_values(by="store_id")
+    quality_df = pd.DataFrame(quality_rows).sort_values(by="store_name")
     st.dataframe(quality_df, use_container_width=True)
 
 
@@ -5913,7 +6015,7 @@ def _render_store_mapping(
         "Store",
         options=store_ids,
         key="map_store_id",
-        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
+        format_func=lambda x: _store_label(x, name_map, include_code=False),
     )
     if current_sid != st.session_state.get("map_last_store_id", ""):
         _prefill_store_mapping_fields(db_path=db_path, store_id=current_sid)
@@ -7258,7 +7360,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
             onfly_store_rows = list_stores(db_path)
             onfly_store_options = sorted({str(s.store_id).strip() for s in onfly_store_rows if str(s.store_id).strip()})
             onfly_name_map = _store_name_map_cached(str(db_path))
-            onfly_default_store = str(settings.get("cfg_onfly_scheduler_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
+            onfly_default_store = str(settings.get("cfg_onfly_scheduler_store_id", "") or DEFAULT_PRIMARY_STORE_ID).strip() or DEFAULT_PRIMARY_STORE_ID
             if onfly_default_store not in onfly_store_options:
                 onfly_store_options = onfly_store_options + [onfly_default_store]
             onfly_store_index = onfly_store_options.index(onfly_default_store) if onfly_default_store in onfly_store_options else 0
@@ -7277,7 +7379,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
                     "Scheduled Store",
                     options=onfly_store_options,
                     index=onfly_store_index,
-                    format_func=lambda x: f"{onfly_name_map.get(x, x)} ({x})",
+                    format_func=lambda x: _store_label(x, onfly_name_map, include_code=False),
                 )
                 cfg_onfly_hourly = int(
                     onfly_cols[1].number_input(

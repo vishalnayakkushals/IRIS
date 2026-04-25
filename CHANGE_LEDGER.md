@@ -104,6 +104,20 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Fixed Report Module `Data Health` so it no longer crashes when a store only has on-fly/YOLO-shaped output columns instead of the full classic export schema.
+  - Switched key store selectors to display full store names, exposed RR Nagar in report/customer-journey selection flows, and added a clear fallback message when only YOLO/on-fly output exists.
+  - Removed `TEST_STORE_D07` data/history from the local SQLite runtime and export folders, cleaned the mixed on-fly store-date report, and restarted the local web runtime with the updated state.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/onfly_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - Local runtime data cleanup only: deleted `TEST_STORE_D07` rows from SQLite runtime tables and removed matching local export/store folders under `data/`.
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Fixed Organisation-driven header branding so the saved logo path renders reliably even when the stored path is an older `/app/data/...` runtime path.
   - Replaced the oversized Streamlit brand block with a compact small-logo + app-name header and tightened top-page spacing without changing other page logic.
   - Restarted the local no-Docker web runtime and verified the updated app is live on `http://localhost:8765`.

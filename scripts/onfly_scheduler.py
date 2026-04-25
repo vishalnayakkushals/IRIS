@@ -19,7 +19,7 @@ from iris.store_registry import get_app_settings, list_stores, upsert_app_settin
 
 ONFLY_SCHEDULER_DEFAULTS: dict[str, object] = {
     "enabled": True,
-    "store_id": "TEST_STORE_D07",
+    "store_id": "BLRRRN",
     "source_url": "",
     "out_dir": "",
     "tz_name": "Asia/Kolkata",
