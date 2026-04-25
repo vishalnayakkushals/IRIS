@@ -104,8 +104,11 @@ def _sqlite_connect(db_path: Path, timeout: float = 30.0, retries: int = 6) -> s
         try:
             conn = sqlite3.connect(db_path, timeout=float(timeout))
             conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.OperationalError:
+                pass
             return conn
         except sqlite3.OperationalError as exc:
             last_error = exc
