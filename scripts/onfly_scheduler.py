@@ -14,7 +14,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from iris.store_registry import get_app_settings, upsert_app_settings  # noqa: E402
+from iris.store_registry import get_app_settings, list_stores, upsert_app_settings  # noqa: E402
 
 
 ONFLY_SCHEDULER_DEFAULTS: dict[str, object] = {
@@ -75,14 +75,22 @@ def _load_onfly_scheduler_config(db_path: Path) -> dict[str, object]:
                 return secondary
         return default
 
+    store_id = _read_str(
+        "cfg_onfly_scheduler_store_id",
+        "cfg_onfly_store_id",
+        str(ONFLY_SCHEDULER_DEFAULTS["store_id"]),
+    )
+    mapped_source_url = ""
+    if store_id:
+        for store in list_stores(db_path):
+            if str(getattr(store, "store_id", "")).strip() == store_id:
+                mapped_source_url = str(getattr(store, "drive_folder_url", "") or "").strip()
+                break
+
     cfg: dict[str, object] = {
         "enabled": _truthy(settings.get("cfg_onfly_scheduler_enabled", "1"), default=bool(ONFLY_SCHEDULER_DEFAULTS["enabled"])),
-        "store_id": _read_str(
-            "cfg_onfly_scheduler_store_id",
-            "cfg_onfly_store_id",
-            str(ONFLY_SCHEDULER_DEFAULTS["store_id"]),
-        ),
-        "source_url": _read_str(
+        "store_id": store_id,
+        "source_url": mapped_source_url or _read_str(
             "cfg_onfly_scheduler_source_url",
             "cfg_onfly_source_url",
             str(ONFLY_SCHEDULER_DEFAULTS["source_url"]),

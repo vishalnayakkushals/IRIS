@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from iris.store_registry import init_db, upsert_app_settings
+from iris.store_registry import init_db, upsert_app_settings, upsert_store
 
 
 def _load_scheduler_module():
@@ -19,12 +19,18 @@ def _load_scheduler_module():
 def test_onfly_scheduler_reads_store_source_and_timing_from_db(tmp_path: Path) -> None:
     db_path = tmp_path / "store_registry.db"
     init_db(db_path)
+    upsert_store(
+        db_path=db_path,
+        store_id="BLRRRN",
+        store_name="BLR RR Nagar",
+        email="blrrrn@example.com",
+        drive_folder_url="https://drive.google.com/drive/folders/mapped-folder",
+    )
     upsert_app_settings(
         db_path,
         {
             "cfg_onfly_scheduler_enabled": "1",
             "cfg_onfly_scheduler_store_id": "BLRRRN",
-            "cfg_onfly_scheduler_source_url": "https://drive.google.com/drive/folders/test-folder",
             "cfg_onfly_scheduler_hourly_minutes": "180",
             "cfg_onfly_scheduler_nightly_run_at": "04:30",
             "cfg_onfly_scheduler_tz": "Asia/Kolkata",
@@ -43,7 +49,7 @@ def test_onfly_scheduler_reads_store_source_and_timing_from_db(tmp_path: Path) -
 
     assert cfg["enabled"] is True
     assert cfg["store_id"] == "BLRRRN"
-    assert cfg["source_url"] == "https://drive.google.com/drive/folders/test-folder"
+    assert cfg["source_url"] == "https://drive.google.com/drive/folders/mapped-folder"
     assert cfg["hourly_minutes"] == 180
     assert cfg["nightly_at"] == "04:30"
     assert cfg["tz_name"] == "Asia/Kolkata"
@@ -57,6 +63,23 @@ def test_onfly_scheduler_reads_store_source_and_timing_from_db(tmp_path: Path) -
     assert cfg["allow_fallback"] is True
     out_dir = Path(cfg["out_dir"])
     assert out_dir.parts[-3:] == ("exports", "current", "onfly")
+
+
+def test_onfly_scheduler_falls_back_to_saved_source_when_store_mapping_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "store_registry.db"
+    init_db(db_path)
+    upsert_app_settings(
+        db_path,
+        {
+            "cfg_onfly_scheduler_store_id": "BLRRRN",
+            "cfg_onfly_scheduler_source_url": "https://drive.google.com/drive/folders/fallback-folder",
+        },
+    )
+
+    scheduler = _load_scheduler_module()
+    cfg = scheduler._load_onfly_scheduler_config(db_path)
+
+    assert cfg["source_url"] == "https://drive.google.com/drive/folders/fallback-folder"
 
 
 def test_onfly_scheduler_parses_summary_and_accelerates_quota_retry() -> None:

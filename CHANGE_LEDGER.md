@@ -104,6 +104,22 @@ Use this template for each new change:
 
 ### 2026-04-25 | Commit pending
 - Summary:
+  - Simplified IRIS manual data sync so scheduler source comes from `Store Mapping`, the sync page shows a clearer storewise status table, and users can sync/run RR Nagar without re-entering paths.
+  - Moved the IRIS data sync scheduler controls under `Config > Scheduler`, added plain-language setting explanations, and removed duplicate/legacy report wording from the Report Module.
+  - Cleaned local deployment clutter by removing temporary scheduler scratch data, mock export folders, and stale no-Docker runtime session artifacts.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/onfly_scheduler.py`
+  - `tests/test_onfly_scheduler.py`
+  - `README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - No new env vars or dependencies. On-fly scheduler now prefers each store's mapped source URL from `stores.drive_folder_url` before any legacy saved scheduler path.
+
+### 2026-04-25 | Commit pending
+- Summary:
   - Added a no-PowerShell local runtime manager so IRIS can be started, stopped, checked, and opened from simple double-clickable `.bat` files instead of requiring PowerShell commands.
   - Added automatic local env bootstrapping from the existing OpenAI/Google key text files into `deploy/no_docker/.env.local`, keeping the browser/no-Docker flow easier for everyday use.
   - Added lightweight regression coverage for the new local runtime manager helpers.

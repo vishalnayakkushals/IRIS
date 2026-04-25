@@ -3623,16 +3623,9 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         or 0.18
     )
     store_options = known_stores if known_stores else [default_store]
-    default_idx = store_options.index(default_store) if default_store in store_options else 0
     scheduler_default_idx = store_options.index(scheduler_default_store) if scheduler_default_store in store_options else 0
-
-    def _scheduler_label(next_run_text: str, nightly_text: str, last_run_text: str, enabled: bool, hourly_minutes: int, nightly_at: str, tz_name: str) -> None:
-        status_cols = st.columns(4)
-        active_label = "Enabled" if enabled else "Disabled"
-        status_cols[0].metric("Active Schedule", active_label, f"Hourly {int(hourly_minutes)} min | Nightly {nightly_at} {tz_name}")
-        status_cols[1].metric("Next Run", next_run_text or "Not scheduled")
-        status_cols[2].metric("Next Nightly", nightly_text or "Not scheduled")
-        status_cols[3].metric("Last Run", last_run_text or "Never")
+    store_rows = {str(s.store_id).strip(): s for s in list_stores(db_path)}
+    data_root = db_path.parent / "stores"
 
     def _queue_snapshot(store_id: str = "") -> dict[str, int]:
         query = """
@@ -3658,160 +3651,47 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             "total": int(row[3] or 0),
         }
 
-    st.markdown("**On-Fly Scheduler Settings**")
-    with st.form("onfly_scheduler_settings_form", clear_on_submit=False):
-        scheduler_form_cols = st.columns([1, 1])
-        scheduler_enabled = scheduler_form_cols[0].toggle(
-            "Enable On-Fly Scheduler",
-            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True),
-            help="If ON, `iris-onfly-scheduler` will pick the job configuration from DB and run hourly/nightly automatically.",
-        )
-        scheduler_store_id = scheduler_form_cols[0].selectbox(
-            "Scheduled Store",
-            options=store_options,
-            index=scheduler_default_idx,
-            format_func=lambda x: f"{name_map.get(x, x)} ({x})",
-            key="cfg_onfly_scheduler_store_select",
-        )
-        scheduler_source_url = scheduler_form_cols[0].text_input(
-            "Scheduled Source Path / Drive URL / Drive Folder ID",
-            value=scheduler_default_source,
-            key="cfg_onfly_scheduler_source_input",
-            help="Browser-managed scheduler source. Supports Drive URL, folder ID, local path, or date-folder path.",
-        )
-        scheduler_out_dir = scheduler_form_cols[0].text_input(
-            "Output Directory",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_out_dir", "") or "").strip(),
-            key="cfg_onfly_scheduler_out_dir_input",
-            help="Optional. Leave blank to use the standard on-fly export folder.",
-        )
-        scheduler_hourly_minutes = int(
-            scheduler_form_cols[1].number_input(
-                "Hourly Interval (minutes)",
-                min_value=5,
-                max_value=1440,
-                step=5,
-                value=int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_hourly_minutes", 60), errors="coerce") or 60),
-                key="cfg_onfly_scheduler_hourly_input",
-            )
-        )
-        scheduler_nightly_at = scheduler_form_cols[1].text_input(
-            "Nightly Run At (HH:MM)",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_nightly_run_at", "03:00") or "03:00").strip(),
-            key="cfg_onfly_scheduler_nightly_input",
-            help="24-hour format. Example: 03:00",
-        )
-        scheduler_tz = scheduler_form_cols[1].text_input(
-            "Scheduler Timezone",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_tz", "Asia/Kolkata") or "Asia/Kolkata").strip(),
-            key="cfg_onfly_scheduler_tz_input",
-        )
-        scheduler_max_images = int(
-            scheduler_form_cols[1].number_input(
-                "Max Images Per Scheduled Run (0 = full folder)",
-                min_value=0,
-                max_value=50000,
-                step=10,
-                value=int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_max_images", 0), errors="coerce") or 0),
-                key="cfg_onfly_scheduler_max_input",
-            )
-        )
-        scheduler_conf = float(
-            scheduler_form_cols[1].number_input(
-                "YOLO Confidence",
-                min_value=0.01,
-                max_value=0.99,
-                step=0.01,
-                value=float(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_conf", 0.18), errors="coerce") or 0.18),
-                key="cfg_onfly_scheduler_conf_input",
-            )
-        )
-        scheduler_detector = scheduler_form_cols[1].selectbox(
-            "Detector",
-            options=["yolo"],
-            index=0,
-            key="cfg_onfly_scheduler_detector_select",
-            help="On-fly scheduler is currently designed for YOLO-first relevance.",
-        )
-        scheduler_enable_gpt = scheduler_form_cols[1].toggle(
-            "Enable GPT After Relevance",
-            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_enable_gpt", True),
-            key="cfg_onfly_scheduler_enable_gpt_toggle",
-        )
-        scheduler_allow_fallback = scheduler_form_cols[1].toggle(
-            "Allow Detector Fallback",
-            value=_setting_bool(cfg_settings, "cfg_onfly_scheduler_allow_fallback", False),
-            key="cfg_onfly_scheduler_allow_fallback_toggle",
-            help="If ON, scheduler may fall back when YOLO runtime is unavailable. Recommended OFF for stricter cloud runs.",
-        )
-        version_cols = st.columns(3)
-        scheduler_pipeline_version = version_cols[0].text_input(
-            "Pipeline Version",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_pipeline_version", "onfly_v1") or "onfly_v1").strip(),
-            key="cfg_onfly_scheduler_pipeline_version_input",
-        )
-        scheduler_yolo_version = version_cols[1].text_input(
-            "YOLO Version",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_yolo_version", "") or "").strip(),
-            key="cfg_onfly_scheduler_yolo_version_input",
-            help="Optional. If changed, delta logic can re-run YOLO only.",
-        )
-        scheduler_gpt_version = version_cols[2].text_input(
-            "GPT Version",
-            value=str(cfg_settings.get("cfg_onfly_scheduler_gpt_version", "") or "").strip(),
-            key="cfg_onfly_scheduler_gpt_version_input",
-            help="Optional. If changed, delta logic can re-run GPT without redoing YOLO.",
-        )
-        save_scheduler = st.form_submit_button("Save On-Fly Scheduler Settings", type="primary")
-
-    if save_scheduler:
-        nightly_ok = bool(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(scheduler_nightly_at or "").strip()))
-        if not nightly_ok:
-            st.error("Nightly Run At must be in HH:MM 24-hour format. Example: 03:00")
-        else:
-            scheduler_payload = {
-                "cfg_onfly_scheduler_enabled": "1" if scheduler_enabled else "0",
-                "cfg_onfly_scheduler_store_id": str(scheduler_store_id).strip(),
-                "cfg_onfly_scheduler_source_url": _normalize_onfly_source_input(scheduler_source_url),
-                "cfg_onfly_scheduler_hourly_minutes": str(int(scheduler_hourly_minutes)),
-                "cfg_onfly_scheduler_nightly_run_at": str(scheduler_nightly_at).strip(),
-                "cfg_onfly_scheduler_tz": str(scheduler_tz).strip() or "Asia/Kolkata",
-                "cfg_onfly_scheduler_max_images": str(int(scheduler_max_images)),
-                "cfg_onfly_scheduler_conf": f"{float(scheduler_conf):.2f}",
-                "cfg_onfly_scheduler_detector": str(scheduler_detector).strip() or "yolo",
-                "cfg_onfly_scheduler_enable_gpt": "1" if scheduler_enable_gpt else "0",
-                "cfg_onfly_scheduler_allow_fallback": "1" if scheduler_allow_fallback else "0",
-                "cfg_onfly_scheduler_pipeline_version": str(scheduler_pipeline_version).strip() or "onfly_v1",
-                "cfg_onfly_scheduler_yolo_version": str(scheduler_yolo_version).strip(),
-                "cfg_onfly_scheduler_gpt_version": str(scheduler_gpt_version).strip(),
-                "cfg_onfly_scheduler_out_dir": str(scheduler_out_dir).strip(),
-                # keep manual run page aligned with scheduler defaults for browser-only operation
-                "cfg_onfly_store_id": str(scheduler_store_id).strip(),
-                "cfg_onfly_source_url": _normalize_onfly_source_input(scheduler_source_url),
-                "cfg_onfly_max_images": str(int(scheduler_max_images)),
-                "cfg_onfly_conf": f"{float(scheduler_conf):.2f}",
-            }
-            upsert_app_settings(db_path=db_path, settings=scheduler_payload)
-            st.success("On-fly scheduler settings saved to DB. `iris-onfly-scheduler` will now read these browser-managed values.")
-            cfg_settings = get_app_settings(db_path)
+    def _mapped_source_for_store(store_id: str) -> str:
+        rec = store_rows.get(str(store_id or "").strip())
+        return _normalize_onfly_source_input(str(getattr(rec, "drive_folder_url", "") or "").strip())
 
     next_run_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_next_run_at", ""))
     next_nightly_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_next_nightly_at", ""))
     last_run_dt = _parse_iso_utc(cfg_settings.get("cfg_onfly_last_run_at", ""))
-    _scheduler_label(
-        next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt else "",
-        next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_nightly_dt else "",
-        last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if last_run_dt else "",
-        _setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True),
-        int(pd.to_numeric(cfg_settings.get("cfg_onfly_scheduler_hourly_minutes", 60), errors="coerce") or 60),
-        str(cfg_settings.get("cfg_onfly_scheduler_nightly_run_at", "03:00") or "03:00").strip(),
-        str(cfg_settings.get("cfg_onfly_scheduler_tz", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+    selected_store_id = st.selectbox(
+        "Store",
+        options=store_options,
+        index=scheduler_default_idx,
+        key="onfly_status_store_select",
+        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
     )
-    st.caption(
-        f"Active Store: `{cfg_settings.get('cfg_onfly_scheduler_store_id', scheduler_default_store)}` | "
-        f"Source: `{_normalize_onfly_source_input(str(cfg_settings.get('cfg_onfly_scheduler_source_url', scheduler_default_source) or scheduler_default_source))}`"
+    scheduler_store_id = str(cfg_settings.get("cfg_onfly_scheduler_store_id", scheduler_default_store) or scheduler_default_store).strip()
+    mapped_source = _mapped_source_for_store(selected_store_id)
+    active_queue = _queue_snapshot(str(selected_store_id or "").strip())
+    status_rows = [
+        {
+            "Store": str(selected_store_id),
+            "Store Name": name_map.get(str(selected_store_id), str(selected_store_id)),
+            "Mapped Source": "Ready" if mapped_source else "Missing in Store Mapping",
+            "Schedule": "Enabled" if _setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True) else "Disabled",
+            "Last Run": last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if last_run_dt else "Never",
+            "Next Run": next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt and selected_store_id == scheduler_store_id else "Not scheduled for this store",
+            "Next Nightly": next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_nightly_dt and selected_store_id == scheduler_store_id else "Not scheduled for this store",
+            "GPT Retry Queue": int(active_queue.get("waiting_quota", 0)),
+            "Other Pending": int(active_queue.get("pending", 0)),
+            "Failed Queue": int(active_queue.get("failed", 0)),
+        }
+    ]
+    st.markdown("**IRIS Data Sync Status**")
+    st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+    if mapped_source:
+        st.caption(f"Source comes from `Store Mapping`: `{mapped_source}`")
+    else:
+        st.warning("No source is mapped for this store yet. Open `Operations > Store Mapping`, save the source once, then sync from here.")
+    st.info(
+        "Scheduler timing lives under `Config > Scheduler > IRIS Data Sync Scheduler`. "
+        "This page is only for checking status and running sync now."
     )
-    active_queue = _queue_snapshot(str(cfg_settings.get("cfg_onfly_scheduler_store_id", "") or "").strip())
     queue_cols = st.columns(4)
     queue_cols[0].metric("Queued GPT Retry", int(active_queue.get("waiting_quota", 0)))
     queue_cols[1].metric("Other Pending Tasks", int(active_queue.get("pending", 0)))
@@ -3839,20 +3719,9 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             st.code(stderr_tail[-800:], language="text")
 
     st.markdown("---")
-    st.markdown("**Run On-Fly Now**")
-    run_store_id = st.selectbox(
-        "Store",
-        options=store_options,
-        index=default_idx,
-        key="onfly_run_store_id",
-        format_func=lambda x: f"{name_map.get(x, x)} ({x})",
-    )
-    run_source_raw = st.text_input(
-        "Source Path / Drive URL / Drive Folder ID",
-        value=default_source,
-        key="onfly_run_source_input",
-        help="Supports full Drive URL, folder key only, local folder path, or image folder path.",
-    )
+    st.markdown("**Run Data Sync Now**")
+    run_store_id = selected_store_id
+    run_source_raw = mapped_source or default_source
     run_max_images = int(
         st.number_input(
             "Max Images (0 = full folder)",
@@ -3866,8 +3735,20 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     )
     run_overwrite = st.checkbox("Overwrite existing processed data", value=False, key="onfly_run_overwrite")
     normalized_source = _normalize_onfly_source_input(run_source_raw)
-    st.caption(f"Normalized Source: `{normalized_source}`")
+    if normalized_source:
+        st.caption(f"Using mapped source: `{normalized_source}`")
     st.caption("If reports already exist: overwrite OFF -> reuses delta and skips cached; overwrite ON -> full reprocess.")
+    action_cols = st.columns([1, 1, 2])
+    if action_cols[0].button("Sync Source Now", key="onfly_sync_source_now_btn"):
+        matched = store_rows.get(str(run_store_id).strip())
+        if matched is None or not normalized_source:
+            st.warning("This store does not have a mapped source yet.")
+        else:
+            ok, message = sync_store_from_drive(matched, data_root=data_root, db_path=db_path)
+            if ok:
+                st.success(message)
+            else:
+                st.warning(message)
 
     prior_runs = list_onfly_pipeline_runs(db_path=db_path, store_id=str(run_store_id).strip(), limit=40)
     successful_runs = [r for r in prior_runs if str(r.get("status", "")).strip().lower() == "success"]
@@ -3892,11 +3773,11 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         else:
             st.caption("Estimated run time: full-folder mode enabled (0 = no cap).")
 
-    if st.button("Run Pipeline Now", key="onfly_pipeline_run_now_btn", type="primary"):
+    if action_cols[1].button("Run Sync Now", key="onfly_pipeline_run_now_btn", type="primary"):
         if not str(run_store_id or "").strip():
             st.error("Store ID is required.")
         elif not str(normalized_source or "").strip():
-            st.error("Source path/URL/folder ID is required.")
+            st.error("This store does not have a source in Store Mapping yet.")
         else:
             gkey = str(os.getenv("GOOGLE_API_KEY", "") or "").strip()
             okey = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
@@ -4300,19 +4181,17 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             select_placeholder,
             "Top Summary",
             "Daily Walk-in & Conversion Report",
-            "Daily Calculation Proof (Folder Date Based)",
-            "On-Fly Store-Date Summary",
+            "Standard Store-Date Summary",
             "On-Fly Image Results",
             "On-Fly Walk-in Sessions",
             "Frame-Level Proof",
             "Data Health",
-            "Camera Hotspots",
             "Location Hotspots",
-            "GPT Validation Results (Test Folder)",
-            "GPT Store-Date Summary (Test Folder)",
-            "YOLO vs GPT Accuracy (Test Folder)",
-            "GPT vs Reviewer Accuracy (Test Folder)",
-            "GPT Consolidated Walk-in Table (Test Folder)",
+            "GPT Validation Results",
+            "GPT Store-Date Summary",
+            "YOLO vs GPT Accuracy",
+            "GPT vs Reviewer Accuracy",
+            "GPT Consolidated Walk-in Table",
         ],
         index=0,
         key=f"report_module_type_v2_{selected_store}",
@@ -4376,12 +4255,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             if hasattr(store_result, "daily_report") and not store_result.daily_report.empty
             else pd.DataFrame()
         )
-    elif selected_report == "Daily Calculation Proof (Folder Date Based)":
-        if not gpt_outputs["store_summary"].empty:
-            report_df = gpt_outputs["store_summary"].copy()
-        else:
-            report_df = daily_proof_df.copy()
-    elif selected_report == "On-Fly Store-Date Summary":
+    elif selected_report == "Standard Store-Date Summary":
         onfly_store_csv = root_dir.parent / "exports" / "current" / "onfly" / "onfly_store_date_report.csv"
         if onfly_store_csv.exists():
             try:
@@ -4396,6 +4270,10 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
                 report_df = pd.DataFrame()
         if not report_df.empty and "store_id" in report_df.columns:
             report_df = report_df[report_df["store_id"].astype(str) == selected_store].copy()
+        if report_df.empty and not gpt_outputs["store_summary"].empty:
+            report_df = gpt_outputs["store_summary"].copy()
+        if report_df.empty:
+            report_df = daily_proof_df.copy()
     elif selected_report == "On-Fly Image Results":
         image_csv = ""
         if not onfly_index_df.empty:
@@ -4517,29 +4395,29 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             ]
         ].copy()
         report_df.insert(0, "store_id", selected_store)
-    elif selected_report == "Camera Hotspots":
-        report_df = (
-            store_result.camera_hotspots.copy()
-            if hasattr(store_result, "camera_hotspots") and not store_result.camera_hotspots.empty
-            else pd.DataFrame()
-        )
     elif selected_report == "Location Hotspots":
         report_df = (
             store_result.location_hotspots.copy()
             if hasattr(store_result, "location_hotspots") and not store_result.location_hotspots.empty
             else pd.DataFrame()
         )
-    elif selected_report == "GPT Validation Results (Test Folder)":
+        if report_df.empty:
+            report_df = (
+                store_result.camera_hotspots.copy()
+                if hasattr(store_result, "camera_hotspots") and not store_result.camera_hotspots.empty
+                else pd.DataFrame()
+            )
+    elif selected_report == "GPT Validation Results":
         report_df = gpt_outputs["validation"].copy()
-    elif selected_report == "GPT Store-Date Summary (Test Folder)":
+    elif selected_report == "GPT Store-Date Summary":
         report_df = gpt_outputs["store_summary"].copy()
-    elif selected_report == "YOLO vs GPT Accuracy (Test Folder)":
+    elif selected_report == "YOLO vs GPT Accuracy":
         report_df = gpt_outputs["yolo_vs_gpt"].copy()
-    elif selected_report == "GPT vs Reviewer Accuracy (Test Folder)":
+    elif selected_report == "GPT vs Reviewer Accuracy":
         report_df = gpt_outputs["gpt_vs_reviewer_detail"].copy()
         if report_df.empty:
             report_df = gpt_outputs["gpt_vs_reviewer"].copy()
-    elif selected_report == "GPT Consolidated Walk-in Table (Test Folder)":
+    elif selected_report == "GPT Consolidated Walk-in Table":
         report_df = gpt_outputs["walkin_sequence"].copy()
         if report_df.empty:
             report_df = pd.DataFrame(columns=walkin_columns)
@@ -4557,7 +4435,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         report_df = report_df[report_df[date_filter_col].astype(str) == str(selected_date)].copy()
     report_download_df = report_df.copy()
 
-    allow_empty_download = selected_report == "GPT Consolidated Walk-in Table (Test Folder)"
+    allow_empty_download = selected_report == "GPT Consolidated Walk-in Table"
     if report_df.empty and not allow_empty_download:
         st.info("No rows available for this report with the selected filters.")
         return
@@ -4574,7 +4452,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         file_name=file_name,
         mime="text/csv",
     )
-    if selected_report == "GPT Validation Results (Test Folder)":
+    if selected_report == "GPT Validation Results":
         view_df = report_df.head(500).copy()
         if "annotated_image_path" in view_df.columns:
             view_df["preview_image"] = view_df["annotated_image_path"].map(
@@ -7308,6 +7186,118 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
                 )
                 upsert_app_settings(db_path=db_path, settings=scheduler_payload)
                 st.success("Scheduler settings saved.")
+
+            st.markdown("---")
+            st.markdown("**IRIS Data Sync Scheduler**")
+            st.caption("Meaning: this is the automatic store image sync. It checks the source saved in Store Mapping and runs by time.")
+            scheduler_help_df = pd.DataFrame(
+                [
+                    {"Setting": "Enable Scheduler", "Simple Meaning": "Master ON/OFF switch. ON means IRIS will run by itself.", "If Disabled": "Nothing runs automatically. You must press Sync Now manually."},
+                    {"Setting": "Interval (minutes)", "Simple Meaning": "How often IRIS checks for the next cycle.", "If Disabled": "Not used when scheduler is OFF."},
+                    {"Setting": "Buffer (minutes)", "Simple Meaning": "Small safety gap so one cycle finishes before the next starts.", "If Disabled": "Zero buffer may cause back-to-back runs to feel crowded."},
+                    {"Setting": "Sync / Feedback / Retrain / Predictions / Refresh Output", "Simple Meaning": "These are the jobs IRIS can include in one cycle.", "If Disabled": "That step is skipped until you turn it back ON."},
+                ]
+            )
+            st.dataframe(scheduler_help_df, use_container_width=True, hide_index=True)
+
+            onfly_store_rows = list_stores(db_path)
+            onfly_store_options = sorted({str(s.store_id).strip() for s in onfly_store_rows if str(s.store_id).strip()})
+            onfly_name_map = _store_name_map_cached(str(db_path))
+            onfly_default_store = str(settings.get("cfg_onfly_scheduler_store_id", "") or "TEST_STORE_D07").strip() or "TEST_STORE_D07"
+            if onfly_default_store not in onfly_store_options:
+                onfly_store_options = onfly_store_options + [onfly_default_store]
+            onfly_store_index = onfly_store_options.index(onfly_default_store) if onfly_default_store in onfly_store_options else 0
+            onfly_next_run_dt = _parse_iso_utc(settings.get("cfg_onfly_next_run_at", ""))
+            onfly_next_nightly_dt = _parse_iso_utc(settings.get("cfg_onfly_next_nightly_at", ""))
+            onfly_last_run_dt = _parse_iso_utc(settings.get("cfg_onfly_last_run_at", ""))
+
+            with st.form("cfg_onfly_scheduler_settings_form", clear_on_submit=False):
+                onfly_cols = st.columns([1, 1])
+                cfg_onfly_enabled = onfly_cols[0].toggle(
+                    "Enable IRIS Data Sync Scheduler",
+                    value=_setting_bool(settings, "cfg_onfly_scheduler_enabled", True),
+                    help="ON = automatic scheduled sync. OFF = only manual sync.",
+                )
+                cfg_onfly_store = onfly_cols[0].selectbox(
+                    "Scheduled Store",
+                    options=onfly_store_options,
+                    index=onfly_store_index,
+                    format_func=lambda x: f"{onfly_name_map.get(x, x)} ({x})",
+                )
+                cfg_onfly_hourly = int(
+                    onfly_cols[1].number_input(
+                        "Run Every (minutes)",
+                        min_value=5,
+                        max_value=1440,
+                        step=5,
+                        value=int(pd.to_numeric(settings.get("cfg_onfly_scheduler_hourly_minutes", 60), errors="coerce") or 60),
+                        help="Example: 60 means IRIS checks once every hour.",
+                    )
+                )
+                cfg_onfly_nightly = onfly_cols[1].text_input(
+                    "Nightly Run Time (HH:MM)",
+                    value=str(settings.get("cfg_onfly_scheduler_nightly_run_at", "03:00") or "03:00").strip(),
+                    help="One extra full check every night. Example: 03:00",
+                )
+                cfg_onfly_tz = onfly_cols[1].text_input(
+                    "Timezone",
+                    value=str(settings.get("cfg_onfly_scheduler_tz", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+                )
+                cfg_onfly_max_images = int(
+                    onfly_cols[0].number_input(
+                        "Max Images Per Run",
+                        min_value=0,
+                        max_value=50000,
+                        step=10,
+                        value=int(pd.to_numeric(settings.get("cfg_onfly_scheduler_max_images", 0), errors="coerce") or 0),
+                        help="0 means full folder. Any other number limits the run.",
+                    )
+                )
+                cfg_onfly_enable_gpt = onfly_cols[0].toggle(
+                    "Run GPT After Relevance",
+                    value=_setting_bool(settings, "cfg_onfly_scheduler_enable_gpt", True),
+                    help="ON = do the deeper GPT check after YOLO. OFF = stop after relevance scan.",
+                )
+                cfg_onfly_allow_fallback = onfly_cols[1].toggle(
+                    "Allow Fallback If YOLO Is Unavailable",
+                    value=_setting_bool(settings, "cfg_onfly_scheduler_allow_fallback", False),
+                    help="Keep OFF for stricter runs. Turn ON only if you want IRIS to try a backup path.",
+                )
+                save_onfly_scheduler = st.form_submit_button("Save IRIS Data Sync Scheduler", type="primary")
+
+            if save_onfly_scheduler:
+                nightly_ok = bool(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(cfg_onfly_nightly or "").strip()))
+                if not nightly_ok:
+                    st.error("Nightly Run Time must be in HH:MM 24-hour format. Example: 03:00")
+                else:
+                    upsert_app_settings(
+                        db_path=db_path,
+                        settings={
+                            "cfg_onfly_scheduler_enabled": "1" if cfg_onfly_enabled else "0",
+                            "cfg_onfly_scheduler_store_id": str(cfg_onfly_store).strip(),
+                            "cfg_onfly_scheduler_hourly_minutes": str(int(cfg_onfly_hourly)),
+                            "cfg_onfly_scheduler_nightly_run_at": str(cfg_onfly_nightly).strip(),
+                            "cfg_onfly_scheduler_tz": str(cfg_onfly_tz).strip() or "Asia/Kolkata",
+                            "cfg_onfly_scheduler_max_images": str(int(cfg_onfly_max_images)),
+                            "cfg_onfly_scheduler_enable_gpt": "1" if cfg_onfly_enable_gpt else "0",
+                            "cfg_onfly_scheduler_allow_fallback": "1" if cfg_onfly_allow_fallback else "0",
+                            "cfg_onfly_store_id": str(cfg_onfly_store).strip(),
+                            "cfg_onfly_max_images": str(int(cfg_onfly_max_images)),
+                        },
+                    )
+                    st.success("IRIS Data Sync Scheduler saved. Source path will be read from Store Mapping automatically.")
+
+            onfly_status_df = pd.DataFrame(
+                [
+                    {
+                        "Scheduled Store": onfly_name_map.get(onfly_default_store, onfly_default_store),
+                        "Last Run": onfly_last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if onfly_last_run_dt else "Never",
+                        "Next Run": onfly_next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if onfly_next_run_dt else "Not scheduled",
+                        "Next Nightly": onfly_next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if onfly_next_nightly_dt else "Not scheduled",
+                    }
+                ]
+            )
+            st.dataframe(onfly_status_df, use_container_width=True, hide_index=True)
 
     if _show_module("Sync"):
         with st.expander("Sync Settings", expanded=(selected_module == "Sync")):

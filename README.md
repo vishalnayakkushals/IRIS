@@ -233,10 +233,10 @@ Outputs:
 - `data/exports/current/gpt_validation/TEST_STORE_D07/annotated/`
 
 Dashboard:
-- `Reports > Report Module > GPT Validation Results (Test Folder)`
-- `Reports > Report Module > GPT Store-Date Summary (Test Folder)`
-- `Reports > Report Module > YOLO vs GPT Accuracy (Test Folder)`
-- `Reports > Report Module > GPT vs Reviewer Accuracy (Test Folder)`
+- `Reports > Report Module > GPT Validation Results`
+- `Reports > Report Module > GPT Store-Date Summary`
+- `Reports > Report Module > YOLO vs GPT Accuracy`
+- `Reports > Report Module > GPT vs Reviewer Accuracy`
 
 ## Detector Notes
 
