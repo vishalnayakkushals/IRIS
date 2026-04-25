@@ -53,6 +53,7 @@ It records what changed, where it changed, and why.
 | `scripts/start_web_app.py` | No-Docker Streamlit launcher that loads managed env/config and exposes IRIS as a browser-accessible web app. |
 | `scripts/start_scheduler_worker_service.py` | No-Docker launcher for the core background scheduler worker using managed runtime paths. |
 | `scripts/start_onfly_scheduler_service.py` | No-Docker launcher for the DB-backed on-fly scheduler worker using managed runtime paths. |
+| `scripts/local_runtime_manager.py` | No-PowerShell local runtime manager: writes env from local key files, starts/stops no-Docker web+schedulers, opens browser, and reports health/status. |
 | `scripts/run_onfly_pipeline.py` | CLI wrapper for on-the-fly runtime execution (manual/hourly/nightly modes). |
 | `scripts/scan_b2b_template.py` | External B2B template + SOP scanner that generates IRIS-ready incorporation reports (JSON + Markdown). |
 | `scripts/setup_local_env.ps1` | Local-only secure env bootstrapper: reads API keys from key files and writes `.env.local` for Docker/run commands. |
@@ -68,7 +69,12 @@ It records what changed, where it changed, and why.
 | `deploy/no_docker/linux/iris-onfly-scheduler.service` | Linux `systemd` template for the IRIS on-fly scheduler worker. |
 | `deploy/no_docker/windows/install_nssm_services.ps1` | Windows NSSM installer for IRIS no-Docker services. |
 | `deploy/no_docker/windows/README.md` | Windows no-Docker service setup notes for IRIS. |
+| `iris_local_start.bat` | One-click local IRIS starter: prepares env, launches web+schedulers, and opens browser without PowerShell. |
+| `iris_local_stop.bat` | One-click local IRIS stopper for the no-Docker web+scheduler runtime. |
+| `iris_local_status.bat` | Quick local IRIS status/health launcher for no-Docker runtime. |
+| `iris_local_open.bat` | Opens the local IRIS web URL in the default browser. |
 | `tests/test_runtime_bootstrap.py` | Regression tests for no-Docker env-file loading and persistent runtime path resolution. |
+| `tests/test_local_runtime_manager.py` | Regression tests for the no-PowerShell local runtime manager env/key helpers. |
 | `CTO/scripts/perf_common.py` | Shared isolated CTO log utilities (single JSONL sink, path setup, run id, percentile). |
 | `CTO/scripts/perf_cycle.py` | Single-command CTO run tracker: optional fix-command timing + page probe timing + run lifecycle events. |
 | `CTO/scripts/perf_run.py` | Manual run lifecycle logger (start/end) for custom workflows. |
@@ -95,6 +101,29 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-25 | Commit pending
+- Summary:
+  - Added a no-PowerShell local runtime manager so IRIS can be started, stopped, checked, and opened from simple double-clickable `.bat` files instead of requiring PowerShell commands.
+  - Added automatic local env bootstrapping from the existing OpenAI/Google key text files into `deploy/no_docker/.env.local`, keeping the browser/no-Docker flow easier for everyday use.
+  - Added lightweight regression coverage for the new local runtime manager helpers.
+- Changed Paths:
+  - `scripts/local_runtime_manager.py`
+  - `iris_local_start.bat`
+  - `iris_local_stop.bat`
+  - `iris_local_status.bat`
+  - `iris_local_open.bat`
+  - `tests/test_local_runtime_manager.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/local_runtime_manager.py`
+  - `iris_local_start.bat`
+  - `iris_local_stop.bat`
+  - `iris_local_status.bat`
+  - `iris_local_open.bat`
+  - `tests/test_local_runtime_manager.py`
+- Infra/Config Impact:
+  - `deploy/no_docker/.env.local` can now be auto-generated from the existing local key files when missing.
 
 ### 2026-04-25 | Commit pending
 - Summary:
