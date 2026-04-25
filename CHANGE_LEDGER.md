@@ -98,6 +98,21 @@ Use this template for each new change:
 
 ### 2026-04-25 | Commit pending
 - Summary:
+  - Profiled the Streamlit dashboard load path and confirmed the main UI slowdown came from eagerly loading full legacy exports on every page before routing, plus repeated walk-in CSV scans/aggregations and chart construction during render.
+  - Added UI performance timing logs for bootstrap, navigation resolution, legacy export loads, source-image counting, walk-in dataset loads, store/report pipeline queries, aggregations, chart builds, and full page render; logs now write to `data/exports/current/ui_perf/ui_perf_events.jsonl`.
+  - Made legacy export loading lazy so only business pages that truly need `AnalysisOutput` load the full export bundle; operational/admin pages now skip that heavy work on initial page load.
+  - Added safe caching for export loads and source-image counting, narrowed on-fly walk-in CSV reads to required business columns only, vectorized duration derivation, and reused cached store meta instead of repeated row-wise DB merges.
+  - Reduced first-render UI cost by lazy-loading heavier charts/tables behind toggles/expanders on overview/store detail pages while keeping business metrics unchanged.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
+### 2026-04-25 | Commit pending
+- Summary:
   - Added quota-aware GPT fallback behavior so on-fly runs keep YOLO results intact, mark GPT quota failures explicitly, and queue GPT-only retries instead of misreporting full failure.
   - Surfaced GPT quota retry state clearly in the Pipeline Journey UI with queue counts, retry warnings, and partial-run messaging for browser-only visibility.
   - Updated the on-fly scheduler to read run summaries, detect queued GPT retries, and advance the next retry cycle automatically when quota becomes available.

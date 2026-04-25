@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote, unquote_plus
 
@@ -297,6 +298,16 @@ PAGE_TO_PATH: dict[str, tuple[str, str]] = {
     for module, sections in NAV_TREE.items()
     for section, pages in sections.items()
     for page in pages
+}
+
+LEGACY_OUTPUT_PAGES = {
+    "Overview",
+    "Model Accuracy",
+    "Store Detail",
+    "Report Module",
+    "Data Health",
+    "Customer Journeys",
+    "Frame Review",
 }
 
 
@@ -1001,7 +1012,14 @@ def _filter_output_to_stores(output: AnalysisOutput, store_ids: list[str]) -> An
 
 
 def _load_or_run_default(root_dir: Path, out_dir: Path) -> AnalysisOutput:
-    return load_exports(out_dir=out_dir)
+    export_mtime = _export_summary_mtime(out_dir)
+    return _load_output_cached(str(out_dir), export_mtime)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_output_cached(out_dir_str: str, export_mtime: float) -> AnalysisOutput:
+    del export_mtime
+    return load_exports(out_dir=Path(out_dir_str).expanduser().resolve())
 
 
 def _export_summary_mtime(out_dir: Path) -> float:
@@ -1023,6 +1041,15 @@ def _summary_total_images(output: AnalysisOutput) -> int:
     return int(pd.to_numeric(summary["total_images"], errors="coerce").fillna(0).sum())
 
 
+def _empty_analysis_output() -> AnalysisOutput:
+    return AnalysisOutput(
+        stores={},
+        all_stores_summary=pd.DataFrame(),
+        detector_warning="",
+        used_root_fallback_store=False,
+    )
+
+
 def _count_source_images(root_dir: Path, store_filter: str = "", sample_limit: int = 500000) -> int:
     if not root_dir.exists():
         return 0
@@ -1040,6 +1067,42 @@ def _count_source_images(root_dir: Path, store_filter: str = "", sample_limit: i
             if count >= sample_limit:
                 break
     return count
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _count_source_images_cached(root_dir_str: str, store_filter: str = "", sample_limit: int = 500000) -> int:
+    return _count_source_images(Path(root_dir_str).expanduser().resolve(), store_filter=store_filter, sample_limit=sample_limit)
+
+
+def _ui_perf_log_path(out_dir: Path) -> Path:
+    return out_dir / "ui_perf" / "ui_perf_events.jsonl"
+
+
+def _log_ui_perf(out_dir: Path, page: str, step: str, duration_ms: float, **extra: object) -> None:
+    try:
+        target = _ui_perf_log_path(out_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, object] = {
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "page": str(page or "").strip(),
+            "step": str(step or "").strip(),
+            "duration_ms": round(float(duration_ms), 2),
+        }
+        for key, value in extra.items():
+            if value is None:
+                continue
+            payload[str(key)] = value
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _time_ui_step(out_dir: Path, page: str, step: str, fn, **extra: object):
+    started = perf_counter()
+    result = fn()
+    _log_ui_perf(out_dir=out_dir, page=page, step=step, duration_ms=(perf_counter() - started) * 1000.0, **extra)
+    return result
 
 
 def _safe_json_list(value: object) -> list[object]:
@@ -2588,10 +2651,31 @@ def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd
     db_path = Path(db_path_str).expanduser().resolve()
     if not base.exists():
         return pd.DataFrame()
+    required_cols = {
+        "store_id",
+        "image_id",
+        "role",
+        "included_in_analytics",
+        "group_id",
+        "walkin_id",
+        "gender",
+        "age_band",
+        "purchase_signal_bag",
+        "entry_type",
+        "session_status",
+        "camera_id",
+        "business_date",
+        "date",
+        "folder_name",
+        "time_spent_mins",
+        "entry_time",
+        "exit_time",
+        "event_type",
+    }
     frames: list[pd.DataFrame] = []
     for csv_path in sorted(base.glob("*/onfly_walkin_sessions.csv")):
         try:
-            part = pd.read_csv(csv_path)
+            part = pd.read_csv(csv_path, usecols=lambda c: c in required_cols)
         except Exception:
             continue
         if part.empty:
@@ -2630,7 +2714,7 @@ def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd
     elif "folder_name" in df.columns:
         date_series = df["folder_name"]
     else:
-        date_series = ""
+        date_series = pd.Series([""] * len(df))
     df["date_raw"] = date_series
     df["date_dt"] = df["date_raw"].map(_parse_dashboard_date)
     df["date_label"] = df["date_dt"].map(lambda d: d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "")
@@ -2644,9 +2728,25 @@ def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd
         | df.get("event_type", pd.Series([""] * len(df))).astype(str).str.upper().eq("INSIDE_PURCHASING")
     ) & df["is_customer"]
 
-    df["duration_mins"] = df.apply(_duration_minutes, axis=1)
-    valid_duration = pd.to_numeric(df["duration_mins"], errors="coerce")
-    df["duration_mins"] = np.where(valid_duration >= 0, valid_duration, np.nan)
+    duration_raw = pd.to_numeric(df.get("time_spent_mins", pd.Series(dtype=float)), errors="coerce")
+    entry_parts = df.get("entry_time", pd.Series([""] * len(df))).astype(str).str.split(":", expand=True)
+    exit_parts = df.get("exit_time", pd.Series([""] * len(df))).astype(str).str.split(":", expand=True)
+    if entry_parts.shape[1] >= 3 and exit_parts.shape[1] >= 3:
+        entry_sec = (
+            pd.to_numeric(entry_parts[0], errors="coerce").fillna(0) * 3600
+            + pd.to_numeric(entry_parts[1], errors="coerce").fillna(0) * 60
+            + pd.to_numeric(entry_parts[2], errors="coerce").fillna(0)
+        )
+        exit_sec = (
+            pd.to_numeric(exit_parts[0], errors="coerce").fillna(0) * 3600
+            + pd.to_numeric(exit_parts[1], errors="coerce").fillna(0) * 60
+            + pd.to_numeric(exit_parts[2], errors="coerce").fillna(0)
+        )
+        derived_duration = (exit_sec - entry_sec) / 60.0
+        derived_duration = derived_duration.where((exit_sec >= entry_sec) & entry_parts.notna().all(axis=1) & exit_parts.notna().all(axis=1))
+    else:
+        derived_duration = pd.Series([np.nan] * len(df))
+    df["duration_mins"] = duration_raw.where(duration_raw >= 0, derived_duration).round(2)
 
     # Customer-group correction at dashboard layer to avoid frame-wide grouping artifacts.
     walkin_key = df["walkin_id"].where(df["walkin_id"] != "", df.get("image_id", pd.Series([""] * len(df))).astype(str))
@@ -2655,17 +2755,9 @@ def _load_onfly_walkin_business_df(exports_dir_str: str, db_path_str: str) -> pd
     group_key = np.where(df["is_customer"], df["walkin_key"], group_key)
     df["group_key"] = pd.Series(group_key).astype(str)
 
-    store_master = pd.DataFrame(list_store_master(db_path))
-    if not store_master.empty:
-        store_master["store_id"] = store_master["store_id"].astype(str).str.strip()
-        store_master["zone"] = store_master.get("zone", "").fillna("").astype(str).str.strip()
-        store_master["state"] = store_master.get("state", "").fillna("").astype(str).str.strip()
-        df = df.merge(store_master[["store_id", "zone", "state"]], on="store_id", how="left")
-        df["region"] = df["zone"].fillna("").astype(str).str.strip()
-        df["state"] = df["state"].fillna("").astype(str).str.strip()
-    else:
-        df["region"] = ""
-        df["state"] = ""
+    meta_map = _store_meta_map_cached(str(db_path))
+    df["region"] = df["store_id"].map(lambda sid: str(meta_map.get(str(sid).strip(), {}).get("zone", "")).strip())
+    df["state"] = df["store_id"].map(lambda sid: str(meta_map.get(str(sid).strip(), {}).get("state", "")).strip())
     df.loc[df["region"] == "", "region"] = "Unknown"
     df.loc[df["state"] == "", "state"] = "Unknown"
     return df
@@ -2694,23 +2786,28 @@ def _render_overview(output: AnalysisOutput) -> None:
     st.subheader("Overview")
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
     db_path = Path(str(st.session_state.get("db_path", out_dir.parent / "store_registry.db"))).resolve()
-    walkin_df = _load_onfly_walkin_business_df(str(out_dir), str(db_path))
+    walkin_df = _time_ui_step(
+        out_dir,
+        "Overview",
+        "load_walkin_business_df",
+        lambda: _load_onfly_walkin_business_df(str(out_dir), str(db_path)),
+    )
     if walkin_df.empty:
         st.warning("No walk-in session data found yet. Run on-fly pipeline for at least one store.")
         return
 
-    name_map = _store_name_map_cached(str(db_path))
-    meta_map = _store_meta_map_cached(str(db_path))
+    name_map = _time_ui_step(out_dir, "Overview", "load_store_name_map", lambda: _store_name_map_cached(str(db_path)))
+    meta_map = _time_ui_step(out_dir, "Overview", "load_store_meta_map", lambda: _store_meta_map_cached(str(db_path)))
     if "region" in walkin_df.columns:
-        walkin_df["region"] = walkin_df.apply(
-            lambda r: str(r.get("region", "") or "").strip() or str(meta_map.get(str(r.get("store_id", "")).strip(), {}).get("zone", "")).strip() or "Unknown",
-            axis=1,
-        )
+        region_fill = walkin_df["store_id"].map(lambda sid: str(meta_map.get(str(sid).strip(), {}).get("zone", "")).strip())
+        walkin_df["region"] = walkin_df["region"].fillna("").astype(str).str.strip()
+        walkin_df.loc[walkin_df["region"] == "", "region"] = region_fill[walkin_df["region"] == ""]
+        walkin_df.loc[walkin_df["region"] == "", "region"] = "Unknown"
     if "state" in walkin_df.columns:
-        walkin_df["state"] = walkin_df.apply(
-            lambda r: str(r.get("state", "") or "").strip() or str(meta_map.get(str(r.get("store_id", "")).strip(), {}).get("state", "")).strip() or "Unknown",
-            axis=1,
-        )
+        state_fill = walkin_df["store_id"].map(lambda sid: str(meta_map.get(str(sid).strip(), {}).get("state", "")).strip())
+        walkin_df["state"] = walkin_df["state"].fillna("").astype(str).str.strip()
+        walkin_df.loc[walkin_df["state"] == "", "state"] = state_fill[walkin_df["state"] == ""]
+        walkin_df.loc[walkin_df["state"] == "", "state"] = "Unknown"
     non_test_exists = bool(
         walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
     )
@@ -2846,11 +2943,17 @@ def _render_overview(output: AnalysisOutput) -> None:
         st.info("Walk-in files exist, but no analytics-eligible customer sessions found.")
         return
 
-    by_store = customer_df.groupby("store_id", as_index=False).agg(
-        total_groups=("group_key", "nunique"),
-        total_walkins=("walkin_key", "nunique"),
-        avg_time_spent=("duration_mins", "mean"),
-        conversions=("is_conversion", "sum"),
+    by_store = _time_ui_step(
+        out_dir,
+        "Overview",
+        "aggregate_store_metrics",
+        lambda: customer_df.groupby("store_id", as_index=False).agg(
+            total_groups=("group_key", "nunique"),
+            total_walkins=("walkin_key", "nunique"),
+            avg_time_spent=("duration_mins", "mean"),
+            conversions=("is_conversion", "sum"),
+        ),
+        rows=int(len(customer_df)),
     )
     by_store["conversion_rate"] = np.where(
         by_store["total_walkins"] > 0,
@@ -2907,24 +3010,35 @@ def _render_overview(output: AnalysisOutput) -> None:
         else:
             trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y")
 
-        period_agg = trend_df.groupby("period", as_index=False).agg(
-            walkins=("walkin_key", "nunique"),
-            groups=("group_key", "nunique"),
-            avg_time_spent=("duration_mins", "mean"),
-            conversions=("is_conversion", "sum"),
+        period_agg = _time_ui_step(
+            out_dir,
+            "Overview",
+            "aggregate_period_metrics",
+            lambda: trend_df.groupby("period", as_index=False).agg(
+                walkins=("walkin_key", "nunique"),
+                groups=("group_key", "nunique"),
+                avg_time_spent=("duration_mins", "mean"),
+                conversions=("is_conversion", "sum"),
+            ),
+            rows=int(len(trend_df)),
         )
         period_agg["conversion_rate"] = np.where(period_agg["walkins"] > 0, period_agg["conversions"] / period_agg["walkins"], np.nan)
         period_agg = period_agg.sort_values("period")
-        st.plotly_chart(
-            px.line(
-                period_agg,
-                x="period",
-                y=["walkins", "groups"],
-                markers=True,
-                title=f"{scope} Trend ({selected_entity})",
-            ),
-            use_container_width=True,
-        )
+        if st.checkbox("Show Trend Chart", value=True, key="overview_show_trend_chart"):
+            trend_chart = _time_ui_step(
+                out_dir,
+                "Overview",
+                "build_trend_chart",
+                lambda: px.line(
+                    period_agg,
+                    x="period",
+                    y=["walkins", "groups"],
+                    markers=True,
+                    title=f"{scope} Trend ({selected_entity})",
+                ),
+                rows=int(len(period_agg)),
+            )
+            st.plotly_chart(trend_chart, use_container_width=True)
 
         if len(period_agg) >= 2:
             current = period_agg.iloc[-1]
@@ -2937,24 +3051,25 @@ def _render_overview(output: AnalysisOutput) -> None:
                 f"Conversion {'N/A' if pd.isna(delta_conv) else f'{delta_conv:+.2%}'}."
             )
 
-    st.markdown("**Top Stores By Conversion**")
     by_store["zone"] = by_store["store_id"].map(lambda sid: str(meta_map.get(str(sid), {}).get("zone", "")).strip() or "Unknown")
     by_store["state"] = by_store["store_id"].map(lambda sid: str(meta_map.get(str(sid), {}).get("state", "")).strip() or "Unknown")
-    st.dataframe(
-        by_store.sort_values("conversion_rate", ascending=False).head(10)[
-            ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.markdown("**Bottom Stores (Needs Attention)**")
-    st.dataframe(
-        by_store.sort_values("conversion_rate", ascending=True).head(10)[
-            ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    with st.expander("Store Rankings", expanded=False):
+        st.markdown("**Top Stores By Conversion**")
+        st.dataframe(
+            by_store.sort_values("conversion_rate", ascending=False).head(10)[
+                ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Bottom Stores (Needs Attention)**")
+        st.dataframe(
+            by_store.sort_values("conversion_rate", ascending=True).head(10)[
+                ["store_id", "zone", "state", "total_groups", "total_walkins", "avg_time_spent", "conversions", "conversion_rate"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def _render_model_accuracy_overview(output: AnalysisOutput, db_path: Path, out_dir: Path) -> None:
@@ -3047,12 +3162,17 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     st.subheader("Store Drill-down")
     out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
     db_path = Path(str(st.session_state.get("db_path", out_dir.parent / "store_registry.db"))).resolve()
-    walkin_df = _load_onfly_walkin_business_df(str(out_dir), str(db_path))
+    walkin_df = _time_ui_step(
+        out_dir,
+        "Store Detail",
+        "load_walkin_business_df",
+        lambda: _load_onfly_walkin_business_df(str(out_dir), str(db_path)),
+    )
     if walkin_df.empty:
         st.info("No walk-in session data found for drill-down yet.")
         return
-    name_map = _store_name_map_cached(str(db_path))
-    meta_map = _store_meta_map_cached(str(db_path))
+    name_map = _time_ui_step(out_dir, "Store Detail", "load_store_name_map", lambda: _store_name_map_cached(str(db_path)))
+    meta_map = _time_ui_step(out_dir, "Store Detail", "load_store_meta_map", lambda: _store_meta_map_cached(str(db_path)))
     non_test_exists = bool(
         walkin_df["store_id"].dropna().astype(str).str.upper().map(lambda x: not x.startswith("TEST_")).any()
     )
@@ -3191,17 +3311,25 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
     kcols[2].metric("Avg Time Spent (mins)", f"{float(summary['avg_time_spent']):.2f}")
     kcols[3].metric("Conversion Rate", "N/A" if pd.isna(summary["conversion_rate"]) else f"{float(summary['conversion_rate']):.2%}")
 
-    gender = (
-        filtered_customers.assign(gender=filtered_customers["gender_norm"])
+    gender = _time_ui_step(
+        out_dir,
+        "Store Detail",
+        "aggregate_gender_split",
+        lambda: filtered_customers.assign(gender=filtered_customers["gender_norm"])
         .groupby("gender", as_index=False)
         .agg(walkins=("walkin_key", "nunique"))
-        .sort_values("walkins", ascending=False)
+        .sort_values("walkins", ascending=False),
+        rows=int(len(filtered_customers)),
     )
-    age = (
-        filtered_customers.assign(age_band=filtered_customers["age_norm"])
+    age = _time_ui_step(
+        out_dir,
+        "Store Detail",
+        "aggregate_age_split",
+        lambda: filtered_customers.assign(age_band=filtered_customers["age_norm"])
         .groupby("age_band", as_index=False)
         .agg(walkins=("walkin_key", "nunique"))
-        .sort_values("age_band")
+        .sort_values("age_band"),
+        rows=int(len(filtered_customers)),
     )
     split_cols = st.columns(2)
     split_cols[0].markdown("**Gender Split**")
@@ -3237,11 +3365,17 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
             trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y-%m")
         else:
             trend_df["period"] = trend_df["date_dt"].dt.strftime("%Y")
-        agg = trend_df.groupby("period", as_index=False).agg(
-            walkins=("walkin_key", "nunique"),
-            groups=("group_key", "nunique"),
-            avg_time_spent=("duration_mins", "mean"),
-            conversions=("is_conversion", "sum"),
+        agg = _time_ui_step(
+            out_dir,
+            "Store Detail",
+            "aggregate_trend",
+            lambda: trend_df.groupby("period", as_index=False).agg(
+                walkins=("walkin_key", "nunique"),
+                groups=("group_key", "nunique"),
+                avg_time_spent=("duration_mins", "mean"),
+                conversions=("is_conversion", "sum"),
+            ),
+            rows=int(len(trend_df)),
         )
         agg["conversion_rate"] = np.where(agg["walkins"] > 0, agg["conversions"] / agg["walkins"], np.nan)
         agg = agg.sort_values("period")
@@ -3253,15 +3387,24 @@ def _render_store_detail(output: AnalysisOutput, time_bucket_minutes: int, root_
         compare_idx = compare_options.index(compare_default) if compare_default in compare_options else 0
         compare_period = st.selectbox("Compare Against", options=compare_options, index=compare_idx, key="store_compare_period")
 
-        chart_cols = st.columns(2)
-        chart_cols[0].plotly_chart(
-            px.line(agg, x="period", y=["walkins", "groups"], markers=True, title="Walk-ins & Groups Trend"),
-            use_container_width=True,
-        )
-        chart_cols[1].plotly_chart(
-            px.line(agg, x="period", y=["conversion_rate", "avg_time_spent"], markers=True, title="Conversion & Avg Time Trend"),
-            use_container_width=True,
-        )
+        if st.checkbox("Show Trend Charts", value=True, key="store_detail_show_trend_charts"):
+            chart_cols = st.columns(2)
+            walkin_chart = _time_ui_step(
+                out_dir,
+                "Store Detail",
+                "build_walkin_trend_chart",
+                lambda: px.line(agg, x="period", y=["walkins", "groups"], markers=True, title="Walk-ins & Groups Trend"),
+                rows=int(len(agg)),
+            )
+            conversion_chart = _time_ui_step(
+                out_dir,
+                "Store Detail",
+                "build_conversion_trend_chart",
+                lambda: px.line(agg, x="period", y=["conversion_rate", "avg_time_spent"], markers=True, title="Conversion & Avg Time Trend"),
+                rows=int(len(agg)),
+            )
+            chart_cols[0].plotly_chart(walkin_chart, use_container_width=True)
+            chart_cols[1].plotly_chart(conversion_chart, use_container_width=True)
 
         cur = agg[agg["period"] == current_period].iloc[0]
         if compare_period != "(No compare period)" and compare_period in set(agg["period"].astype(str)):
@@ -3859,7 +4002,14 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     selected_store = st.selectbox("Store Filter", options=options, index=0, key="onfly_pipeline_store_filter")
     store_filter = "" if selected_store == "(All Stores)" else selected_store
 
-    runs = list_onfly_pipeline_runs(db_path=db_path, store_id=store_filter, limit=200)
+    out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
+    runs = _time_ui_step(
+        out_dir,
+        "Manual data sync of IRIS",
+        "load_pipeline_runs",
+        lambda: list_onfly_pipeline_runs(db_path=db_path, store_id=store_filter, limit=200),
+        store_filter=store_filter or "all",
+    )
     runs_df = pd.DataFrame(runs)
     if runs_df.empty:
         st.info("No on-fly pipeline runs found yet. Trigger `run_iris.bat onfly-run-now` and refresh.")
@@ -4040,7 +4190,13 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         except Exception as exc:
             st.error(f"Restore failed: {exc}")
 
-    events = list_onfly_pipeline_run_events(db_path=db_path, run_id=str(selected_run), limit=2000)
+    events = _time_ui_step(
+        out_dir,
+        "Manual data sync of IRIS",
+        "load_pipeline_events",
+        lambda: list_onfly_pipeline_run_events(db_path=db_path, run_id=str(selected_run), limit=2000),
+        run_id=str(selected_run),
+    )
     events_df = pd.DataFrame(events)
     stage_order = ["LIST", "SKIP_CHECK", "DOWNLOAD", "YOLO", "GPT", "REPORT_WRITER", "DASHBOARD_INGEST"]
     st.markdown("**Stage Timeline**")
@@ -4079,6 +4235,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
 def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path) -> None:
     st.subheader("Report Module")
     st.caption("Choose store/date and download report data for offline analysis.")
+    out_dir = Path(str(st.session_state.get("ctrl_out_str", "data/exports/current"))).expanduser().resolve()
 
     select_placeholder = "-- Select --"
     mapped_store_ids = sorted({str(s.store_id).strip() for s in list_stores(db_path) if str(s.store_id).strip()})
@@ -4118,7 +4275,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         "conversion_rate": np.nan,
     }
     gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=selected_store)
-    onfly_index_rows = get_onfly_report_index(db_path=db_path, store_id=selected_store)
+    onfly_index_rows = _time_ui_step(
+        out_dir,
+        "Report Module",
+        "load_onfly_report_index",
+        lambda: get_onfly_report_index(db_path=db_path, store_id=selected_store),
+        store_id=selected_store,
+    )
     onfly_index_df = pd.DataFrame(onfly_index_rows)
 
     image_dates = [str(v) for v in image_df["capture_date"].dropna().astype(str).unique()] if "capture_date" in image_df.columns else []
@@ -4222,7 +4385,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         onfly_store_csv = root_dir.parent / "exports" / "current" / "onfly" / "onfly_store_date_report.csv"
         if onfly_store_csv.exists():
             try:
-                report_df = pd.read_csv(onfly_store_csv)
+                report_df = _time_ui_step(
+                    out_dir,
+                    "Report Module",
+                    "read_onfly_store_date_csv",
+                    lambda: pd.read_csv(onfly_store_csv),
+                    report=str(onfly_store_csv),
+                )
             except Exception:
                 report_df = pd.DataFrame()
         if not report_df.empty and "store_id" in report_df.columns:
@@ -4234,7 +4403,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             image_csv = str(latest.get("image_results_csv", "") or "").strip()
         if image_csv and Path(image_csv).exists():
             try:
-                report_df = pd.read_csv(Path(image_csv))
+                report_df = _time_ui_step(
+                    out_dir,
+                    "Report Module",
+                    "read_onfly_image_results_csv",
+                    lambda: pd.read_csv(Path(image_csv)),
+                    report=str(image_csv),
+                )
             except Exception:
                 report_df = pd.DataFrame()
     elif selected_report == "On-Fly Walk-in Sessions":
@@ -4244,7 +4419,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             walkin_csv = str(latest.get("walkin_sessions_csv", "") or "").strip()
         if walkin_csv and Path(walkin_csv).exists():
             try:
-                report_df = pd.read_csv(Path(walkin_csv))
+                report_df = _time_ui_step(
+                    out_dir,
+                    "Report Module",
+                    "read_onfly_walkin_csv",
+                    lambda: pd.read_csv(Path(walkin_csv)),
+                    report=str(walkin_csv),
+                )
             except Exception:
                 report_df = pd.DataFrame()
         audit_csv = ""
@@ -4260,7 +4441,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         )
         if show_audit and audit_csv:
             try:
-                report_df = pd.read_csv(Path(audit_csv))
+                report_df = _time_ui_step(
+                    out_dir,
+                    "Report Module",
+                    "read_onfly_walkin_audit_csv",
+                    lambda: pd.read_csv(Path(audit_csv)),
+                    report=str(audit_csv),
+                )
             except Exception:
                 pass
         if show_audit and not audit_csv:
@@ -7347,6 +7534,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
     return bool(rerun_clicked)
 
 def main() -> None:
+    bootstrap_started = perf_counter()
     load_env_file()
     st.set_page_config(
         page_title="IRIS Store Analysis Dashboard",
@@ -7366,6 +7554,7 @@ def main() -> None:
     data_root.mkdir(parents=True, exist_ok=True)
     default_exports_dir.mkdir(parents=True, exist_ok=True)
     init_db(db_path)
+    _log_ui_perf(default_exports_dir, "main", "bootstrap_runtime", (perf_counter() - bootstrap_started) * 1000.0)
     org_settings = _effective_org_settings(get_app_settings(db_path))
     ensure_default_admins(
         db_path,
@@ -7424,6 +7613,7 @@ def main() -> None:
     active_perms = user_permissions(db_path=db_path, email=active_email) if active_email else {}
     active_roles = user_role_names(db_path=db_path, email=active_email) if active_email else []
     current_module, current_section, current_page = _resolve_menu_from_query()
+    _log_ui_perf(default_exports_dir, current_page, "resolve_navigation", 0.0, module=current_module, section=current_section)
 
     access_email = _render_header_bar(
         app_name=org_settings.get("app_name", "IRIS"),
@@ -7558,20 +7748,30 @@ def main() -> None:
             st.success("Analysis completed and CSV exports updated.")
 
     output: AnalysisOutput | None = st.session_state.get("analysis_output")
-    if output is None:
-        output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
-        st.session_state["analysis_output"] = output
-        st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
-    else:
-        current_mtime = _export_summary_mtime(out_dir)
-        cached_mtime = float(st.session_state.get("analysis_export_mtime", 0.0) or 0.0)
-        if current_mtime > cached_mtime:
-            output = _load_or_run_default(root_dir=root_dir, out_dir=out_dir)
+    needs_legacy_output = current_page in LEGACY_OUTPUT_PAGES
+    if needs_legacy_output:
+        if output is None:
+            output = _time_ui_step(out_dir, current_page, "load_legacy_exports", lambda: _load_or_run_default(root_dir=root_dir, out_dir=out_dir))
             st.session_state["analysis_output"] = output
-            st.session_state["analysis_export_mtime"] = current_mtime
-            st.info("Loaded latest exports from disk.")
-    if output is not None and _summary_total_images(output) == 0:
-        source_count = _count_source_images(root_dir=root_dir, store_filter=store_filter)
+            st.session_state["analysis_export_mtime"] = _export_summary_mtime(out_dir)
+        else:
+            current_mtime = _export_summary_mtime(out_dir)
+            cached_mtime = float(st.session_state.get("analysis_export_mtime", 0.0) or 0.0)
+            if current_mtime > cached_mtime:
+                output = _time_ui_step(out_dir, current_page, "reload_legacy_exports", lambda: _load_or_run_default(root_dir=root_dir, out_dir=out_dir))
+                st.session_state["analysis_output"] = output
+                st.session_state["analysis_export_mtime"] = current_mtime
+                st.info("Loaded latest exports from disk.")
+    if output is None:
+        output = _empty_analysis_output()
+    if needs_legacy_output and _summary_total_images(output) == 0:
+        source_count = _time_ui_step(
+            out_dir,
+            current_page,
+            "count_source_images",
+            lambda: _count_source_images_cached(str(root_dir), store_filter=store_filter),
+            store_filter=store_filter or "all",
+        )
         if source_count > 0:
             st.warning(
                 "Exports are empty/stale while source images exist. "
@@ -7666,13 +7866,14 @@ def main() -> None:
                 st.info(f"Access mapped to store `{mapped.store_id}` ({mapped.store_name}).")
                 view_output = _filter_output_to_store(view_output, mapped.store_id)
 
-    if output.detector_warning:
+    if needs_legacy_output and output.detector_warning:
         st.warning(output.detector_warning)
-    if output.used_root_fallback_store:
+    if needs_legacy_output and output.used_root_fallback_store:
         st.info(
             "No store subfolders found in root; root folder was treated as a single store."
         )
 
+    render_started = perf_counter()
     if current_page == "Config":
         st.caption("Use the configuration form above to run analysis.")
     elif current_page == "Overview":
@@ -7758,6 +7959,7 @@ def main() -> None:
             f"Page '{current_page}' is not mapped in this build. Showing Overview instead."
         )
         _render_overview(view_output)
+    _log_ui_perf(out_dir, current_page, "render_page", (perf_counter() - render_started) * 1000.0)
 
 if __name__ == "__main__":
     main()
