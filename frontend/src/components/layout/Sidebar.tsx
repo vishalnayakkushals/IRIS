@@ -13,12 +13,11 @@ export function Sidebar() {
   const location = useLocation();
 
   const menu = [
-    { name: "Overview", path: "/", icon: <LayoutDashboard size={20} /> },
-    { name: "Store Hub", path: "/stores", icon: <Building2 size={20} /> },
-    { name: "Walk-ins", path: "/walkins", icon: <Users size={20} /> },
-    { name: "Cameras", path: "/cameras", icon: <Camera size={20} /> },
-    { name: "Live Pipeline", path: "/pipeline", icon: <Clock size={20} /> },
-    { name: "Settings", path: "/settings", icon: <Settings size={20} /> },
+    { name: "Overview", path: "/overview", icon: <LayoutDashboard size={20} /> },
+    { name: "Store Detail", path: "/detail", icon: <Building2 size={20} /> },
+    { name: "Quality Assurance", path: "/quality", icon: <Camera size={20} /> },
+    { name: "Pipeline Jobs", path: "/scheduler", icon: <Clock size={20} /> },
+    { name: "Store Admin", path: "/admin", icon: <Settings size={20} /> },
   ];
 
   return (

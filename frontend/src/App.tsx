@@ -2,6 +2,9 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Login from "./pages/Login";
 import SchedulerDashboard from "./pages/SchedulerDashboard";
 import Overview from "./pages/Overview";
+import StoreDetail from "./pages/StoreDetail";
+import QualityFeedback from "./pages/QualityFeedback";
+import StoreAdmin from "./pages/StoreAdmin";
 
 import { AppLayout } from "./components/layout/AppLayout";
 
@@ -29,6 +32,30 @@ export default function App() {
           element={
              <RequireAuth>
                <Overview />
+             </RequireAuth>
+          }
+        />
+        <Route
+          path="/detail"
+          element={
+             <RequireAuth>
+               <StoreDetail />
+             </RequireAuth>
+          }
+        />
+        <Route
+          path="/quality"
+          element={
+             <RequireAuth>
+               <QualityFeedback />
+             </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+             <RequireAuth>
+               <StoreAdmin />
              </RequireAuth>
           }
         />

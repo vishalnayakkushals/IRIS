@@ -11,6 +11,7 @@ from backend.app.api.routes_health import router as health_router
 from backend.app.api.routes_jobs import router as jobs_router
 from backend.app.api.routes_runs import router as runs_router
 from backend.app.api.routes_dashboard import router as dashboard_router
+from backend.app.api.routes_detail import router as detail_router
 
 app = FastAPI(title="IRIS API", version="1.0.0", docs_url="/api/docs", redoc_url=None)
 
@@ -27,6 +28,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(runs_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api/dashboard")
+app.include_router(detail_router, prefix="/api/detail")
 
 # Serve React build from /app/backend/app/static
 _static_dir = Path(__file__).parent / "static"
