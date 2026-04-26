@@ -104,6 +104,20 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Stabilized the React/FastAPI auth flow by validating protected-page tokens through `/api/auth/me` instead of trusting any `localStorage` token string.
+  - Added login-route session reuse so already-authenticated users are redirected into the app instead of seeing the login form again.
+  - Fixed FastAPI React static hosting to return the SPA entry page for deep links like `/overview` and `/scheduler` while preserving `/api/*` routes.
+- Changed Paths:
+  - `frontend/src/App.tsx`
+  - `backend/app/main.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Fixed React/FastAPI login to use the real IRIS `data/store_registry.db` during local runs instead of an empty `C:\app\data\store_registry.db`, which was causing valid credentials to fail.
   - Kept Docker compatibility by resolving the default `/app/data` setting back to the repo `data/` folder automatically from backend code.
   - Fixed `/api/auth/me` so it returns the saved user profile by email instead of incorrectly trying to re-authenticate with an empty password.
