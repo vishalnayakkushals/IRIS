@@ -83,6 +83,8 @@ It records what changed, where it changed, and why.
 | `CTO/run_cto_cycle.bat` | Windows wrapper to run a CTO perf cycle quickly with default dashboard URLs. |
 | `CTO/run_cto_watch.bat` | Windows wrapper for continuous CTO browse-speed watch mode. |
 | `CTO/README.md` | Usage and isolation guarantees for the CTO observer layer. |
+| `backend/app/db/canonical_metadata.py` | Canonical Postgres target schema metadata for platform-state cutover away from SQLite and CSV-backed source-of-truth. |
+| `docs/operations/platform_data_cutover_inventory.md` | Inventory of live SQLite tables and CSV artifacts plus the recommended single-platform cutover path to FastAPI/React. |
 
 ## Change Entry Template
 Use this template for each new change:
@@ -101,6 +103,23 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-26 | Commit pending
+- Summary:
+  - Mapped the live SQLite runtime tables and CSV artifacts still used by production-style paths and documented which ones must migrate vs remain export-only.
+  - Defined the canonical Postgres target schema in SQLAlchemy metadata without touching the core analytics brain modules.
+  - Wired Alembic to the canonical metadata and aligned backend dependency declarations for the next migration phase.
+- Changed Paths:
+  - `backend/app/db/canonical_metadata.py`
+  - `backend/migrations/env.py`
+  - `backend/requirements.txt`
+  - `docs/operations/platform_data_cutover_inventory.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `backend/app/db/canonical_metadata.py`
+  - `docs/operations/platform_data_cutover_inventory.md`
+- Infra/Config Impact:
+  - Declares `sqlalchemy`, `alembic`, and `asyncpg` in backend requirements and sets Alembic `target_metadata` to the canonical Postgres schema definition for future migrations.
 
 ### 2026-04-26 | Commit pending
 - Summary:
