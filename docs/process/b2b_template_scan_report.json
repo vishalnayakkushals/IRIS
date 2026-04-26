@@ -1,0 +1,53 @@
+{
+  "template_root": "D:\\b2b-template",
+  "sop_docx": "C:\\Users\\Kushals.DESKTOP-D51MT8S\\Downloads\\IRIS\\B2B Projects Fundamental-Pramod.docx",
+  "total_files": 14635,
+  "total_dirs": 1515,
+  "extension_counts": {
+    ".js": 6403,
+    ".map": 2873,
+    ".ts": 2725,
+    "<no_ext>": 960,
+    ".json": 589,
+    ".md": 556,
+    ".mjs": 95,
+    ".mts": 83,
+    ".cts": 54,
+    ".yml": 48,
+    ".cjs": 42,
+    ".txt": 22,
+    ".eslintrc": 20,
+    ".github": 20,
+    ".cmd": 16,
+    ".ps1": 16,
+    ".nycrc": 16,
+    ".css": 14,
+    ".example": 12,
+    ".html": 12
+  },
+  "key_paths": {
+    "README.md": true,
+    ".gitignore": true,
+    "backend/package.json": true,
+    "frontend/package.json": true,
+    "backend env examples": true,
+    "frontend env examples": true
+  },
+  "sop_sections_found": [
+    "Mandatory Branching",
+    "Pull Request",
+    "Deployment Process",
+    "Database Management",
+    "Non-Negotiable Rules"
+  ],
+  "recommended_now": [
+    "Keep SOP checklist and template scan report under docs/process for team onboarding.",
+    "Reuse PR checklist/branching rules in existing GitHub workflow and AGENTS guidance.",
+    "Keep template as external reference only (do not merge Node modules/frontend dist into IRIS)."
+  ],
+  "recommended_future": [
+    "If required, create a separate B2B service repo from template instead of mixing with IRIS runtime.",
+    "Implement org-level branch protections and reviewer gates for SOP enforcement.",
+    "Add infra-level backup/restore drill automation if moving to shared production standards."
+  ]
+}

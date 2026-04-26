@@ -34,3 +34,7 @@ CTO/reports/*
 run-iris-validation.local.ps1
 run-iris-normal.local.ps1
 .local-secrets/
+
+# Local env files (secrets)
+.env
+.env.local

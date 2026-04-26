@@ -65,3 +65,7 @@ export interface RunRecord {
 
 export const getRuns = (limit = 50) =>
   api.get<{ runs: RunRecord[]; total: number }>(`/runs?limit=${limit}`);
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+export const fetchOverview = () =>
+  api.get("/dashboard/overview");

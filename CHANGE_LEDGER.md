@@ -104,6 +104,28 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Scaffolding Phase 1 UI Migration using Vite, React, Shadcn, Tremor, and Lucide.
+  - Added basic AppLayout, TopNav, and Sidebar shells in the frontend workspace.
+  - Migrated SchedulerDashboard.tsx to use Tremor components.
+  - Initialized Alembic for backend migrations and set up asynchronous Postgres connection logic in `config.py` and `db/session.py`.
+  - Added test utilities `mock_ingest.py` and `security_audit.py`.
+- Changed Paths:
+  - `frontend/src/App.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `backend/app/config.py`
+  - `backend/app/db/session.py`
+  - `scripts/mock_ingest.py`
+  - `scripts/security_audit.py`
+- New Modules Introduced:
+  - `frontend/src/components/layout/AppLayout.tsx`
+  - `frontend/src/components/layout/TopNav.tsx`
+  - `frontend/src/components/layout/Sidebar.tsx`
+  - `backend/migrations/`
+- Infra/Config Impact:
+  - Defined Postgres URI `postgresql+asyncpg://iris_user:password@localhost/iris_db` for phase cutoff routing.
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Made Report Module show empty tables with column headers for every report type instead of blank panels when a store/date has no rows yet.
   - Fixed on-fly report file loading on Windows by resolving stored `/app/data/...` runtime paths back to the local workspace before reading report CSVs.
   - Verified the local web runtime after restart so the empty-table behavior is live on the browser app.

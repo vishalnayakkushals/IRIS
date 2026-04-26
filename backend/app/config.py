@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    db_path: str = "/app/data/store_registry.db"
+    postgres_url: str = "postgresql+asyncpg://iris_user:password@localhost/iris_db"
     redis_url: str = "redis://redis:6379/0"
     jwt_secret: str = "change_me_in_env"
     jwt_expire_days: int = 14
@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "", "case_sensitive": False}
 
     @property
-    def db_path_obj(self) -> Path:
-        return Path(self.db_path)
+    def get_db_url(self) -> str:
+        return self.postgres_url
 
     @property
     def data_root_obj(self) -> Path:

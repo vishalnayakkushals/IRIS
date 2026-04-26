@@ -1,11 +1,14 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Login from "./pages/Login";
 import SchedulerDashboard from "./pages/SchedulerDashboard";
+import Overview from "./pages/Overview";
+
+import { AppLayout } from "./components/layout/AppLayout";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem("iris_token");
   if (!token) return <Navigate to="/login" replace />;
-  return <>{children}</>;
+  return <AppLayout>{children}</AppLayout>;
 }
 
 export default function App() {
@@ -21,8 +24,16 @@ export default function App() {
             </RequireAuth>
           }
         />
-        <Route path="/" element={<Navigate to="/scheduler" replace />} />
-        <Route path="*" element={<Navigate to="/scheduler" replace />} />
+        <Route
+          path="/overview"
+          element={
+             <RequireAuth>
+               <Overview />
+             </RequireAuth>
+          }
+        />
+        <Route path="/" element={<Navigate to="/overview" replace />} />
+        <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>
     </BrowserRouter>
   );
