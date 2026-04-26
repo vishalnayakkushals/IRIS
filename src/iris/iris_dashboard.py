@@ -1534,11 +1534,11 @@ def _empty_report_frame(report_name: str, walkin_columns: list[str]) -> pd.DataF
             "store_id", "floor_name", "location_name", "relevant_images", "total_people",
             "avg_people_per_relevant_image", "avg_dwell_sec", "hotspot_rank",
         ],
-        "GPT Validation Results": GPT_OUTPUT_SCHEMAS["validation"],
-        "GPT Store-Date Summary": GPT_OUTPUT_SCHEMAS["store_summary"],
-        "YOLO vs GPT Accuracy": GPT_OUTPUT_SCHEMAS["yolo_vs_gpt"],
-        "GPT vs Reviewer Accuracy": GPT_OUTPUT_SCHEMAS["gpt_vs_reviewer_detail"],
-        "GPT Consolidated Walk-in Table": walkin_columns,
+        "GPT Validation Summary": GPT_OUTPUT_SCHEMAS["validation"],
+        "Datewise Footfall Summary": GPT_OUTPUT_SCHEMAS["store_summary"],
+        "YOLO Accuracy": GPT_OUTPUT_SCHEMAS["yolo_vs_gpt"],
+        "GPT Accuracy": GPT_OUTPUT_SCHEMAS["gpt_vs_reviewer_detail"],
+        "Datewise Footfall Detail Analysis": walkin_columns,
     }
     return pd.DataFrame(columns=schemas.get(report_name, []))
 
@@ -4392,23 +4392,35 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         index=0,
         key=f"report_module_date_v2_{selected_store}",
     )
-    selected_report = st.selectbox(
-        "Which report",
-        options=[
-            select_placeholder,
+    report_groups: dict[str, list[str]] = {
+        "Main Reports": [
             "Store Summary",
             "Daily Walk-in & Conversion Report",
             "Storewise Image Summary",
+            "Datewise Footfall Summary",
+            "Datewise Footfall Detail Analysis",
+        ],
+        "Operations Reports": [
             "Storewise Image Scanning Result Details",
             "On-Fly Walk-in Sessions",
             "Image frame to frame Analysis",
             "Location Hotspots",
-            "GPT Validation Results",
-            "GPT Store-Date Summary",
-            "YOLO vs GPT Accuracy",
-            "GPT vs Reviewer Accuracy",
-            "GPT Consolidated Walk-in Table",
         ],
+        "Model Related Reports": [
+            "GPT Validation Summary",
+            "YOLO Accuracy",
+            "GPT Accuracy",
+        ],
+    }
+    selected_group = st.selectbox(
+        "Report Group",
+        options=list(report_groups.keys()),
+        index=0,
+        key=f"report_module_group_v2_{selected_store}",
+    )
+    selected_report = st.selectbox(
+        "Which report",
+        options=[select_placeholder, *report_groups[selected_group]],
         index=0,
         key=f"report_module_type_v2_{selected_store}",
     )
@@ -4615,17 +4627,17 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
                 if hasattr(store_result, "camera_hotspots") and not store_result.camera_hotspots.empty
                 else pd.DataFrame()
             )
-    elif selected_report == "GPT Validation Results":
+    elif selected_report == "GPT Validation Summary":
         report_df = gpt_outputs["validation"].copy()
-    elif selected_report == "GPT Store-Date Summary":
+    elif selected_report == "Datewise Footfall Summary":
         report_df = gpt_outputs["store_summary"].copy()
-    elif selected_report == "YOLO vs GPT Accuracy":
+    elif selected_report == "YOLO Accuracy":
         report_df = gpt_outputs["yolo_vs_gpt"].copy()
-    elif selected_report == "GPT vs Reviewer Accuracy":
+    elif selected_report == "GPT Accuracy":
         report_df = gpt_outputs["gpt_vs_reviewer_detail"].copy()
         if report_df.empty:
             report_df = gpt_outputs["gpt_vs_reviewer"].copy()
-    elif selected_report == "GPT Consolidated Walk-in Table":
+    elif selected_report == "Datewise Footfall Detail Analysis":
         report_df = gpt_outputs["walkin_sequence"].copy()
         if report_df.empty:
             report_df = pd.DataFrame(columns=walkin_columns)
@@ -4646,7 +4658,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         report_df = report_df[report_df[date_filter_col].astype(str) == str(selected_date)].copy()
     report_download_df = report_df.copy()
 
-    allow_empty_download = selected_report == "GPT Consolidated Walk-in Table"
+    allow_empty_download = selected_report == "Datewise Footfall Detail Analysis"
     if report_df.empty and not allow_empty_download and len(report_df.columns) == 0:
         st.info("No rows available for this report with the selected filters.")
         return
@@ -4668,7 +4680,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
     view_df = report_df.copy()
     if "store_id" in view_df.columns:
         view_df["store_id"] = view_df["store_id"].map(lambda v: _store_label(v, name_map, include_code=False))
-    if selected_report == "GPT Validation Results":
+    if selected_report == "GPT Validation Summary":
         view_df = view_df.head(500).copy()
         if "annotated_image_path" in view_df.columns:
             view_df["preview_image"] = view_df["annotated_image_path"].map(

@@ -104,6 +104,19 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Renamed GPT/YOLO report labels to business-friendly names and grouped Report Module into `Main Reports`, `Operations Reports`, and `Model Related Reports`.
+  - Kept management-facing footfall summaries in the main group while moving validation and accuracy diagnostics out of the primary review flow.
+  - Restarted the local web runtime and verified the grouped report UI is live in the browser app.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Scaffolding Phase 1 UI Migration using Vite, React, Shadcn, Tremor, and Lucide.
   - Added basic AppLayout, TopNav, and Sidebar shells in the frontend workspace.
   - Migrated SchedulerDashboard.tsx to use Tremor components.
