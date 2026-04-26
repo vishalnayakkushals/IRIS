@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 from time import perf_counter
 from typing import Any
 from urllib.parse import quote, unquote_plus
@@ -1462,6 +1463,134 @@ def _host_runtime_path(path_text: object, db_path: Path) -> Path:
     if raw.startswith("/app/data/"):
         return (db_path.parent / raw.replace("/app/data/", "")).resolve()
     return Path(raw).expanduser().resolve()
+
+
+def _read_pid_value(path: Path) -> int:
+    try:
+        return int(str(path.read_text(encoding="utf-8")).strip())
+    except Exception:
+        return 0
+
+
+def _pid_is_running(pid: int) -> bool:
+    if int(pid) <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return str(int(pid)) in str(completed.stdout or "")
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _local_service_status(service_name: str, db_path: Path) -> dict[str, object]:
+    repo_root = db_path.parent.parent
+    pid_dir = repo_root / "deploy" / "no_docker" / "runtime_logs" / "pids"
+    pid_name_map = {
+        "web": "web.pid",
+        "scheduler": "scheduler.pid",
+        "onfly_scheduler": "onfly.pid",
+    }
+    pid_path = pid_dir / pid_name_map.get(str(service_name).strip(), "")
+    pid_value = _read_pid_value(pid_path) if pid_path.name else 0
+    running = _pid_is_running(pid_value)
+    return {
+        "service": str(service_name).strip(),
+        "pid": int(pid_value or 0),
+        "running": bool(running),
+        "state": "RUNNING" if running else "STOPPED",
+    }
+
+
+def _load_onfly_store_date_summary(base_out_dir: Path, store_id: str) -> pd.DataFrame:
+    report_path = base_out_dir / "onfly" / "onfly_store_date_report.csv"
+    if not report_path.exists():
+        return pd.DataFrame(columns=["store_id", "Date", "total_images", "relevant_images", "customer_count", "conversions", "bounce"])
+    try:
+        df = pd.read_csv(report_path)
+    except Exception:
+        return pd.DataFrame(columns=["store_id", "Date", "total_images", "relevant_images", "customer_count", "conversions", "bounce"])
+    if df.empty or "store_id" not in df.columns:
+        return pd.DataFrame(columns=["store_id", "Date", "total_images", "relevant_images", "customer_count", "conversions", "bounce"])
+    out = df[df["store_id"].astype(str) == str(store_id).strip()].copy()
+    if "Date" in out.columns:
+        out["Date"] = out["Date"].fillna("").astype(str)
+    for col in ["total_images", "relevant_images", "customer_count", "conversions", "bounce"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+    if "conversion_rate" not in out.columns:
+        cust = pd.to_numeric(out.get("customer_count", 0), errors="coerce").fillna(0)
+        conv = pd.to_numeric(out.get("conversions", 0), errors="coerce").fillna(0)
+        out["conversion_rate"] = np.where(cust > 0, (conv / cust) * 100.0, np.nan)
+    return out
+
+
+def _build_store_summary_from_onfly(store_id: str, onfly_store_df: pd.DataFrame, business_kpi: dict[str, object]) -> pd.DataFrame:
+    if onfly_store_df.empty:
+        return pd.DataFrame()
+    total_images = int(pd.to_numeric(onfly_store_df.get("total_images", 0), errors="coerce").fillna(0).sum())
+    relevant_images = int(pd.to_numeric(onfly_store_df.get("relevant_images", 0), errors="coerce").fillna(0).sum())
+    customer_count = int(pd.to_numeric(onfly_store_df.get("customer_count", 0), errors="coerce").fillna(0).sum())
+    conversions = int(pd.to_numeric(onfly_store_df.get("conversions", 0), errors="coerce").fillna(0).sum())
+    bounce = int(pd.to_numeric(onfly_store_df.get("bounce", 0), errors="coerce").fillna(0).sum())
+    conversion_rate = (conversions / customer_count * 100.0) if customer_count > 0 else np.nan
+    return pd.DataFrame(
+        [
+            {
+                "store_id": store_id,
+                "total_images": total_images,
+                "valid_images": total_images,
+                "relevant_images": relevant_images,
+                "total_people": customer_count,
+                "estimated_visits": customer_count,
+                "avg_dwell_sec": np.nan,
+                "bounce_rate": (bounce / customer_count * 100.0) if customer_count > 0 else np.nan,
+                "footfall": customer_count,
+                "los_alerts": 0,
+                "daily_walkins": customer_count,
+                "daily_conversions": conversions,
+                "daily_conversion_rate": conversion_rate,
+                "entries": int(business_kpi.get("entries", 0)),
+                "closed_exits": int(business_kpi.get("closed_exits", 0)),
+                "converted": int(business_kpi.get("converted", conversions)),
+                "bounced": int(business_kpi.get("bounced", bounce)),
+                "conversion_rate": conversion_rate,
+            }
+        ]
+    )
+
+
+def _build_daily_walkin_report_from_onfly(onfly_store_df: pd.DataFrame) -> pd.DataFrame:
+    if onfly_store_df.empty:
+        return pd.DataFrame()
+    out = onfly_store_df.copy()
+    out["date"] = out.get("Date", "").fillna("").astype(str)
+    out["actual_customers"] = pd.to_numeric(out.get("customer_count", 0), errors="coerce").fillna(0).astype(int)
+    out["actual_conversions"] = pd.to_numeric(out.get("conversions", 0), errors="coerce").fillna(0).astype(int)
+    out["conversion_rate"] = pd.to_numeric(out.get("conversion_rate", np.nan), errors="coerce")
+    out["unique_individuals"] = out["actual_customers"]
+    out["unique_groups"] = 0
+    out["converted_individuals"] = out["actual_conversions"]
+    out["converted_groups"] = 0
+    return out[
+        [
+            "date",
+            "unique_individuals",
+            "unique_groups",
+            "actual_customers",
+            "converted_individuals",
+            "converted_groups",
+            "actual_conversions",
+            "conversion_rate",
+        ]
+    ].copy()
 
 
 def _load_onfly_image_results_for_store(base_out_dir: Path, store_id: str) -> pd.DataFrame:
@@ -3792,7 +3921,7 @@ def _build_gpt_frame_index(gpt_validation_df: pd.DataFrame) -> dict[tuple[str, s
 
 def _render_onfly_pipeline_journey(db_path: Path) -> None:
     st.subheader("Manual data sync of IRIS")
-    st.caption("Live on-fly run visibility: stage status, counts, failures, and scheduler heartbeat.")
+    st.caption("Simple control room for IRIS sync: current status, run now, run list, run detail, stage timeline, and scheduler history.")
 
     def _normalize_onfly_source_input(value: str) -> str:
         raw = str(value or "").strip()
@@ -3841,6 +3970,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     scheduler_default_idx = store_options.index(scheduler_default_store) if scheduler_default_store in store_options else 0
     store_rows = {str(s.store_id).strip(): s for s in list_stores(db_path)}
     data_root = db_path.parent / "stores"
+    onfly_service_status = _local_service_status("onfly_scheduler", db_path)
 
     def _queue_snapshot(store_id: str = "") -> dict[str, int]:
         query = """
@@ -3887,6 +4017,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         {
             "Store": str(selected_store_id),
             "Store Name": name_map.get(str(selected_store_id), str(selected_store_id)),
+            "Scheduler Service": str(onfly_service_status.get("state", "STOPPED")),
             "Mapped Source": "Ready" if mapped_source else "Missing in Store Mapping",
             "Schedule": "Enabled" if _setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True) else "Disabled",
             "Last Run": last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if last_run_dt else "Never",
@@ -3899,6 +4030,11 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     ]
     st.markdown("**IRIS Data Sync Status**")
     st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+    if not bool(onfly_service_status.get("running", False)):
+        st.error(
+            "IRIS Data Sync Scheduler service is currently STOPPED. "
+            "Saved next-run times are only config values until the scheduler service is started again."
+        )
     if mapped_source:
         st.caption(f"Source comes from `Store Mapping`: `{mapped_source}`")
     else:
@@ -3934,7 +4070,37 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             st.code(stderr_tail[-800:], language="text")
 
     st.markdown("---")
-    st.markdown("**Run Data Sync Now**")
+    section_options = [
+        "IRIS Data Sync Status",
+        "Run Data Sync Now",
+        "Run List",
+        "Run Detail",
+        "Stage Timeline",
+        "Scheduler Execution History",
+    ]
+    selected_section = st.radio(
+        "What do you want to view?",
+        options=section_options,
+        index=0,
+        horizontal=True,
+        key="onfly_pipeline_section_radio",
+    )
+    section_help = {
+        "IRIS Data Sync Status": "See if the scheduler service is running, what store is active, last run, next run, queue counts, and latest scheduler result.",
+        "Run Data Sync Now": "Use this to sync source images now or run one manual pipeline cycle for the selected store.",
+        "Run List": "See all recent runs for one store or all stores.",
+        "Run Detail": "Open one run and see counts, paths, queue state, and errors.",
+        "Stage Timeline": "See one run stage-by-stage in time order.",
+        "Scheduler Execution History": "See previous automatic scheduler cycles and their status.",
+    }
+    st.info(section_help.get(selected_section, ""))
+
+    if selected_section == "IRIS Data Sync Status":
+        return
+
+    st.markdown("---")
+    if selected_section == "Run Data Sync Now":
+        st.markdown("**Run Data Sync Now**")
     run_store_id = selected_store_id
     run_source_raw = mapped_source or default_source
     run_max_images = int(
@@ -4089,6 +4255,9 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
                     except Exception as exc:  # pragma: no cover - UI guard
                         st.error(f"Pipeline run failed: {exc}")
 
+    if selected_section == "Run Data Sync Now":
+        return
+
     st.markdown("---")
     if st.button("Refresh Pipeline Status", key="onfly_pipeline_refresh_btn"):
         st.rerun()
@@ -4141,8 +4310,10 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         "ended_at",
         "last_heartbeat_at",
     ]
-    st.markdown("**Run List**")
-    st.dataframe(runs_df[[c for c in display_cols if c in runs_df.columns]], use_container_width=True, hide_index=True, height=260)
+    if selected_section == "Run List":
+        st.markdown("**Run List**")
+        st.dataframe(runs_df[[c for c in display_cols if c in runs_df.columns]], use_container_width=True, hide_index=True, height=420)
+        return
 
     run_ids = runs_df["run_id"].astype(str).tolist()
     selected_run = st.selectbox("Run ID", options=run_ids, index=0, key="onfly_pipeline_run_selector")
@@ -4151,44 +4322,48 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         st.info("Select a run to inspect details.")
         return
     rr = run_row.iloc[0]
-    st.markdown("**Run Detail**")
-    mcols = st.columns(6)
-    mcols[0].metric("Discovered", int(rr.get("images_discovered", 0)))
-    mcols[1].metric("Skipped", int(rr.get("images_skipped", 0)))
-    mcols[2].metric("Processed", int(rr.get("images_processed", 0)))
-    mcols[3].metric("Relevant", int(rr.get("images_relevant", 0)))
-    mcols[4].metric("GPT Success", int(rr.get("gpt_success_count", 0)))
-    mcols[5].metric("GPT Failed", int(rr.get("gpt_failed_count", 0)))
+    if selected_section == "Run Detail":
+        st.markdown("**Run Detail**")
+        mcols = st.columns(6)
+        mcols[0].metric("Discovered", int(rr.get("images_discovered", 0)))
+        mcols[1].metric("Skipped", int(rr.get("images_skipped", 0)))
+        mcols[2].metric("Processed", int(rr.get("images_processed", 0)))
+        mcols[3].metric("Relevant", int(rr.get("images_relevant", 0)))
+        mcols[4].metric("GPT Success", int(rr.get("gpt_success_count", 0)))
+        mcols[5].metric("GPT Failed", int(rr.get("gpt_failed_count", 0)))
     queue_info = _queue_snapshot(str(rr.get("store_id", "") or "").strip())
-    qcols = st.columns(3)
-    qcols[0].metric("Queued For GPT Retry", int(queue_info.get("waiting_quota", 0)))
-    qcols[1].metric("Pending Queue", int(queue_info.get("pending", 0)))
-    qcols[2].metric("Queue Failures", int(queue_info.get("failed", 0)))
+    if selected_section == "Run Detail":
+        qcols = st.columns(3)
+        qcols[0].metric("Queued For GPT Retry", int(queue_info.get("waiting_quota", 0)))
+        qcols[1].metric("Pending Queue", int(queue_info.get("pending", 0)))
+        qcols[2].metric("Queue Failures", int(queue_info.get("failed", 0)))
     if str(rr.get("source_type", "")).strip().lower() == "gdrive" and int(rr.get("images_discovered", 0) or 0) == 0:
         st.warning(
             "No files visible from source (access/scope issue). "
             "This run discovered zero files from Google Drive."
         )
-    st.caption(
-        f"Status={rr.get('status', '')} | Current Stage={rr.get('current_stage', '')} | "
-        f"Started={rr.get('started_at', '')} | Ended={rr.get('ended_at', '')}"
-    )
+    if selected_section == "Run Detail":
+        st.caption(
+            f"Status={rr.get('status', '')} | Current Stage={rr.get('current_stage', '')} | "
+            f"Started={rr.get('started_at', '')} | Ended={rr.get('ended_at', '')}"
+        )
     if str(rr.get("retry_status", "") or "").strip():
         st.warning(str(rr.get("retry_status", "")).strip())
     if int(queue_info.get("waiting_quota", 0)) > 0:
         st.info("YOLO results are already saved. GPT-only retry will run automatically when quota becomes available again.")
 
-    st.markdown("**Report Paths**")
-    st.code(
-        "\n".join(
-            [
-                f"image_results: {str(rr.get('report_image_results_csv', '') or '')}",
-                f"walkin_sessions: {str(rr.get('report_walkin_sessions_csv', '') or '')}",
-                f"store_date: {str(rr.get('report_store_date_csv', '') or '')}",
-            ]
-        ),
-        language="text",
-    )
+    if selected_section == "Run Detail":
+        st.markdown("**Report Paths**")
+        st.code(
+            "\n".join(
+                [
+                    f"image_results: {str(rr.get('report_image_results_csv', '') or '')}",
+                    f"walkin_sessions: {str(rr.get('report_walkin_sessions_csv', '') or '')}",
+                    f"store_date: {str(rr.get('report_store_date_csv', '') or '')}",
+                ]
+            ),
+            language="text",
+        )
     if str(rr.get("error_message", "") or "").strip():
         st.error(f"Failed at stage `{rr.get('current_stage', '')}`: {rr.get('error_message', '')}")
         trace = str(rr.get("error_trace", "") or "").strip()
@@ -4274,7 +4449,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             "walk_rows": walk_count,
         }
 
-    if st.button("Restore Selected Run To Canonical Files", key="onfly_restore_run_btn"):
+    if selected_section == "Run Detail" and st.button("Restore Selected Run To Canonical Files", key="onfly_restore_run_btn"):
         try:
             restored = _restore_onfly_run_to_canonical(str(rr.get("store_id", "")), str(selected_run))
             st.success(
@@ -4295,37 +4470,41 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
     )
     events_df = pd.DataFrame(events)
     stage_order = ["LIST", "SKIP_CHECK", "DOWNLOAD", "YOLO", "GPT", "REPORT_WRITER", "DASHBOARD_INGEST"]
-    st.markdown("**Stage Timeline**")
-    if events_df.empty:
-        st.info("No stage events found for this run.")
-    else:
-        events_df["stage_rank"] = events_df["stage"].map({s: i for i, s in enumerate(stage_order)}).fillna(999).astype(int)
-        events_df = events_df.sort_values(["stage_rank", "created_at", "event_id"], ascending=[True, True, True])
-        timeline_cols = [
-            "created_at",
-            "stage",
-            "event_type",
-            "image_name",
-            "message",
-            "error_message",
-            "attempt_no",
-        ]
-        st.dataframe(events_df[[c for c in timeline_cols if c in events_df.columns]], use_container_width=True, hide_index=True, height=280)
+    if selected_section == "Stage Timeline":
+        st.markdown("**Stage Timeline**")
+        if events_df.empty:
+            st.info("No stage events found for this run.")
+        else:
+            events_df["stage_rank"] = events_df["stage"].map({s: i for i, s in enumerate(stage_order)}).fillna(999).astype(int)
+            events_df = events_df.sort_values(["stage_rank", "created_at", "event_id"], ascending=[True, True, True])
+            timeline_cols = [
+                "created_at",
+                "stage",
+                "event_type",
+                "image_name",
+                "message",
+                "error_message",
+                "attempt_no",
+            ]
+            st.dataframe(events_df[[c for c in timeline_cols if c in events_df.columns]], use_container_width=True, hide_index=True, height=420)
+        return
 
     settings = get_app_settings(db_path)
-    st.markdown("**Scheduler Execution History**")
-    history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]")
-    try:
-        history = json.loads(history_raw)
-        if not isinstance(history, list):
+    if selected_section == "Scheduler Execution History":
+        st.markdown("**Scheduler Execution History**")
+        history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]")
+        try:
+            history = json.loads(history_raw)
+            if not isinstance(history, list):
+                history = []
+        except Exception:
             history = []
-    except Exception:
-        history = []
-    if not history:
-        st.info("No scheduler history yet.")
-    else:
-        hist_df = pd.DataFrame(history).sort_values("ran_at", ascending=False)
-        st.dataframe(hist_df.head(40), use_container_width=True, hide_index=True, height=220)
+        if not history:
+            st.info("No scheduler history yet.")
+        else:
+            hist_df = pd.DataFrame(history).sort_values("ran_at", ascending=False)
+            st.dataframe(hist_df.head(40), use_container_width=True, hide_index=True, height=420)
+        return
 
 
 def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path) -> None:
@@ -4373,6 +4552,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         "conversion_rate": np.nan,
     }
     gpt_outputs = _load_gpt_outputs(root_dir=root_dir, store_id=selected_store)
+    onfly_store_summary_df = _load_onfly_store_date_summary(out_dir, selected_store)
     onfly_index_rows = _time_ui_step(
         out_dir,
         "Report Module",
@@ -4453,51 +4633,43 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
     report_df = pd.DataFrame()
     report_download_df = pd.DataFrame()
     if selected_report == "Store Summary":
-        report_df = pd.DataFrame(
-            [
-                {
-                    "store_id": selected_store,
-                    "total_images": int(summary_row.get("total_images", 0)),
-                    "valid_images": int(summary_row.get("valid_images", 0)),
-                    "relevant_images": int(summary_row.get("relevant_images", 0)),
-                    "total_people": int(summary_row.get("total_people", 0)),
-                    "estimated_visits": int(summary_row.get("estimated_visits", 0)),
-                    "avg_dwell_sec": float(summary_row.get("avg_dwell_sec", 0.0)),
-                    "bounce_rate": summary_row.get("bounce_rate", np.nan),
-                    "footfall": int(summary_row.get("footfall", 0)),
-                    "los_alerts": int(summary_row.get("loss_of_sale_alerts", 0)),
-                    "daily_walkins": int(summary_row.get("daily_walkins", 0)),
-                    "daily_conversions": int(summary_row.get("daily_conversions", 0)),
-                    "daily_conversion_rate": summary_row.get("daily_conversion_rate", np.nan),
-                    "entries": int(business_kpi.get("entries", 0)),
-                    "closed_exits": int(business_kpi.get("closed_exits", 0)),
-                    "converted": int(business_kpi.get("converted", 0)),
-                    "bounced": int(business_kpi.get("bounced", 0)),
-                    "conversion_rate": business_kpi.get("conversion_rate", np.nan),
-                }
-            ]
-        )
+        if not summary_rows.empty:
+            report_df = pd.DataFrame(
+                [
+                    {
+                        "store_id": selected_store,
+                        "total_images": int(summary_row.get("total_images", 0)),
+                        "valid_images": int(summary_row.get("valid_images", 0)),
+                        "relevant_images": int(summary_row.get("relevant_images", 0)),
+                        "total_people": int(summary_row.get("total_people", 0)),
+                        "estimated_visits": int(summary_row.get("estimated_visits", 0)),
+                        "avg_dwell_sec": float(summary_row.get("avg_dwell_sec", 0.0)),
+                        "bounce_rate": summary_row.get("bounce_rate", np.nan),
+                        "footfall": int(summary_row.get("footfall", 0)),
+                        "los_alerts": int(summary_row.get("loss_of_sale_alerts", 0)),
+                        "daily_walkins": int(summary_row.get("daily_walkins", 0)),
+                        "daily_conversions": int(summary_row.get("daily_conversions", 0)),
+                        "daily_conversion_rate": summary_row.get("daily_conversion_rate", np.nan),
+                        "entries": int(business_kpi.get("entries", 0)),
+                        "closed_exits": int(business_kpi.get("closed_exits", 0)),
+                        "converted": int(business_kpi.get("converted", 0)),
+                        "bounced": int(business_kpi.get("bounced", 0)),
+                        "conversion_rate": business_kpi.get("conversion_rate", np.nan),
+                    }
+                ]
+            )
+        else:
+            report_df = _build_store_summary_from_onfly(selected_store, onfly_store_summary_df, business_kpi)
     elif selected_report == "Daily Walk-in & Conversion Report":
         report_df = (
             store_result.daily_report.copy()
             if hasattr(store_result, "daily_report") and not store_result.daily_report.empty
             else pd.DataFrame()
         )
+        if report_df.empty:
+            report_df = _build_daily_walkin_report_from_onfly(onfly_store_summary_df)
     elif selected_report == "Storewise Image Summary":
-        onfly_store_csv = root_dir.parent / "exports" / "current" / "onfly" / "onfly_store_date_report.csv"
-        if onfly_store_csv.exists():
-            try:
-                report_df = _time_ui_step(
-                    out_dir,
-                    "Report Module",
-                    "read_onfly_store_date_csv",
-                    lambda: pd.read_csv(onfly_store_csv),
-                    report=str(onfly_store_csv),
-                )
-            except Exception:
-                report_df = pd.DataFrame()
-        if not report_df.empty and "store_id" in report_df.columns:
-            report_df = report_df[report_df["store_id"].astype(str) == selected_store].copy()
+        report_df = onfly_store_summary_df.copy()
         if report_df.empty and not gpt_outputs["store_summary"].empty:
             report_df = gpt_outputs["store_summary"].copy()
         if report_df.empty:
@@ -4631,6 +4803,8 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         report_df = gpt_outputs["validation"].copy()
     elif selected_report == "Datewise Footfall Summary":
         report_df = gpt_outputs["store_summary"].copy()
+        if report_df.empty:
+            report_df = onfly_store_summary_df.copy()
     elif selected_report == "YOLO Accuracy":
         report_df = gpt_outputs["yolo_vs_gpt"].copy()
     elif selected_report == "GPT Accuracy":

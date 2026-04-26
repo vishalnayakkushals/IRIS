@@ -104,6 +104,19 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-27 | Commit pending
+- Summary:
+  - Reworked `Manual data sync of IRIS` into a simpler one-section-at-a-time dashboard with clear views for status, run now, run list, run detail, stage timeline, and scheduler history.
+  - Added real local scheduler-service state visibility so the page now distinguishes a saved schedule from an actually running on-fly scheduler service.
+  - Made main report summaries fall back to on-fly partial/YOLO-stage outputs so management-facing reports still show scan totals and relevance counts even when GPT output is incomplete.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
 ### 2026-04-26 | Commit pending
 - Summary:
   - Mapped the live SQLite runtime tables and CSV artifacts still used by production-style paths and documented which ones must migrate vs remain export-only.
