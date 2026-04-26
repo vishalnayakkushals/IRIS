@@ -104,6 +104,20 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Fixed React/FastAPI login to use the real IRIS `data/store_registry.db` during local runs instead of an empty `C:\app\data\store_registry.db`, which was causing valid credentials to fail.
+  - Kept Docker compatibility by resolving the default `/app/data` setting back to the repo `data/` folder automatically from backend code.
+  - Fixed `/api/auth/me` so it returns the saved user profile by email instead of incorrectly trying to re-authenticate with an empty password.
+- Changed Paths:
+  - `backend/app/config.py`
+  - `backend/app/api/routes_auth.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - No new env vars. Local backend auth now resolves the default data path to the repository `data/` folder automatically, while container `/app/data` behavior remains aligned.
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Renamed GPT/YOLO report labels to business-friendly names and grouped Report Module into `Main Reports`, `Operations Reports`, and `Model Related Reports`.
   - Kept management-facing footfall summaries in the main group while moving validation and accuracy diagnostics out of the primary review flow.
   - Restarted the local web runtime and verified the grouped report UI is live in the browser app.

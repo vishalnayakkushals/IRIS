@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -20,6 +21,20 @@ from backend.app.models.auth import LoginRequest, TokenResponse, UserMe
 router = APIRouter()
 
 
+def _lookup_user_profile(db_path: Path, email: str) -> tuple[str, str] | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT full_name, store_id FROM users WHERE lower(email)=lower(?)",
+            (email.strip(),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return str(row[0] or email), str(row[1] or "")
+
+
 @router.post("/auth/login", response_model=TokenResponse)
 def login(body: LoginRequest, settings: Settings = Depends(get_settings)) -> TokenResponse:
     user = authenticate_user(settings.db_path_obj, body.email, body.password)
@@ -34,7 +49,7 @@ def me(
     email: str = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> UserMe:
-    user = authenticate_user(settings.db_path_obj, email, "")
-    full_name = user.full_name if user else email
-    store_id = user.store_id if user else ""
+    profile = _lookup_user_profile(settings.db_path_obj, email)
+    full_name = profile[0] if profile else email
+    store_id = profile[1] if profile else ""
     return UserMe(email=email, full_name=full_name, store_id=store_id)

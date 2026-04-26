@@ -28,7 +28,16 @@ class Settings(BaseSettings):
 
     @property
     def data_root_obj(self) -> Path:
-        return Path(self.data_root)
+        configured = Path(self.data_root)
+        if configured.as_posix() == "/app/data":
+            return Path(__file__).resolve().parents[2] / "data"
+        if configured.is_absolute():
+            return configured
+        return (Path(__file__).resolve().parents[2] / configured).resolve()
+
+    @property
+    def db_path_obj(self) -> Path:
+        return self.data_root_obj / "store_registry.db"
 
 
 @lru_cache
