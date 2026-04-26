@@ -104,6 +104,21 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Renamed business report labels to clearer store-facing names, removed the `Data Health` report option from Report Module, and kept empty GPT/QA reports visible with their column headers.
+  - Preserved YOLO-stage visibility for stores with partial on-fly output by loading storewise scan results even when downstream GPT artifacts are missing.
+  - Extended the on-fly scheduler so nightly runs cover every store mapped with a source URL, while the selected priority store remains the hourly target.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `scripts/onfly_scheduler.py`
+  - `tests/test_onfly_scheduler.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - No new env vars. Nightly on-fly scheduler behavior now automatically fans out across all mapped stores with non-empty source URLs.
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Fixed Report Module `Data Health` so it no longer crashes when a store only has on-fly/YOLO-shaped output columns instead of the full classic export schema.
   - Switched key store selectors to display full store names, exposed RR Nagar in report/customer-journey selection flows, and added a clear fallback message when only YOLO/on-fly output exists.
   - Removed `TEST_STORE_D07` data/history from the local SQLite runtime and export folders, cleaned the mixed on-fly store-date report, and restarted the local web runtime with the updated state.

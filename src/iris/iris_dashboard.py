@@ -3614,16 +3614,60 @@ def _read_csv_if_exists(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+GPT_OUTPUT_SCHEMAS: dict[str, list[str]] = {
+    "validation": [
+        "store_id", "Date", "capture_date", "camera_id", "image_id", "image_name", "image_path", "image_url",
+        "timestamp_or_sequence", "entity_id", "yolo_detected", "yolo_label", "gpt_detected", "gpt_label",
+        "reviewer_label", "final_label", "gpt_extra_detection", "is_reviewed", "confidence", "gender",
+        "age_band", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", "notes", "image_notes", "gpt_error",
+        "annotated_image_path",
+    ],
+    "frame_summary": [
+        "store_id", "Date", "capture_date", "camera_id", "image_name", "image_path", "annotated_image_path",
+        "timestamp_or_sequence", "yolo_detected_people", "gpt_human_entities", "gpt_extra_detections",
+        "customer_count", "staff_count", "banner_count", "pedestrian_count", "product_count", "invalid_count",
+        "unknown_count",
+    ],
+    "store_summary": [
+        "store_id", "Date", "total_images", "relevant_images", "yolo_detected_people", "customer_count",
+        "staff_count", "banner_count", "pedestrian_count", "estimated_visits", "avg_dwell_sec", "bounce_rate",
+        "footfall", "los_alerts", "daily_walkins", "daily_conversions",
+    ],
+    "yolo_vs_gpt": [
+        "store_id", "capture_date", "camera_id", "image_name", "yolo_detected_people", "gpt_human_entities",
+        "delta_people", "match",
+    ],
+    "gpt_vs_reviewer": ["store_id", "compared_entities", "matched_entities", "accuracy_pct"],
+    "gpt_vs_reviewer_detail": [
+        "store_id", "capture_date", "camera_id", "image_name", "entity_id", "gpt_label", "reviewer_label",
+        "final_label", "gpt_extra_detection", "match",
+    ],
+    "walkin_sequence": [
+        "Date", "Walk-in ID", "Group ID", "Role", "Entry Time", "Exit Time", "Time Spent (mins)",
+        "Session Status", "Entry Type", "Gender", "Age Band", "Attire / Visual Marker", "Primary Clothing",
+        "Jewellery Load", "Bag Type", "Primary Clothing Style Archetype", "Engagement Type",
+        "Engagement Depth", "Purchase Signal (Bag)", "Included in Analytics",
+    ],
+}
+
+
+def _read_csv_with_schema(path: Path, schema_key: str) -> pd.DataFrame:
+    frame = _read_csv_if_exists(path)
+    if frame.empty:
+        return pd.DataFrame(columns=GPT_OUTPUT_SCHEMAS.get(schema_key, []))
+    return frame
+
+
 def _load_gpt_outputs(root_dir: Path, store_id: str) -> dict[str, pd.DataFrame]:
     base = _gpt_validation_store_dir(root_dir=root_dir, store_id=store_id)
     return {
-        "validation": _read_csv_if_exists(base / "gpt_validation_results.csv"),
-        "frame_summary": _read_csv_if_exists(base / "gpt_validation_frame_summary.csv"),
-        "store_summary": _read_csv_if_exists(base / "gpt_store_date_summary.csv"),
-        "yolo_vs_gpt": _read_csv_if_exists(base / "yolo_vs_gpt_accuracy.csv"),
-        "gpt_vs_reviewer": _read_csv_if_exists(base / "gpt_vs_reviewer_accuracy.csv"),
-        "gpt_vs_reviewer_detail": _read_csv_if_exists(base / "gpt_vs_reviewer_detail.csv"),
-        "walkin_sequence": _read_csv_if_exists(base / "gpt_walkin_sequence_table.csv"),
+        "validation": _read_csv_with_schema(base / "gpt_validation_results.csv", "validation"),
+        "frame_summary": _read_csv_with_schema(base / "gpt_validation_frame_summary.csv", "frame_summary"),
+        "store_summary": _read_csv_with_schema(base / "gpt_store_date_summary.csv", "store_summary"),
+        "yolo_vs_gpt": _read_csv_with_schema(base / "yolo_vs_gpt_accuracy.csv", "yolo_vs_gpt"),
+        "gpt_vs_reviewer": _read_csv_with_schema(base / "gpt_vs_reviewer_accuracy.csv", "gpt_vs_reviewer"),
+        "gpt_vs_reviewer_detail": _read_csv_with_schema(base / "gpt_vs_reviewer_detail.csv", "gpt_vs_reviewer_detail"),
+        "walkin_sequence": _read_csv_with_schema(base / "gpt_walkin_sequence_table.csv", "walkin_sequence"),
     }
 
 
@@ -3792,7 +3836,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
             "Schedule": "Enabled" if _setting_bool(cfg_settings, "cfg_onfly_scheduler_enabled", True) else "Disabled",
             "Last Run": last_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if last_run_dt else "Never",
             "Next Run": next_run_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_run_dt and selected_store_id == scheduler_store_id else "Not scheduled for this store",
-            "Next Nightly": next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_nightly_dt and selected_store_id == scheduler_store_id else "Not scheduled for this store",
+            "Next Nightly": next_nightly_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S") if next_nightly_dt and mapped_source else "Not scheduled for this store",
             "GPT Retry Queue": int(active_queue.get("waiting_quota", 0)),
             "Other Pending": int(active_queue.get("pending", 0)),
             "Failed Queue": int(active_queue.get("failed", 0)),
@@ -3806,7 +3850,7 @@ def _render_onfly_pipeline_journey(db_path: Path) -> None:
         st.warning("No source is mapped for this store yet. Open `Operations > Store Mapping`, save the source once, then sync from here.")
     st.info(
         "Scheduler timing lives under `Config > Scheduler > IRIS Data Sync Scheduler`. "
-        "This page is only for checking status and running sync now."
+        "This page is only for checking status and running sync now. Hourly run follows the selected priority store; nightly run covers all mapped stores with a source URL."
     )
     queue_cols = st.columns(4)
     queue_cols[0].metric("Queued GPT Retry", int(active_queue.get("waiting_quota", 0)))
@@ -4297,13 +4341,12 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         "Which report",
         options=[
             select_placeholder,
-            "Top Summary",
+            "Store Summary",
             "Daily Walk-in & Conversion Report",
-            "Standard Store-Date Summary",
-            "On-Fly Image Results",
+            "Storewise Image Summary",
+            "Storewise Image Scanning Result Details",
             "On-Fly Walk-in Sessions",
-            "Frame-Level Proof",
-            "Data Health",
+            "Image frame to frame Analysis",
             "Location Hotspots",
             "GPT Validation Results",
             "GPT Store-Date Summary",
@@ -4342,7 +4385,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
     ]
     report_df = pd.DataFrame()
     report_download_df = pd.DataFrame()
-    if selected_report == "Top Summary":
+    if selected_report == "Store Summary":
         report_df = pd.DataFrame(
             [
                 {
@@ -4373,7 +4416,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             if hasattr(store_result, "daily_report") and not store_result.daily_report.empty
             else pd.DataFrame()
         )
-    elif selected_report == "Standard Store-Date Summary":
+    elif selected_report == "Storewise Image Summary":
         onfly_store_csv = root_dir.parent / "exports" / "current" / "onfly" / "onfly_store_date_report.csv"
         if onfly_store_csv.exists():
             try:
@@ -4392,7 +4435,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             report_df = gpt_outputs["store_summary"].copy()
         if report_df.empty:
             report_df = daily_proof_df.copy()
-    elif selected_report == "On-Fly Image Results":
+    elif selected_report == "Storewise Image Scanning Result Details":
         image_csv = ""
         if not onfly_index_df.empty:
             latest = onfly_index_df.sort_values("updated_at", ascending=False).head(1).iloc[0]
@@ -4471,7 +4514,7 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             )
             if selected_cols:
                 report_df = report_df[selected_cols].copy()
-    elif selected_report == "Frame-Level Proof":
+    elif selected_report == "Image frame to frame Analysis":
         report_df = image_df.copy()
         report_df["open_frame"] = report_df.apply(
             lambda r: _row_image_hyperlink(
@@ -4501,18 +4544,6 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             "detection_error",
         ]
         report_df = report_df[[col for col in proof_columns if col in report_df.columns]].copy()
-    elif selected_report == "Data Health":
-        health_columns = [
-            "capture_date",
-            "filename",
-            "camera_id",
-            "is_valid",
-            "reject_reason",
-            "detection_error",
-        ]
-        available_health_cols = [col for col in health_columns if col in image_df.columns]
-        report_df = image_df[available_health_cols].copy() if available_health_cols else pd.DataFrame()
-        report_df.insert(0, "store_id", selected_store)
     elif selected_report == "Location Hotspots":
         report_df = (
             store_result.location_hotspots.copy()
@@ -4554,11 +4585,13 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
     report_download_df = report_df.copy()
 
     allow_empty_download = selected_report == "GPT Consolidated Walk-in Table"
-    if report_df.empty and not allow_empty_download:
+    if report_df.empty and not allow_empty_download and len(report_df.columns) == 0:
         st.info("No rows available for this report with the selected filters.")
         return
     if report_df.empty and allow_empty_download:
         st.info("No rows yet. Download will contain empty template with required columns.")
+    elif report_df.empty:
+        st.info("No rows available for this report with the selected filters. Showing column headers only.")
 
     report_file_stub = re.sub(r"[^A-Za-z0-9_]+", "_", selected_report.strip().lower())
     date_stub = "all_dates" if selected_date == "All Dates" else re.sub(r"[^0-9A-Za-z_-]+", "_", selected_date)
@@ -4570,8 +4603,11 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         file_name=file_name,
         mime="text/csv",
     )
+    view_df = report_df.copy()
+    if "store_id" in view_df.columns:
+        view_df["store_id"] = view_df["store_id"].map(lambda v: _store_label(v, name_map, include_code=False))
     if selected_report == "GPT Validation Results":
-        view_df = report_df.head(500).copy()
+        view_df = view_df.head(500).copy()
         if "annotated_image_path" in view_df.columns:
             view_df["preview_image"] = view_df["annotated_image_path"].map(
                 lambda p: _hover_preview_data_uri(Path(str(p).strip()), max_size=280)
@@ -4590,9 +4626,9 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         else:
             st.dataframe(view_df, use_container_width=True, hide_index=True)
     elif report_df.empty:
-        st.dataframe(report_df.head(0), use_container_width=True, hide_index=True)
+        st.dataframe(view_df.head(0), use_container_width=True, hide_index=True)
     else:
-        st.dataframe(report_df.head(500), use_container_width=True, hide_index=True)
+        st.dataframe(view_df.head(500), use_container_width=True, hide_index=True)
 
 
 def _render_qa_timeline(output: AnalysisOutput, db_path: Path, active_email: str, root_dir: Path) -> None:
@@ -7346,7 +7382,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
 
             st.markdown("---")
             st.markdown("**IRIS Data Sync Scheduler**")
-            st.caption("Meaning: this is the automatic store image sync. It checks the source saved in Store Mapping and runs by time.")
+            st.caption("Meaning: this is the automatic store image sync. Hourly run uses the selected priority store. Nightly run checks every mapped store that has a source in Store Mapping.")
             scheduler_help_df = pd.DataFrame(
                 [
                     {"Setting": "Enable Scheduler", "Simple Meaning": "Master ON/OFF switch. ON means IRIS will run by itself.", "If Disabled": "Nothing runs automatically. You must press Sync Now manually."},
@@ -7376,7 +7412,7 @@ def _render_pipeline_configuration_controls(db_path: Path) -> bool:
                     help="ON = automatic scheduled sync. OFF = only manual sync.",
                 )
                 cfg_onfly_store = onfly_cols[0].selectbox(
-                    "Scheduled Store",
+                    "Priority Store For Hourly Run",
                     options=onfly_store_options,
                     index=onfly_store_index,
                     format_func=lambda x: _store_label(x, onfly_name_map, include_code=False),

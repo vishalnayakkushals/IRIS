@@ -82,6 +82,40 @@ def test_onfly_scheduler_falls_back_to_saved_source_when_store_mapping_missing(t
     assert cfg["source_url"] == "https://drive.google.com/drive/folders/fallback-folder"
 
 
+def test_onfly_scheduler_collects_all_mapped_store_sources_for_nightly(tmp_path: Path) -> None:
+    db_path = tmp_path / "store_registry.db"
+    init_db(db_path)
+    upsert_store(
+        db_path=db_path,
+        store_id="BLRRRN",
+        store_name="BLR - RR NAGAR",
+        email="blrrrn@example.com",
+        drive_folder_url="https://drive.google.com/drive/folders/rrn-folder",
+    )
+    upsert_store(
+        db_path=db_path,
+        store_id="BLRJAY",
+        store_name="BLR - JAYNAGAR",
+        email="blrjay@example.com",
+        drive_folder_url="https://drive.google.com/drive/folders/jay-folder",
+    )
+    upsert_store(
+        db_path=db_path,
+        store_id="BLRMAL",
+        store_name="BLR - MALLESWARAM",
+        email="blrmal@example.com",
+        drive_folder_url="",
+    )
+
+    scheduler = _load_scheduler_module()
+    rows = scheduler._scheduled_store_rows(db_path)
+
+    assert rows == [
+        {"store_id": "BLRJAY", "source_url": "https://drive.google.com/drive/folders/jay-folder"},
+        {"store_id": "BLRRRN", "source_url": "https://drive.google.com/drive/folders/rrn-folder"},
+    ]
+
+
 def test_onfly_scheduler_parses_summary_and_accelerates_quota_retry() -> None:
     scheduler = _load_scheduler_module()
     parsed = scheduler._parse_run_summary(

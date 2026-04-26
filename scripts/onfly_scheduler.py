@@ -164,6 +164,66 @@ def _load_onfly_scheduler_config(db_path: Path) -> dict[str, object]:
     return cfg
 
 
+def _scheduled_store_rows(db_path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for store in list_stores(db_path):
+        store_id = str(getattr(store, "store_id", "") or "").strip()
+        source_url = str(getattr(store, "drive_folder_url", "") or "").strip()
+        if not store_id or not source_url:
+            continue
+        rows.append({"store_id": store_id, "source_url": source_url})
+    return rows
+
+
+def _build_onfly_command(
+    *,
+    db_path: Path,
+    out_dir: str,
+    mode: str,
+    store_id: str,
+    source_url: str,
+    detector: str,
+    conf: str,
+    max_images: int,
+    version: str,
+    yolo_version: str,
+    gpt_version: str,
+    enable_gpt: bool,
+    allow_fallback: bool,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/run_onfly_pipeline.py",
+        "--store-id",
+        store_id,
+        "--source-url",
+        source_url,
+        "--db",
+        str(db_path),
+        "--out-dir",
+        out_dir,
+        "--detector",
+        detector,
+        "--conf",
+        conf,
+        "--max-images",
+        str(max_images),
+        "--run-mode",
+        mode,
+        "--pipeline-version",
+        version,
+    ]
+    if yolo_version:
+        command.extend(["--yolo-version", yolo_version])
+    if gpt_version:
+        command.extend(["--gpt-version", gpt_version])
+    if enable_gpt:
+        command.append("--enable-gpt")
+    if allow_fallback:
+        command.append("--allow-detector-fallback")
+    return command
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="On-fly scheduler (hourly + nightly catch-up)")
     parser.add_argument("--db", type=Path, default=Path("data/store_registry.db"))
@@ -215,6 +275,7 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
     settings = get_app_settings(args.db)
     key_hourly = f"cfg_onfly_last_hourly__{store_id}"
     key_nightly = f"cfg_onfly_last_nightly__{store_id}"
+    key_nightly_global = "cfg_onfly_last_nightly_global"
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
@@ -227,12 +288,13 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         upsert_app_settings(args.db, {"cfg_onfly_next_nightly_at": next_nightly, "cfg_onfly_next_run_at": ""})
         return False, max(5, int(args.poll_seconds))
 
-    if not source_url:
+    scheduled_rows = _scheduled_store_rows(args.db)
+    if not source_url and not scheduled_rows:
         upsert_app_settings(
             args.db,
             {
                 "cfg_onfly_last_summary_json": json.dumps(
-                    {"status": "error", "message": "ONFLY_SOURCE_URL is empty", "at": datetime.now(tz=timezone.utc).isoformat()},
+                    {"status": "error", "message": "No mapped store source found", "at": datetime.now(tz=timezone.utc).isoformat()},
                     separators=(",", ":"),
                 )
             },
@@ -248,7 +310,7 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         except Exception:
             run_hourly = True
 
-    last_nightly_day = str(settings.get(key_nightly, "") or "").strip()
+    last_nightly_day = str(settings.get(key_nightly_global, settings.get(key_nightly, "")) or "").strip()
     due_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
     run_nightly = now_local >= due_local and last_nightly_day != now_local.date().isoformat()
 
@@ -277,40 +339,24 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         )
         return False, wait
 
-    command = [
-        sys.executable,
-        "scripts/run_onfly_pipeline.py",
-        "--store-id",
-        store_id,
-        "--source-url",
-        source_url,
-        "--db",
-        str(args.db),
-        "--out-dir",
-        out_dir,
-        "--detector",
-        detector,
-        "--conf",
-        conf,
-        "--max-images",
-        str(max_images),
-        "--run-mode",
-        mode,
-        "--pipeline-version",
-        version,
-    ]
-    if yolo_version:
-        command.extend(["--yolo-version", yolo_version])
-    if gpt_version:
-        command.extend(["--gpt-version", gpt_version])
-    if enable_gpt:
-        command.append("--enable-gpt")
-    if allow_fallback:
-        command.append("--allow-detector-fallback")
-    rc, out_tail, err_tail = _run_command(command)
     now_utc = datetime.now(tz=timezone.utc)
-    parsed_summary = _parse_run_summary(out_tail)
-    gpt_retry_pending = int(parsed_summary.get("gpt_retry_pending", 0) or 0) if parsed_summary else 0
+    scheduled_targets = (
+        scheduled_rows
+        if mode == "nightly"
+        else [{"store_id": store_id, "source_url": source_url}] if store_id and source_url else []
+    )
+    if not scheduled_targets:
+        upsert_app_settings(
+            args.db,
+            {
+                "cfg_onfly_last_summary_json": json.dumps(
+                    {"status": "error", "message": "Selected store has no mapped source URL", "mode": mode},
+                    separators=(",", ":"),
+                )
+            },
+        )
+        return False, max(5, int(args.poll_seconds))
+
     history_raw = str(settings.get("cfg_onfly_scheduler_history_json", "[]") or "[]").strip()
     try:
         history = json.loads(history_raw)
@@ -318,30 +364,76 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
             history = []
     except Exception:
         history = []
-    history.append(
-        {
-            "ran_at": now_utc.isoformat(),
-            "mode": mode,
-            "store_id": store_id,
-            "returncode": int(rc),
-            "status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
-            "stdout_tail": out_tail[-600:],
-            "stderr_tail": err_tail[-600:],
-            "gpt_retry_pending": gpt_retry_pending,
-        }
-    )
+
+    run_results: list[dict[str, object]] = []
+    any_ran = False
+    gpt_retry_pending = 0
+    overall_rc = 0
+    for target in scheduled_targets:
+        target_store_id = str(target.get("store_id", "") or "").strip()
+        target_source_url = str(target.get("source_url", "") or "").strip()
+        if not target_store_id or not target_source_url:
+            continue
+        any_ran = True
+        command = _build_onfly_command(
+            db_path=args.db,
+            out_dir=out_dir,
+            mode=mode,
+            store_id=target_store_id,
+            source_url=target_source_url,
+            detector=detector,
+            conf=conf,
+            max_images=max_images,
+            version=version,
+            yolo_version=yolo_version,
+            gpt_version=gpt_version,
+            enable_gpt=enable_gpt,
+            allow_fallback=allow_fallback,
+        )
+        rc, out_tail, err_tail = _run_command(command)
+        parsed_summary = _parse_run_summary(out_tail)
+        target_retry_pending = int(parsed_summary.get("gpt_retry_pending", 0) or 0) if parsed_summary else 0
+        gpt_retry_pending += target_retry_pending
+        overall_rc = max(overall_rc, int(rc))
+        history.append(
+            {
+                "ran_at": now_utc.isoformat(),
+                "mode": mode,
+                "store_id": target_store_id,
+                "returncode": int(rc),
+                "status": "quota_waiting" if target_retry_pending > 0 else ("ok" if rc == 0 else "error"),
+                "stdout_tail": out_tail[-600:],
+                "stderr_tail": err_tail[-600:],
+                "gpt_retry_pending": target_retry_pending,
+            }
+        )
+        run_results.append(
+            {
+                "store_id": target_store_id,
+                "returncode": int(rc),
+                "status": "quota_waiting" if target_retry_pending > 0 else ("ok" if rc == 0 else "error"),
+                "stdout_tail": out_tail,
+                "stderr_tail": err_tail,
+                "gpt_retry_pending": target_retry_pending,
+            }
+        )
+
+    if not any_ran:
+        return False, max(5, int(args.poll_seconds))
+
     history = history[-40:]
+    overall_status = "quota_waiting" if gpt_retry_pending > 0 else ("ok" if overall_rc == 0 else "error")
     updates = {
         key_hourly: now_utc.isoformat(),
         "cfg_onfly_last_run_at": now_utc.isoformat(),
-        "cfg_onfly_last_status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
+        "cfg_onfly_last_status": overall_status,
         "cfg_onfly_last_summary_json": json.dumps(
             {
-                "status": "quota_waiting" if gpt_retry_pending > 0 else ("ok" if rc == 0 else "error"),
+                "status": overall_status,
                 "mode": mode,
-                "returncode": rc,
-                "stdout_tail": out_tail,
-                "stderr_tail": err_tail,
+                "returncode": overall_rc,
+                "stores_ran": [str(r.get("store_id", "") or "").strip() for r in run_results],
+                "store_results": run_results,
                 "gpt_retry_pending": gpt_retry_pending,
             },
             separators=(",", ":"),
@@ -349,7 +441,11 @@ def _run_cycle(args: argparse.Namespace) -> tuple[bool, int]:
         "cfg_onfly_scheduler_history_json": json.dumps(history, separators=(",", ":")),
     }
     if mode == "nightly":
-        updates[key_nightly] = now_local.date().isoformat()
+        updates[key_nightly_global] = now_local.date().isoformat()
+        for target in scheduled_targets:
+            target_store_id = str(target.get("store_id", "") or "").strip()
+            if target_store_id:
+                updates[f"cfg_onfly_last_nightly__{target_store_id}"] = now_local.date().isoformat()
     next_nightly = _next_local_time(now_local, hh, mm).astimezone(timezone.utc).isoformat()
     updates["cfg_onfly_next_nightly_at"] = next_nightly
     if gpt_retry_pending > 0:
