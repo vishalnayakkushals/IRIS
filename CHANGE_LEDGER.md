@@ -121,6 +121,7 @@ Use this template for each new change:
   - Added basic AppLayout, TopNav, and Sidebar shells in the frontend workspace.
   - Migrated SchedulerDashboard.tsx to use Tremor components.
   - Initialized Alembic for backend migrations and set up asynchronous Postgres connection logic in `config.py` and `db/session.py`.
+  - Defined explicit AWS EC2 CI/CD deployment instructions in README and Implementation Plans.
   - Added test utilities `mock_ingest.py` and `security_audit.py`.
 - Changed Paths:
   - `frontend/src/App.tsx`
@@ -129,6 +130,8 @@ Use this template for each new change:
   - `backend/app/db/session.py`
   - `scripts/mock_ingest.py`
   - `scripts/security_audit.py`
+  - `README.md`
+  - `artifacts/implementation_plan.md`
 - New Modules Introduced:
   - `frontend/src/components/layout/AppLayout.tsx`
   - `frontend/src/components/layout/TopNav.tsx`
