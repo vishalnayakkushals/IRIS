@@ -1446,17 +1446,35 @@ def _normalize_image_df(image_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+ONFLY_IMAGE_RESULT_COLUMNS = [
+    "store_id", "image_id", "relative_path", "folder_name", "Date", "image_name", "camera_id", "timestamp_hint",
+    "source_provider", "source_uri", "source_item_id", "source_url", "discovered_at", "last_seen_at",
+    "pipeline_version", "yolo_status", "relevant", "person_count", "yolo_conf", "yolo_error", "gpt_status",
+    "customer_count", "staff_count", "conversions", "bounce", "gpt_result_json", "gpt_error", "last_run_id",
+    "yolo_version", "gpt_version",
+]
+
+
+def _host_runtime_path(path_text: object, db_path: Path) -> Path:
+    raw = str(path_text or "").strip()
+    if not raw:
+        return Path("")
+    if raw.startswith("/app/data/"):
+        return (db_path.parent / raw.replace("/app/data/", "")).resolve()
+    return Path(raw).expanduser().resolve()
+
+
 def _load_onfly_image_results_for_store(base_out_dir: Path, store_id: str) -> pd.DataFrame:
     store_out = base_out_dir / "onfly" / str(store_id).strip()
     image_out = store_out / "onfly_image_results.csv"
     if not image_out.exists():
-        return pd.DataFrame()
+        return pd.DataFrame(columns=ONFLY_IMAGE_RESULT_COLUMNS)
     try:
         raw = pd.read_csv(image_out)
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=ONFLY_IMAGE_RESULT_COLUMNS)
     if raw.empty:
-        return pd.DataFrame()
+        raw = pd.DataFrame(columns=ONFLY_IMAGE_RESULT_COLUMNS)
     out = raw.copy()
     if "image_name" in out.columns and "filename" not in out.columns:
         out["filename"] = out["image_name"]
@@ -1486,6 +1504,43 @@ def _load_onfly_image_results_for_store(base_out_dir: Path, store_id: str) -> pd
             lambda p: str((Path("data") / "stores" / str(store_id).strip() / str(p or "")).resolve()) if str(p or "").strip() else ""
         )
     return _normalize_image_df(out)
+
+
+def _empty_report_frame(report_name: str, walkin_columns: list[str]) -> pd.DataFrame:
+    schemas: dict[str, list[str]] = {
+        "Store Summary": [
+            "store_id", "total_images", "valid_images", "relevant_images", "total_people", "estimated_visits",
+            "avg_dwell_sec", "bounce_rate", "footfall", "los_alerts", "daily_walkins", "daily_conversions",
+            "daily_conversion_rate", "entries", "closed_exits", "converted", "bounced", "conversion_rate",
+        ],
+        "Daily Walk-in & Conversion Report": [
+            "date", "unique_individuals", "unique_groups", "actual_customers", "converted_individuals",
+            "converted_groups", "actual_conversions", "conversion_rate",
+        ],
+        "Storewise Image Summary": [
+            "store_id", "Date", "total_images", "relevant_images", "customer_count", "conversions", "bounce",
+        ],
+        "Storewise Image Scanning Result Details": ONFLY_IMAGE_RESULT_COLUMNS,
+        "On-Fly Walk-in Sessions": [
+            "store_id", "capture_date", "session_id", "entry_ts", "exit_ts", "duration_seconds", "camera_id",
+            "location_name", "entry_type", "session_status", "customer_ids", "group_ids",
+        ],
+        "Image frame to frame Analysis": [
+            "capture_date", "source_folder", "timestamp", "filename", "open_frame", "camera_id", "floor_name",
+            "location_name", "person_count", "relevant", "track_ids", "group_ids", "store_day_customer_ids",
+            "customer_ids", "drive_link", "detection_error",
+        ],
+        "Location Hotspots": [
+            "store_id", "floor_name", "location_name", "relevant_images", "total_people",
+            "avg_people_per_relevant_image", "avg_dwell_sec", "hotspot_rank",
+        ],
+        "GPT Validation Results": GPT_OUTPUT_SCHEMAS["validation"],
+        "GPT Store-Date Summary": GPT_OUTPUT_SCHEMAS["store_summary"],
+        "YOLO vs GPT Accuracy": GPT_OUTPUT_SCHEMAS["yolo_vs_gpt"],
+        "GPT vs Reviewer Accuracy": GPT_OUTPUT_SCHEMAS["gpt_vs_reviewer_detail"],
+        "GPT Consolidated Walk-in Table": walkin_columns,
+    }
+    return pd.DataFrame(columns=schemas.get(report_name, []))
 
 
 def _top_gender_label(gender_payload: object) -> str:
@@ -4440,36 +4495,40 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
         if not onfly_index_df.empty:
             latest = onfly_index_df.sort_values("updated_at", ascending=False).head(1).iloc[0]
             image_csv = str(latest.get("image_results_csv", "") or "").strip()
-        if image_csv and Path(image_csv).exists():
+        resolved_image_csv = _host_runtime_path(image_csv, db_path)
+        if image_csv and resolved_image_csv.exists():
             try:
                 report_df = _time_ui_step(
                     out_dir,
                     "Report Module",
                     "read_onfly_image_results_csv",
-                    lambda: pd.read_csv(Path(image_csv)),
-                    report=str(image_csv),
+                    lambda: pd.read_csv(resolved_image_csv),
+                    report=str(resolved_image_csv),
                 )
             except Exception:
                 report_df = pd.DataFrame()
+        if report_df.empty:
+            report_df = _load_onfly_image_results_for_store(out_dir, selected_store)
     elif selected_report == "On-Fly Walk-in Sessions":
         walkin_csv = ""
         if not onfly_index_df.empty:
             latest = onfly_index_df.sort_values("updated_at", ascending=False).head(1).iloc[0]
             walkin_csv = str(latest.get("walkin_sessions_csv", "") or "").strip()
-        if walkin_csv and Path(walkin_csv).exists():
+        resolved_walkin_csv = _host_runtime_path(walkin_csv, db_path)
+        if walkin_csv and resolved_walkin_csv.exists():
             try:
                 report_df = _time_ui_step(
                     out_dir,
                     "Report Module",
                     "read_onfly_walkin_csv",
-                    lambda: pd.read_csv(Path(walkin_csv)),
-                    report=str(walkin_csv),
+                    lambda: pd.read_csv(resolved_walkin_csv),
+                    report=str(resolved_walkin_csv),
                 )
             except Exception:
                 report_df = pd.DataFrame()
         audit_csv = ""
         if walkin_csv:
-            audit_candidate = Path(walkin_csv).with_name("onfly_walkin_sessions_audit.csv")
+            audit_candidate = resolved_walkin_csv.with_name("onfly_walkin_sessions_audit.csv")
             if audit_candidate.exists():
                 audit_csv = str(audit_candidate)
         show_audit = st.checkbox(
@@ -4572,6 +4631,9 @@ def _render_report_module(output: AnalysisOutput, root_dir: Path, db_path: Path)
             report_df = pd.DataFrame(columns=walkin_columns)
         else:
             report_df = report_df.reindex(columns=walkin_columns)
+
+    if report_df.empty and len(report_df.columns) == 0:
+        report_df = _empty_report_frame(selected_report, walkin_columns)
 
     date_filter_col = ""
     if "date" in report_df.columns:

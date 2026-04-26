@@ -104,6 +104,19 @@ Use this template for each new change:
 
 ### 2026-04-26 | Commit pending
 - Summary:
+  - Made Report Module show empty tables with column headers for every report type instead of blank panels when a store/date has no rows yet.
+  - Fixed on-fly report file loading on Windows by resolving stored `/app/data/...` runtime paths back to the local workspace before reading report CSVs.
+  - Verified the local web runtime after restart so the empty-table behavior is live on the browser app.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `None`
+- Infra/Config Impact:
+  - `None`
+
+### 2026-04-26 | Commit pending
+- Summary:
   - Renamed business report labels to clearer store-facing names, removed the `Data Health` report option from Report Module, and kept empty GPT/QA reports visible with their column headers.
   - Preserved YOLO-stage visibility for stores with partial on-fly output by loading storewise scan results even when downstream GPT artifacts are missing.
   - Extended the on-fly scheduler so nightly runs cover every store mapped with a source URL, while the selected priority store remains the hourly target.
