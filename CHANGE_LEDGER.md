@@ -84,6 +84,7 @@ It records what changed, where it changed, and why.
 | `CTO/run_cto_watch.bat` | Windows wrapper for continuous CTO browse-speed watch mode. |
 | `CTO/README.md` | Usage and isolation guarantees for the CTO observer layer. |
 | `backend/app/db/canonical_metadata.py` | Canonical Postgres target schema metadata for platform-state cutover away from SQLite and CSV-backed source-of-truth. |
+| `backend/app/db/platform_data.py` | FastAPI data bridge that prefers Postgres-backed auth/store/session reads while safely falling back to the current SQLite runtime. |
 | `docs/operations/platform_data_cutover_inventory.md` | Inventory of live SQLite tables and CSV artifacts plus the recommended single-platform cutover path to FastAPI/React. |
 
 ## Change Entry Template
@@ -103,6 +104,23 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-27 | Commit pending
+- Summary:
+  - Added a FastAPI platform-data bridge that prefers Postgres-backed auth, store registry, and on-fly session reads while falling back to the current SQLite runtime when Postgres is unavailable or not backfilled.
+  - Updated backend auth, overview, and store-detail routes to use the bridge instead of hardcoded local CSV parsing for their primary data access path.
+  - Extended pipeline run log access to dual-write and prefer Postgres reads while preserving SQLite writes/reads for backward compatibility during cutover.
+- Changed Paths:
+  - `backend/app/db/platform_data.py`
+  - `backend/app/db/pipeline_log.py`
+  - `backend/app/api/routes_auth.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `backend/app/api/routes_detail.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `backend/app/db/platform_data.py`
+- Infra/Config Impact:
+  - FastAPI runtime now attempts Postgres access through SQLAlchemy/asyncpg first for selected domains, but automatically falls back to SQLite when Postgres is unavailable or not yet populated.
 
 ### 2026-04-27 | Commit pending
 - Summary:
