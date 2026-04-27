@@ -105,6 +105,31 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-27 | Phase 1 Go-Live — FastAPI + React no-docker
+
+- Summary:
+  - Fixed login crash caused by store_registry.py importing PIL at module level — rewrote platform_data.py auth to use passlib-free custom pbkdf2 verify directly against SQLite, no store_registry import.
+  - Added `get_walkin_sessions()` to platform_data.py and `GET /api/detail/walkins`, `GET /api/detail/{store_id}/walkins` routes to routes_detail.py.
+  - Rewrote `StoreDetail.tsx` with dynamic store selector dropdown (from /api/detail/stores), real walk-in sessions table with 13 key columns, and role/entry-type color badges.
+  - Added `listStores`, `fetchStoreMetrics`, `fetchWalkins` and typed `WalkinSession` interface to client.ts.
+  - Created `scripts/start_api_server.py` no-docker FastAPI launcher (mirrors start_web_app.py pattern, sets PYTHONPATH, runs uvicorn on port 8766).
+  - React build updated and deployed to `backend/app/static/` — port 8766 serves both React SPA and REST API.
+  - Login confirmed working with IRIS custom pbkdf2_sha256 hash format (pbkdf2_sha256$salt$hex_digest).
+- Changed Paths:
+  - `backend/app/db/platform_data.py`
+  - `backend/app/api/routes_detail.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `backend/app/static/` (rebuilt React dist)
+  - `scripts/start_api_server.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/start_api_server.py`
+- Infra/Config Impact:
+  - FastAPI server runs no-docker via `python scripts/start_api_server.py` on port 8766.
+  - Default user password is `ChangeMe123!` — must be changed before cloud go-live.
+  - No Docker, no Postgres required — SQLite fallback is fully functional.
+
 ### 2026-04-27 | Commit pending
 - Summary:
   - Added a FastAPI platform-data bridge that prefers Postgres-backed auth, store registry, and on-fly session reads while falling back to the current SQLite runtime when Postgres is unavailable or not backfilled.

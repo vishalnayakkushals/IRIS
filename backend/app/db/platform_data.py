@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import math
 import sqlite3
 from pathlib import Path
@@ -43,27 +45,51 @@ async def _pg_fetch_user_row(email: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-def authenticate_platform_user(db_path: Path, email: str, password: str) -> dict[str, Any] | None:
-    from iris.store_registry import authenticate_user, verify_password
+def _verify_password(plain: str, hashed: str) -> bool:
+    """Verify password against IRIS custom pbkdf2_sha256 hash or passlib bcrypt fallback."""
+    try:
+        parts = (hashed or "").split("$", 2)
+        if len(parts) == 3 and parts[0] == "pbkdf2_sha256":
+            _algo, salt, digest = parts
+            got = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+            return hmac.compare_digest(got, digest)
+        # Fallback: passlib bcrypt (if hash starts with $2b$)
+        from passlib.context import CryptContext
+        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return ctx.verify(plain, hashed)
+    except Exception:
+        return False
 
+
+def _sqlite_authenticate(db_path: Path, email: str, password: str) -> dict[str, Any] | None:
+    """Auth directly from SQLite without importing store_registry (avoids PIL dependency)."""
+    conn = _sqlite_connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT user_id,email,full_name,password_hash,is_active,store_id,created_at FROM users WHERE lower(email)=lower(?)",
+            (str(email or "").strip(),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    if not bool(row["is_active"]):
+        return None
+    if not _verify_password(str(password or ""), str(row["password_hash"] or "")):
+        return None
+    return dict(row)
+
+
+def authenticate_platform_user(db_path: Path, email: str, password: str) -> dict[str, Any] | None:
+    # Try Postgres first
     try:
         row = _run_sync(_pg_fetch_user_row(email))
-        if row and bool(row.get("is_active", 0)) and verify_password(password, str(row.get("password_hash", "") or "")):
+        if row and bool(row.get("is_active", 0)) and _verify_password(str(password or ""), str(row.get("password_hash", "") or "")):
             return row
     except Exception:
         pass
-
-    user = authenticate_user(db_path, email, password)
-    if not user:
-        return None
-    return {
-        "user_id": user.user_id,
-        "email": user.email,
-        "full_name": user.full_name,
-        "is_active": user.is_active,
-        "store_id": user.store_id,
-        "created_at": user.created_at,
-    }
+    # Fall back to SQLite (does not import store_registry to avoid PIL dependency)
+    return _sqlite_authenticate(db_path, email, password)
 
 
 def get_platform_user_profile(db_path: Path, email: str) -> dict[str, Any] | None:
@@ -246,6 +272,29 @@ async def get_store_metrics(db_path: Path, store_id: str) -> dict[str, Any]:
     except Exception:
         pass
     return _sqlite_store_metrics(db_path, store_id)
+
+
+def get_walkin_sessions(db_path: Path, store_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    conn = _sqlite_connect(db_path)
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
+        ).fetchone()
+        if not has_table:
+            return []
+        if store_id:
+            rows = conn.execute(
+                "SELECT * FROM onfly_walkin_sessions WHERE store_id=? ORDER BY created_at DESC LIMIT ?",
+                (str(store_id or "").strip(), limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM onfly_walkin_sessions ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
 
 
 def list_store_registry_stores(db_path: Path) -> list[dict[str, Any]]:

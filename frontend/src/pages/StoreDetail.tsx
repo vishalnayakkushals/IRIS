@@ -1,73 +1,147 @@
 import { useEffect, useState } from "react";
-import { Title, Text, Metric, Card, Grid, TextInput, Button } from "@tremor/react";
-import { Search } from "lucide-react";
-import { api } from "../api/client";
+import { Title, Text, Metric, Card, Grid, Select, SelectItem, Badge } from "@tremor/react";
+import { listStores, fetchStoreMetrics, fetchWalkins, StoreOption, WalkinSession } from "../api/client";
+
+const ROLE_COLOR: Record<string, "rose" | "blue" | "gray"> = {
+  CUSTOMER: "blue",
+  STAFF: "rose",
+};
+const ENTRY_COLOR: Record<string, "emerald" | "gray"> = {
+  BILLING: "emerald",
+};
 
 export default function StoreDetail() {
-  const [storeId, setStoreId] = useState("TEST_STORE_D07");
-  const [query, setQuery] = useState("TEST_STORE_D07");
-  const [data, setData] = useState({
-    footfall: 0,
-    bounce_rate: "0%",
-    dwell_time: "0 min",
-    status: ""
-  });
-  const [loading, setLoading] = useState(true);
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [storeId, setStoreId] = useState("");
+  const [metrics, setMetrics] = useState({ footfall: 0, bounce_rate: "0%", dwell_time: "0 min", status: "" });
+  const [sessions, setSessions] = useState<WalkinSession[]>([]);
+  const [loadingMetrics, setLoadingMetrics] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
 
   useEffect(() => {
-    async function fetchStore() {
-      setLoading(true);
-      try {
-        const res = await api.get(`/detail/${storeId}/metrics`);
-        if (res && res.data) {
-          setData(res.data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch store details", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchStore();
+    listStores()
+      .then((res) => {
+        const list = res.data?.stores ?? [];
+        setStores(list);
+        if (list.length > 0) setStoreId(list[0].store_id);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!storeId) return;
+    setLoadingMetrics(true);
+    setLoadingSessions(true);
+
+    fetchStoreMetrics(storeId)
+      .then((res) => setMetrics(res.data ?? metrics))
+      .catch(() => {})
+      .finally(() => setLoadingMetrics(false));
+
+    fetchWalkins(storeId)
+      .then((res) => setSessions(res.data?.sessions ?? []))
+      .catch(() => {})
+      .finally(() => setLoadingSessions(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeId]);
+
+  const selectedStore = stores.find((s) => s.store_id === storeId);
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <Title>Store Detail View</Title>
-          <Text>Drill down into specific store performance and analytics.</Text>
+          <Title>Store Detail</Title>
+          <Text>{selectedStore?.store_name ?? "Select a store to view analytics"}</Text>
         </div>
-        <div className="flex gap-2">
-            <TextInput 
-                placeholder="Enter Store ID" 
-                value={query} 
-                onChange={(e) => setQuery(e.target.value)} 
-            />
-            <Button icon={Search} onClick={() => setStoreId(query)}>Search</Button>
-        </div>
+        {stores.length > 0 && (
+          <Select value={storeId} onValueChange={setStoreId} className="w-56">
+            {stores.map((s) => (
+              <SelectItem key={s.store_id} value={s.store_id}>
+                {s.store_id}
+              </SelectItem>
+            ))}
+          </Select>
+        )}
       </div>
 
       <Grid numItemsSm={1} numItemsLg={3} className="gap-6">
         <Card decoration="top" decorationColor="indigo">
           <Text>Daily Footfall</Text>
-          <Metric>{loading ? "-" : data.footfall}</Metric>
+          <Metric>{loadingMetrics ? "-" : metrics.footfall}</Metric>
         </Card>
         <Card decoration="top" decorationColor="rose">
           <Text>Bounce Rate</Text>
-          <Metric>{loading ? "-" : data.bounce_rate}</Metric>
+          <Metric>{loadingMetrics ? "-" : metrics.bounce_rate}</Metric>
         </Card>
         <Card decoration="top" decorationColor="amber">
-          <Text>Average Dwell Time</Text>
-          <Metric>{loading ? "-" : data.dwell_time}</Metric>
+          <Text>Avg Dwell Time</Text>
+          <Metric>{loadingMetrics ? "-" : metrics.dwell_time}</Metric>
         </Card>
       </Grid>
-      
-      <Card className="mt-6">
-         <Title>Recent Store Activity</Title>
-         <Text className="mt-2 text-slate-500 text-sm">
-             {data.status || "Activity logs will appear here based on the selected store ID."}
-         </Text>
+
+      <Card>
+        <Title>Walk-in Sessions</Title>
+        {loadingSessions ? (
+          <Text className="mt-4 text-slate-400">Loading sessions…</Text>
+        ) : sessions.length === 0 ? (
+          <Text className="mt-4 text-slate-400">
+            No walk-in sessions recorded yet for {storeId}. Run the GPT pipeline to populate this table.
+          </Text>
+        ) : (
+          <div className="overflow-x-auto mt-4">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="border-b text-slate-500 text-xs uppercase">
+                  <th className="pb-2 pr-4">Walk-in ID</th>
+                  <th className="pb-2 pr-4">Date</th>
+                  <th className="pb-2 pr-4">Role</th>
+                  <th className="pb-2 pr-4">Entry</th>
+                  <th className="pb-2 pr-4">Exit</th>
+                  <th className="pb-2 pr-4">Dwell (min)</th>
+                  <th className="pb-2 pr-4">Entry Type</th>
+                  <th className="pb-2 pr-4">Gender</th>
+                  <th className="pb-2 pr-4">Age Band</th>
+                  <th className="pb-2 pr-4">Style</th>
+                  <th className="pb-2 pr-4">Engagement</th>
+                  <th className="pb-2 pr-4">Purchase Signal</th>
+                  <th className="pb-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.map((s) => (
+                  <tr key={s.id} className="border-b last:border-0 hover:bg-slate-50">
+                    <td className="py-2 pr-4 font-mono text-xs text-slate-600">{s.walkin_id || "—"}</td>
+                    <td className="py-2 pr-4">{s.date || "—"}</td>
+                    <td className="py-2 pr-4">
+                      <Badge color={ROLE_COLOR[s.role?.toUpperCase()] ?? "gray"} size="xs">
+                        {s.role || "—"}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4 text-xs">{s.entry_time || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">{s.exit_time || "—"}</td>
+                    <td className="py-2 pr-4">{s.time_spent_mins || "—"}</td>
+                    <td className="py-2 pr-4">
+                      <Badge color={ENTRY_COLOR[s.entry_type?.toUpperCase()] ?? "gray"} size="xs">
+                        {s.entry_type || "—"}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4">{s.gender || "—"}</td>
+                    <td className="py-2 pr-4">{s.age_band || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">{s.clothing_style_archetype || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">{s.engagement_type || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">{s.purchase_signal_bag || "—"}</td>
+                    <td className="py-2">
+                      <Badge color={s.session_status === "closed" ? "emerald" : "amber"} size="xs">
+                        {s.session_status || "—"}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
   );

@@ -69,3 +69,44 @@ export const getRuns = (limit = 50) =>
 // ── Dashboard ────────────────────────────────────────────────────────────────
 export const fetchOverview = () =>
   api.get("/dashboard/overview");
+
+// ── Stores ───────────────────────────────────────────────────────────────────
+export interface StoreOption {
+  store_id: string;
+  store_name: string;
+  email: string;
+}
+
+export const listStores = () =>
+  api.get<{ stores: StoreOption[]; total: number }>("/detail/stores");
+
+export const fetchStoreMetrics = (storeId: string) =>
+  api.get(`/detail/${storeId}/metrics`);
+
+// ── Walk-in Sessions ─────────────────────────────────────────────────────────
+export interface WalkinSession {
+  id: number;
+  store_id: string;
+  walkin_id: string;
+  group_id: string;
+  role: string;
+  date: string;
+  entry_time: string;
+  exit_time: string;
+  time_spent_mins: string;
+  session_status: string;
+  entry_type: string;
+  gender: string;
+  age_band: string;
+  clothing_style_archetype: string;
+  engagement_type: string;
+  engagement_depth: string;
+  purchase_signal_bag: string;
+  included_in_analytics: string;
+  created_at: string;
+}
+
+export const fetchWalkins = (storeId?: string, limit = 200) =>
+  storeId
+    ? api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/${storeId}/walkins?limit=${limit}`)
+    : api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/walkins?limit=${limit}`);
