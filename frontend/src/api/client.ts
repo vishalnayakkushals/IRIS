@@ -70,6 +70,22 @@ export const getRuns = (limit = 50) =>
 export const fetchOverview = () =>
   api.get("/dashboard/overview");
 
+export interface TrafficPoint {
+  date: string;
+  total: number;
+  customers: number;
+  staff: number;
+  conversions: number;
+}
+
+export const fetchTraffic = (storeId?: string, days = 30) =>
+  api.get<{ series: TrafficPoint[]; store_id: string; days: number }>(
+    `/dashboard/traffic?days=${days}${storeId ? `&store_id=${storeId}` : ""}`
+  );
+
+export const fetchDashboardRuns = (limit = 50) =>
+  api.get<{ runs: RunRecord[]; total: number }>(`/dashboard/pipeline-runs?limit=${limit}`);
+
 // ── Stores ───────────────────────────────────────────────────────────────────
 export interface StoreOption {
   store_id: string;

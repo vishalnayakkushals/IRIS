@@ -274,6 +274,65 @@ async def get_store_metrics(db_path: Path, store_id: str) -> dict[str, Any]:
     return _sqlite_store_metrics(db_path, store_id)
 
 
+def get_traffic_series(db_path: Path, store_id: str | None = None, days: int = 30) -> list[dict[str, Any]]:
+    conn = _sqlite_connect(db_path)
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
+        ).fetchone()
+        if not has_table:
+            return []
+        if store_id:
+            rows = conn.execute("""
+                SELECT business_date as date,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN UPPER(role)='CUSTOMER' THEN 1 ELSE 0 END) as customers,
+                       SUM(CASE WHEN UPPER(role)='STAFF' THEN 1 ELSE 0 END) as staff,
+                       SUM(CASE WHEN UPPER(entry_type)='BILLING' THEN 1 ELSE 0 END) as conversions
+                FROM onfly_walkin_sessions
+                WHERE store_id=? AND business_date != ''
+                GROUP BY business_date
+                ORDER BY business_date DESC
+                LIMIT ?
+            """, (store_id, days)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT business_date as date,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN UPPER(role)='CUSTOMER' THEN 1 ELSE 0 END) as customers,
+                       SUM(CASE WHEN UPPER(role)='STAFF' THEN 1 ELSE 0 END) as staff,
+                       SUM(CASE WHEN UPPER(entry_type)='BILLING' THEN 1 ELSE 0 END) as conversions
+                FROM onfly_walkin_sessions
+                WHERE business_date != ''
+                GROUP BY business_date
+                ORDER BY business_date DESC
+                LIMIT ?
+            """, (days,)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_pipeline_runs(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    conn = _sqlite_connect(db_path)
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_run_log'"
+        ).fetchone()
+        if not has_table:
+            return []
+        rows = conn.execute("""
+            SELECT run_id, job_key, job_name, store_id, status, remarks,
+                   triggered_by, started_at, completed_at, created_at
+            FROM pipeline_run_log
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_walkin_sessions(db_path: Path, store_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     conn = _sqlite_connect(db_path)
     try:

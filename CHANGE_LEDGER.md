@@ -105,6 +105,31 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-27 | Phase B Complete — Real data wired into all React pages
+
+- Summary:
+  - Built `scripts/seed_phase_b_data.py` that seeds `onfly_walkin_sessions` (213 sessions across BLRJAY/BLRRRN from real YOLO image data) and `pipeline_run_log` (15 real run records from `onfly_pipeline_runs`) — enables React UI to show live data without requiring completed GPT runs.
+  - Added `get_traffic_series()` and `get_pipeline_runs()` to `platform_data.py`.
+  - Added `GET /api/dashboard/traffic` (daily walk-in counts by store, 30-day window) and `GET /api/dashboard/pipeline-runs` endpoints to `routes_dashboard.py`.
+  - Rewrote `Overview.tsx` with real traffic bar chart (Tremor BarChart, Customers/Staff/Conversions per date), store filter dropdown, and real metric cards.
+  - Updated `client.ts` with `fetchTraffic`, `fetchDashboardRuns`, `TrafficPoint` type.
+  - Rebuilt React and deployed to `backend/app/static/`.
+  - 3× full test pass: all 10 API endpoints, auth boundary, wrong-password rejection, all 6 stores' metrics.
+- Changed Paths:
+  - `backend/app/db/platform_data.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/Overview.tsx`
+  - `backend/app/static/` (rebuilt React dist)
+  - `scripts/seed_phase_b_data.py`
+  - `GO_LIVE_CHECKLIST.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/seed_phase_b_data.py`
+- Infra/Config Impact:
+  - Run `python scripts/seed_phase_b_data.py` once on a fresh DB to populate demo data.
+  - Safe to re-run — deletes only seeded rows (match_reason='seeded'), not GPT-generated rows.
+
 ### 2026-04-27 | Phase 1 Go-Live — FastAPI + React no-docker
 
 - Summary:
