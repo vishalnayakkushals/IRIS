@@ -92,6 +92,174 @@ It records what changed, where it changed, and why.
 | `deploy/cloud/` | Ubuntu cloud deployment artifacts: setup script, postgres init, nginx config, systemd services, env template, README. |
 | `docs/operations/platform_data_cutover_inventory.md` | Inventory of live SQLite tables and CSV artifacts plus the recommended single-platform cutover path to FastAPI/React. |
 
+---
+
+## AI HANDOFF GUIDE — Read This First Before Touching The Project
+
+> This section is permanent. Every AI assistant or developer working on this project MUST read it before making changes.
+
+### The App You Are Working On
+
+IRIS is a retail store analytics platform.
+- **Backend**: FastAPI (Python), Postgres 17, no Celery, no Docker for local dev
+- **Frontend**: React + Vite + TypeScript + Tailwind, built to `backend/app/static/`
+- **Live URL**: `http://localhost:8767` — this is the ONLY port. React + API both served here.
+
+### How To Start The Server (After Every Windows Restart)
+
+The server is **not a Windows service**. It does not auto-start. After every reboot:
+
+```
+Double-click:  C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\start_iris.bat
+```
+
+Or from PowerShell:
+```powershell
+cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
+powershell -ExecutionPolicy Bypass -File start_iris.ps1
+```
+
+This kills any old process on port 8767, loads `.env.local`, sets `PYTHONPATH`, and starts uvicorn.
+
+### Port Rules — Non-Negotiable
+
+| Port | What | Status |
+|------|------|--------|
+| **8767** | FastAPI + React (current, working) | USE THIS |
+| ~~8766~~ | Old port, zombie process cleared after reboot | DO NOT USE |
+| 8765 | Old Streamlit prototype | DEPRECATED, ignore |
+
+**Do not change any port number to 8766.** The entire codebase has been migrated to 8767. Any code or config that still says 8766 is a bug — fix it to 8767.
+
+### Python Environment — System Python Only
+
+**Do NOT use Docker, venv, conda, or any virtual environment.**
+
+All packages are installed in the **system Python** at `C:\Python312\`.
+
+To install missing packages:
+```powershell
+pip install -r backend/requirements.txt
+```
+
+To verify which Python is being used:
+```powershell
+where python   # Must return C:\Python312\python.exe
+```
+
+If you create a venv or use Docker, the server will fail to import packages the user already has installed.
+
+### Postgres — Local Only, No Docker
+
+Postgres 17 runs as a **Windows service** (auto-starts on boot). No Docker needed.
+
+```
+Host:     127.0.0.1
+Port:     5432
+Database: iris_db
+User:     iris_user
+Password: iris_password
+```
+
+Connection string (already in `.env.local`):
+```
+POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db
+```
+
+To verify Postgres is running (PowerShell):
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" status -D "C:\Program Files\PostgreSQL\17\data"
+```
+
+To start it if not running:
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" start -D "C:\Program Files\PostgreSQL\17\data"
+```
+
+### Alembic Migration State — CRITICAL
+
+Alembic migrations `001` and `002` have been applied. The schema is at `head`.
+
+**However, 8 columns were added DIRECTLY via `ALTER TABLE` outside of Alembic migrations.** These are in the live database but NOT in any migration file. Alembic does not know about them.
+
+**DO NOT run `alembic upgrade head` or `alembic revision --autogenerate` — it will try to undo these manual changes.**
+
+The manually added columns are:
+
+| Table | Column | Type | Added |
+|-------|--------|------|-------|
+| `stores` | `sync_enabled` | BOOLEAN DEFAULT FALSE | 2026-04-28 |
+| `stores` | `sync_interval_hours` | INTEGER DEFAULT 1 | 2026-04-28 |
+| `model_versions` | `rollback_target_model_id` | VARCHAR(128) DEFAULT '' | 2026-04-28 |
+| `qa_feedback` | `track_id` | VARCHAR(128) DEFAULT '' | 2026-04-28 |
+| `qa_feedback` | `model_version` | VARCHAR(128) DEFAULT '' | 2026-04-28 |
+| `qa_feedback` | `drive_link` | TEXT DEFAULT '' | 2026-04-28 |
+| `qa_feedback` | `needs_review` | BOOLEAN DEFAULT FALSE | 2026-04-28 |
+| `qa_feedback` | `annotated_image_path` | TEXT DEFAULT '' | 2026-04-28 |
+
+These columns ARE reflected in `backend/app/db/canonical_metadata.py` (the SQLAlchemy ORM table definitions). The gap is only in Alembic migration files.
+
+If you need to add more columns: use `ALTER TABLE` directly via `psql`, then add the column to `canonical_metadata.py`. Do NOT use `alembic revision`.
+
+### Login Credentials (Local Dev)
+
+```
+URL:      http://localhost:8767
+Email:    vishal.nayak@kushals.com
+Password: ChangeMe123!
+```
+
+Password is stored as `pbkdf2_sha256` hash. If login fails with 401, the hash may need regenerating — see `scripts/add_user.py`.
+
+### .env.local — Required File (Not In Git)
+
+All secrets live in `.env.local` in the project root. This file is gitignored. Required keys:
+
+```
+POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db
+JWT_SECRET=<your-secret>
+GOOGLE_API_KEY=<optional>
+OPENAI_API_KEY=<optional>
+```
+
+The `start_iris.ps1` / `start_iris.bat` loader reads this file automatically.
+
+### React Build — How To Deploy Frontend Changes
+
+After ANY change to `frontend/src/**`:
+```powershell
+cd frontend
+npm run build
+# Then copy build output:
+cp -r dist/. ../backend/app/static/
+```
+
+The built files in `backend/app/static/` ARE committed to git. The `frontend/dist/` folder is gitignored.
+
+### Key Files Quick Reference
+
+| File | What It Does |
+|------|-------------|
+| `start_iris.bat` | Double-click to start server — the ONLY way to start locally |
+| `start_iris.ps1` | Called by start_iris.bat — kills old process, loads .env.local, starts uvicorn |
+| `.env.local` | All secrets — NOT in git, must exist on each machine |
+| `backend/app/main.py` | FastAPI app entry point, registers all routers, starts auto-sync scheduler |
+| `backend/app/config.py` | All settings via env vars — reads from .env.local |
+| `backend/app/db/canonical_metadata.py` | SQLAlchemy table definitions — source of truth for DB schema |
+| `backend/app/api/routes_onfly.py` | Pipeline execution + background auto-sync loop |
+| `frontend/src/api/client.ts` | All API calls from React — add new endpoints here |
+
+### What NOT To Do
+
+- Do NOT run `alembic upgrade head` or `alembic revision --autogenerate`
+- Do NOT use Docker for local development
+- Do NOT create a Python venv
+- Do NOT change port 8767 to 8766 or any other number
+- Do NOT run `npm install` — packages are already installed
+- Do NOT push `.env.local` to git
+
+---
+
 ## Change Entry Template
 Use this template for each new change:
 
@@ -109,6 +277,35 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-04-28 | Port consolidation + AI handoff guide + auto-sync toggle + config cleanup
+- Summary:
+  - Removed all references to port 8766. The only port is now 8767 everywhere.
+  - Fixed `backend/app/config.py` CORS origins (was still listing 8766 — now 8767).
+  - Fixed comment typo in `start_iris.ps1` ("Clearing port 8766" → 8767).
+  - Added comprehensive **AI Handoff Guide** to top of CHANGE_LEDGER covering: startup procedure, port rules, Python environment, Postgres credentials, Alembic migration state (critical — 8 columns added outside migrations), login credentials, .env.local requirements, React build process, and a DO NOT DO list.
+  - Added auto-sync feature: `PUT /api/admin/stores/{store_id}/sync` toggle endpoint; background asyncio loop in main.py startup (60-second tick, triggers pipeline for stores where sync_enabled=True and interval has elapsed); `sync_enabled`/`sync_interval_hours` columns added to ORM metadata; StoreMapping UI gets toggle switch column.
+  - Committed `start_iris.bat` (double-click launcher) and `start_iris.ps1` (ExecutionPolicy Bypass, .env.local loader, uvicorn on 8767).
+- Changed Paths:
+  - `backend/app/config.py`
+  - `start_iris.ps1`
+  - `start_iris.bat`
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/main.py`
+  - `backend/app/db/canonical_metadata.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `backend/app/static/` (React build output)
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `start_iris.bat`
+  - `start_iris.ps1`
+- Infra/Config Impact:
+  - **Port is 8767. Do not use 8766.** Postgres PG17 runs as Windows service (auto-starts on boot). Server does NOT auto-start — run `start_iris.bat` after every reboot.
+  - New endpoint: `PUT /api/admin/stores/{store_id}/sync` with body `{"sync_enabled": bool, "sync_interval_hours": int}`.
+  - Two new columns live in Postgres but are NOT in any Alembic migration file: `stores.sync_enabled` and `stores.sync_interval_hours` — added via direct ALTER TABLE on 2026-04-28.
+  - **DO NOT run `alembic upgrade head`** — it will conflict with the 8 manually added columns. See AI Handoff Guide above for full list.
 
 ### 2026-04-28 | Phase G+H: Full admin/reports UI — 11 React pages + backend CRUD routes
 - Summary:

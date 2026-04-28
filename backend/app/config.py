@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     yolo_conf: float = 0.18
     max_images: int = 100
     # Comma-separated allowed CORS origins; defaults cover local dev only
-    cors_origins: str = "http://localhost:3000,http://localhost:8766,http://127.0.0.1:8766"
+    cors_origins: str = "http://localhost:3000,http://localhost:8767,http://127.0.0.1:8767"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

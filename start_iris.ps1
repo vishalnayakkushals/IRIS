@@ -10,8 +10,8 @@ Write-Host "  IRIS - Starting API Server on :8767  " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Kill anything on port 8766 ────────────────────────────────────────────────
-Write-Host "Clearing port 8766..." -ForegroundColor Yellow
+# ── Kill anything on port 8767 ────────────────────────────────────────────────
+Write-Host "Clearing port 8767..." -ForegroundColor Yellow
 $listening = Get-NetTCPConnection -LocalPort 8767 -ErrorAction SilentlyContinue |
              Where-Object {$_.State -in "Listen","Bound"} |
              Select-Object -ExpandProperty OwningProcess -Unique
