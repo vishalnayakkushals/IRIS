@@ -112,3 +112,30 @@ async def get_recent_runs(limit: int = 50) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(stmt)
         return [dict(r) for r in result.mappings().all()]
+
+
+async def upsert_track_sessions(sessions: list[dict[str, Any]]) -> None:
+    """Bulk-upsert BoT-SORT track sessions into onfly_track_sessions."""
+    from backend.app.db.session import AsyncSessionLocal
+    from sqlalchemy import Table, MetaData
+
+    if not sessions:
+        return
+
+    async with AsyncSessionLocal() as db_session:
+        # Reflect the table lazily — migration 002 must have been applied
+        meta = MetaData()
+        conn = await db_session.connection()
+        await conn.run_sync(meta.reflect, only=["onfly_track_sessions"])
+        tbl = meta.tables.get("onfly_track_sessions")
+        if tbl is None:
+            return  # migration not yet applied; skip silently
+
+        for row in sessions:
+            stmt = pg_insert(tbl).values(**row)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[tbl.c.session_id],
+                set_={k: stmt.excluded[k] for k in row if k != "session_id"},
+            )
+            await db_session.execute(stmt)
+        await db_session.commit()

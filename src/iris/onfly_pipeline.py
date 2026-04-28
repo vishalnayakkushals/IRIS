@@ -265,6 +265,11 @@ class OnFlyConfig:
     force_reprocess: bool = False
     keep_relevant_dir: Path | None = None
     run_mode: str = "hourly"
+    # BoT-SORT session tracking (opt-in; does not affect existing pipeline output)
+    use_tracker: bool = False
+    tracker_iou_threshold: float = 0.3
+    tracker_max_age: int = 5
+    tracker_min_hits: int = 2
 
 
 class SourceClient(Protocol):
@@ -837,6 +842,17 @@ def _yolo_detect_from_bytes(detector: Any, image_bytes: bytes, image_name: str) 
         tmp_path.unlink(missing_ok=True)
 
 
+def _yolo_detect_full_result(detector: Any, image_bytes: bytes, image_name: str) -> Any:
+    """Like _yolo_detect_from_bytes but returns the full DetectionResult (with boxes)."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(image_name).suffix or ".jpg") as tmp:
+        tmp.write(image_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        return detector.detect(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str) -> dict[str, Any]:
     """Call GPT vision API with the comprehensive retail analytics prompt.
 
@@ -932,6 +948,16 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 business_date = source_dates[0]
             elif len(source_dates) > 1:
                 business_date = "MULTI_DATE"
+
+        # BoT-SORT tracker — only instantiated when cfg.use_tracker=True
+        _tracker = None
+        if cfg.use_tracker:
+            from iris.bot_sort_tracker import BotSortTracker
+            _tracker = BotSortTracker(
+                iou_threshold=cfg.tracker_iou_threshold,
+                max_age=cfg.tracker_max_age,
+                min_hits=cfg.tracker_min_hits,
+            )
         _create_pipeline_run(
             conn,
             run_id=run_id,
@@ -1080,7 +1106,16 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="YOLO detection started",
                 )
                 y0 = time.perf_counter()
-                pcount, max_conf, yerr = _yolo_detect_from_bytes(detector, image_bytes, item.image_name)
+                if _tracker is not None:
+                    _det = _yolo_detect_full_result(detector, image_bytes, item.image_name)
+                    pcount = int(_det.person_count or 0)
+                    max_conf = float(_det.max_person_conf or 0.0)
+                    yerr = str(_det.detection_error or "")
+                    if not yerr and _det.person_boxes:
+                        _confs = list(_det.person_confidences) if _det.person_confidences else [max_conf] * len(_det.person_boxes)
+                        _tracker.update(list(_det.person_boxes), _confs, image_id=item.image_id)
+                else:
+                    pcount, max_conf, yerr = _yolo_detect_from_bytes(detector, image_bytes, item.image_name)
                 timings["yolo_ms"] += round((time.perf_counter() - y0) * 1000.0, 2)
                 relevant = int(pcount > 0 and not yerr)
                 yolo_relevant += int(relevant == 1)
@@ -1608,6 +1643,42 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         )
         summary_status = "partial" if (gpt_retry_pending > 0 or gpt_failed > 0) else "success"
         summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_retry_pending": gpt_retry_pending, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
+        # BoT-SORT tracker finalization — produces track_sessions CSV alongside run outputs
+        if _tracker is not None:
+            try:
+                from iris.session_state_machine import classify_sessions, sessions_summary as _sess_summary
+                _all_tracks = _tracker.finalize()
+                _track_sessions = classify_sessions(_all_tracks, run_id, cfg.store_id, business_date)
+                if _track_sessions:
+                    _track_rows = [
+                        {
+                            "session_id": s.session_id,
+                            "run_id": s.run_id,
+                            "store_id": s.store_id,
+                            "business_date": s.business_date,
+                            "track_id_local": s.track_id_local,
+                            "track_global_id": s.track_global_id,
+                            "status": s.status,
+                            "entry_frame_idx": s.entry_frame_idx,
+                            "exit_frame_idx": s.exit_frame_idx,
+                            "entry_image_id": s.entry_image_id,
+                            "exit_image_id": s.exit_image_id,
+                            "dwell_frames": s.dwell_frames,
+                            "confidence": round(s.confidence, 4),
+                            "avg_bbox_x1": round(s.avg_bbox[0], 4),
+                            "avg_bbox_y1": round(s.avg_bbox[1], 4),
+                            "avg_bbox_x2": round(s.avg_bbox[2], 4),
+                            "avg_bbox_y2": round(s.avg_bbox[3], 4),
+                        }
+                        for s in _track_sessions
+                    ]
+                    _track_csv = store_out / f"onfly_track_sessions_{run_id}.csv"
+                    pd.DataFrame(_track_rows).to_csv(_track_csv, index=False)
+                    summary["tracker"] = _sess_summary(_track_sessions)
+                    summary["outputs"]["track_sessions_csv"] = str(_track_csv.resolve())
+            except Exception as _te:
+                summary["tracker_error"] = str(_te)[:500]
+
         summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         summary["outputs"]["run_summary_json"] = str(summary_path.resolve())

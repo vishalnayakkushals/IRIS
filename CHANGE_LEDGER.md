@@ -110,6 +110,31 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Phase E: BoT-SORT tracker + session state machine
+- Summary:
+  - Added `src/iris/bot_sort_tracker.py`: pure-Python IoU-based multi-object tracker (BoT-SORT-compatible API). No external dependencies. Greedy IoU matching, configurable max_age/min_hits, static-object suppression via bbox-stability check.
+  - Added `src/iris/session_state_machine.py`: converts tracker output to classified sessions — `active_customer`, `outside_passer`, `static_object`. Produces `sessions_summary()` dict compatible with pipeline summary format.
+  - Added Alembic migration `002_track_sessions.py`: `onfly_track_sessions` table with session_id, run_id, store_id, track lifecycle columns, and 3 indexes for store+date queries.
+  - Added `upsert_track_sessions()` to `backend/app/db/pipeline_log.py` for async Postgres bulk upsert.
+  - Extended `OnFlyConfig` with `use_tracker`, `tracker_iou_threshold`, `tracker_max_age`, `tracker_min_hits` — all optional, default off (zero impact on existing runs).
+  - Integrated tracker into `run_onfly_pipeline()`: when `use_tracker=True`, calls `_yolo_detect_full_result()` to get bboxes, feeds them to the tracker per frame, finalizes sessions at run end, writes `onfly_track_sessions_{run_id}.csv` to pipeline output directory.
+  - Existing pipeline behavior completely unchanged when `use_tracker=False` (default).
+- Changed Paths:
+  - `src/iris/bot_sort_tracker.py`
+  - `src/iris/session_state_machine.py`
+  - `src/iris/onfly_pipeline.py`
+  - `backend/migrations/versions/002_track_sessions.py`
+  - `backend/app/db/pipeline_log.py`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `src/iris/bot_sort_tracker.py`
+  - `src/iris/session_state_machine.py`
+  - `backend/migrations/versions/002_track_sessions.py`
+- Infra/Config Impact:
+  - Run `alembic upgrade head` in `backend/` to create `onfly_track_sessions` table (migration 002).
+  - New `OnFlyConfig` fields are opt-in; no env var changes required.
+  - Enable with `OnFlyConfig(use_tracker=True, ...)` in Celery task or CLI call.
+
 ### 2026-04-28 | Phase D security hardening: rate limiting, security headers, CORS via settings, JWT startup warning
 - Summary:
   - Added `slowapi` rate limiter to `POST /api/auth/login` — 10 requests/minute per IP; 429 on breach.
