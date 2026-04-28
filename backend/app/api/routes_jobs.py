@@ -12,7 +12,6 @@ from backend.app.models.jobs import JobStatus, TriggerResponse
 
 router = APIRouter()
 
-# Static job definitions — display order matches the scheduler dashboard table
 JOBS: list[dict[str, str]] = [
     {"key": "drive_sync",   "name": "Pull Images From Drive"},
     {"key": "yolo_scan",    "name": "Run YOLO Relevance Scan"},
@@ -56,24 +55,22 @@ def _enrich_jobs(latest: list[dict[str, Any]]) -> list[JobStatus]:
 
 
 @router.get("/jobs", response_model=list[JobStatus])
-def list_jobs(
+async def list_jobs(
     _email: str = Depends(get_current_user),
-    settings: Settings = Depends(get_settings),
 ) -> list[JobStatus]:
-    latest = get_latest_per_job(settings.db_path_obj)
+    latest = await get_latest_per_job()
     return _enrich_jobs(latest)
 
 
 @router.post("/jobs/trigger-all", response_model=TriggerResponse)
-def trigger_all(
+async def trigger_all(
     email: str = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> TriggerResponse:
     from backend.app.celery_app.tasks.drive_sync import drive_sync_task
 
     run_id = _make_run_id("drive_sync")
-    insert_run_log(
-        settings.db_path_obj,
+    await insert_run_log(
         run_id=run_id,
         job_key="drive_sync",
         job_name="Pull Images From Drive",
@@ -96,7 +93,7 @@ def trigger_all(
 
 
 @router.post("/jobs/{job_key}/trigger", response_model=TriggerResponse)
-def trigger_job(
+async def trigger_job(
     job_key: str,
     email: str = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -106,8 +103,7 @@ def trigger_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown job: {job_key}")
 
     run_id = _make_run_id(job_key)
-    insert_run_log(
-        settings.db_path_obj,
+    await insert_run_log(
         run_id=run_id,
         job_key=job_key,
         job_name=job_map[job_key],

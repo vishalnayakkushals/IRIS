@@ -1,0 +1,52 @@
+[Unit]
+Description=IRIS Celery Pipeline Worker
+Documentation=https://github.com/your-org/iris
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=iris
+Group=iris
+WorkingDirectory=/opt/iris/app
+
+# Load production secrets from shared env file
+EnvironmentFile=/opt/iris/shared/iris.env
+Environment=IRIS_ENV_FILE=/opt/iris/shared/iris.env
+Environment=PYTHONPATH=/opt/iris/app:/opt/iris/app/src
+
+# Worker command — concurrency=4 handles up to 4 parallel pipeline stages
+# Increase --concurrency for more parallel store jobs (monitor RAM and GPU)
+ExecStart=/opt/iris/app/.venv/bin/python -m celery \
+    -A backend.app.celery_app.worker \
+    worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --max-tasks-per-child=50 \
+    --hostname=iris-worker@%%h
+
+# Graceful stop: send SIGTERM, allow tasks to finish up to 120s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+Restart=on-failure
+RestartSec=10
+
+# Logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iris-celery
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/iris/data /opt/iris/shared
+
+# Resource limits — YOLO inference is memory-intensive
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

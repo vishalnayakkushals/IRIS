@@ -1,0 +1,44 @@
+[Unit]
+Description=IRIS FastAPI Server
+Documentation=https://github.com/your-org/iris
+After=network.target postgresql.service redis.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=iris
+Group=iris
+WorkingDirectory=/opt/iris/app
+
+# Load production secrets from shared env file
+EnvironmentFile=/opt/iris/shared/iris.env
+Environment=IRIS_ENV_FILE=/opt/iris/shared/iris.env
+Environment=PYTHONPATH=/opt/iris/app:/opt/iris/app/src
+
+ExecStart=/opt/iris/app/.venv/bin/python /opt/iris/app/scripts/start_api_server.py
+
+# Graceful stop: SIGTERM first, then SIGKILL after 30s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=always
+RestartSec=5
+
+# Logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iris-api
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/iris/data /opt/iris/shared
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

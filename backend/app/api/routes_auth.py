@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, status
-
-# Allow importing from src/iris/
-_SRC = Path(__file__).resolve().parents[3] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
 from backend.app.auth.dependencies import get_current_user
 from backend.app.auth.jwt_handler import create_token
@@ -20,8 +12,8 @@ router = APIRouter()
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(body: LoginRequest, settings: Settings = Depends(get_settings)) -> TokenResponse:
-    user = authenticate_platform_user(settings.db_path_obj, body.email, body.password)
+async def login(body: LoginRequest, settings: Settings = Depends(get_settings)) -> TokenResponse:
+    user = await authenticate_platform_user(body.email, body.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = create_token(str(user.get("email", body.email)).strip(), settings.jwt_secret, settings.jwt_expire_days)
@@ -29,11 +21,10 @@ def login(body: LoginRequest, settings: Settings = Depends(get_settings)) -> Tok
 
 
 @router.get("/auth/me", response_model=UserMe)
-def me(
+async def me(
     email: str = Depends(get_current_user),
-    settings: Settings = Depends(get_settings),
 ) -> UserMe:
-    profile = get_platform_user_profile(settings.db_path_obj, email)
+    profile = await get_platform_user_profile(email)
     full_name = str(profile.get("full_name", email)) if profile else email
     store_id = str(profile.get("store_id", "")) if profile else ""
     return UserMe(email=email, full_name=full_name, store_id=store_id)

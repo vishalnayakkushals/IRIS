@@ -84,7 +84,12 @@ It records what changed, where it changed, and why.
 | `CTO/run_cto_watch.bat` | Windows wrapper for continuous CTO browse-speed watch mode. |
 | `CTO/README.md` | Usage and isolation guarantees for the CTO observer layer. |
 | `backend/app/db/canonical_metadata.py` | Canonical Postgres target schema metadata for platform-state cutover away from SQLite and CSV-backed source-of-truth. |
-| `backend/app/db/platform_data.py` | FastAPI data bridge that prefers Postgres-backed auth/store/session reads while safely falling back to the current SQLite runtime. |
+| `backend/app/db/platform_data.py` | Pure-async Postgres-only data layer: auth, stores, walkin sessions, overview metrics, traffic series, pipeline runs (Phase D). |
+| `backend/app/db/pipeline_log.py` | Pure-async Postgres-only pipeline run log CRUD (insert, update status, get latest per job, recent runs). |
+| `backend/app/db/session.py` | SQLAlchemy async engine with production pool settings (pool_size=20, max_overflow=20, pool_pre_ping, READ COMMITTED). |
+| `backend/migrations/versions/001_initial_schema_with_indexes.py` | Alembic migration: full production schema for 150-store scale with partitioned tables and production indexes. |
+| `scripts/migrate_sqlite_to_postgres.py` | One-time SQLite → Postgres migration with datetime parsing, bool casting, and savepoint-per-row error isolation. |
+| `deploy/cloud/` | Ubuntu cloud deployment artifacts: setup script, postgres init, nginx config, systemd services, env template, README. |
 | `docs/operations/platform_data_cutover_inventory.md` | Inventory of live SQLite tables and CSV artifacts plus the recommended single-platform cutover path to FastAPI/React. |
 
 ## Change Entry Template
@@ -2586,4 +2591,58 @@ Use this template for each new change:
   - None
 - Infra/Config Impact:
   - Improves local/no-Docker service stability around SQLite; no new env vars.
+
+### 2026-04-28 | Phase C — Cloud deployment artifacts
+
+- Summary:
+  - Created full Ubuntu cloud deployment package under `deploy/cloud/`: one-shot bootstrap script (Postgres 16 via PGDG APT, nginx, redis, systemd), `iris_user` + `iris_db` init SQL, nginx config with rate limiting + SPA catch-all + WebSocket upgrade, systemd units for iris-api / iris-web / iris-celery-worker, production `.env` template, and deployment README.
+- Changed Paths:
+  - `deploy/cloud/setup_ubuntu.sh`
+  - `deploy/cloud/postgres_init.sql`
+  - `deploy/cloud/nginx.conf`
+  - `deploy/cloud/iris-api.service`
+  - `deploy/cloud/iris-web.service`
+  - `deploy/cloud/iris-celery-worker.service`
+  - `deploy/cloud/.env.production.example`
+  - `deploy/cloud/README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `deploy/cloud/` (full directory)
+- Infra/Config Impact:
+  - Copy to Ubuntu server, run `bash deploy/cloud/setup_ubuntu.sh`, then follow the README 8-step checklist.
+
+### 2026-04-28 | Phase D — Postgres-only FastAPI layer, Alembic schema, migration script
+
+- Summary:
+  - **Eliminated SQLite completely** from the FastAPI runtime: rewrote `platform_data.py` and `pipeline_log.py` as pure-async Postgres-only modules — zero `sqlite3` imports, zero fallback code.
+  - All 8 FastAPI route handlers (`routes_auth`, `routes_dashboard`, `routes_detail`, `routes_jobs`) updated to call `await` directly — no `db_path` parameter, no `Settings` dependency in data-only routes.
+  - Created Alembic migration `001_initial_schema_with_indexes.py` with full production schema for 150-store scale: partitioned tables for `onfly_walkin_sessions` and `onfly_pipeline_run_events`, 10 critical indexes, `pg_stat_statements` extension.
+  - Created `scripts/migrate_sqlite_to_postgres.py`: one-time idempotent migration with datetime string parsing, 0/1 → bool conversion, and SAVEPOINT-per-row error isolation.
+  - Ran migration: 10,268 rows transferred (stores 6/6, users 5/5, image_state 9,995/9,995, walkin_sessions 213/213, pipeline_run_log 15/15).
+  - 3× test pass: all 8 endpoints, data consistency validated (213 walkins = BLRJAY 93 + BLRRRN 120), auth boundary enforced, wrong-password 401 confirmed.
+  - Updated `backend/alembic.ini` sqlalchemy.url for local Postgres.
+  - Added `POSTGRES_URL` and `JWT_SECRET` to `.env.local`.
+  - Fixed `JobStatus` Pydantic model to accept `datetime | str` for `last_run_at` from Postgres (was `str` only).
+- Changed Paths:
+  - `backend/app/db/platform_data.py`
+  - `backend/app/db/pipeline_log.py`
+  - `backend/app/db/session.py`
+  - `backend/app/api/routes_auth.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `backend/app/api/routes_detail.py`
+  - `backend/app/api/routes_jobs.py`
+  - `backend/app/models/jobs.py`
+  - `backend/alembic.ini`
+  - `.env.local`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `backend/migrations/versions/001_initial_schema_with_indexes.py`
+  - `scripts/migrate_sqlite_to_postgres.py`
+- Infra/Config Impact:
+  - **Requires Postgres 16+ running on localhost:5432** (`iris_db` / `iris_user` / password `iris_password`).
+  - Start Postgres: `& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" start -D "C:\Program Files\PostgreSQL\17\data"`.
+  - Run migrations once: `python -m alembic -c backend/alembic.ini upgrade head`.
+  - Migrate existing data once: `python scripts/migrate_sqlite_to_postgres.py`.
+  - `POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db` must be in env.
+  - SQLite (`store_registry.db`) is no longer read by the FastAPI layer — Postgres is the sole data store.
 

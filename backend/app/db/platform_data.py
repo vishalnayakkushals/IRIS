@@ -1,28 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import math
-import sqlite3
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 
 
-def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
+def _verify_password(plain: str, hashed: str) -> bool:
+    try:
+        parts = (hashed or "").split("$", 2)
+        if len(parts) == 3 and parts[0] == "pbkdf2_sha256":
+            _algo, salt, digest = parts
+            got = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+            return hmac.compare_digest(got, digest)
+        from passlib.context import CryptContext
+        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return ctx.verify(plain, hashed)
+    except Exception:
+        return False
 
 
-def _run_sync(coro):
-    return asyncio.run(coro)
-
-
-async def _pg_fetch_user_row(email: str) -> dict[str, Any] | None:
+async def authenticate_platform_user(email: str, password: str) -> dict[str, Any] | None:
     from backend.app.db.canonical_metadata import users
     from backend.app.db.session import AsyncSessionLocal
 
@@ -42,82 +43,46 @@ async def _pg_fetch_user_row(email: str) -> dict[str, Any] | None:
         )
         result = await session.execute(stmt)
         row = result.mappings().first()
-        return dict(row) if row else None
 
-
-def _verify_password(plain: str, hashed: str) -> bool:
-    """Verify password against IRIS custom pbkdf2_sha256 hash or passlib bcrypt fallback."""
-    try:
-        parts = (hashed or "").split("$", 2)
-        if len(parts) == 3 and parts[0] == "pbkdf2_sha256":
-            _algo, salt, digest = parts
-            got = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
-            return hmac.compare_digest(got, digest)
-        # Fallback: passlib bcrypt (if hash starts with $2b$)
-        from passlib.context import CryptContext
-        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        return ctx.verify(plain, hashed)
-    except Exception:
-        return False
-
-
-def _sqlite_authenticate(db_path: Path, email: str, password: str) -> dict[str, Any] | None:
-    """Auth directly from SQLite without importing store_registry (avoids PIL dependency)."""
-    conn = _sqlite_connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT user_id,email,full_name,password_hash,is_active,store_id,created_at FROM users WHERE lower(email)=lower(?)",
-            (str(email or "").strip(),),
-        ).fetchone()
-    finally:
-        conn.close()
     if row is None:
         return None
-    if not bool(row["is_active"]):
+    if not bool(row.get("is_active", 0)):
         return None
-    if not _verify_password(str(password or ""), str(row["password_hash"] or "")):
+    if not _verify_password(str(password or ""), str(row.get("password_hash", "") or "")):
         return None
     return dict(row)
 
 
-def authenticate_platform_user(db_path: Path, email: str, password: str) -> dict[str, Any] | None:
-    # Try Postgres first
-    try:
-        row = _run_sync(_pg_fetch_user_row(email))
-        if row and bool(row.get("is_active", 0)) and _verify_password(str(password or ""), str(row.get("password_hash", "") or "")):
-            return row
-    except Exception:
-        pass
-    # Fall back to SQLite (does not import store_registry to avoid PIL dependency)
-    return _sqlite_authenticate(db_path, email, password)
+async def get_platform_user_profile(email: str) -> dict[str, Any] | None:
+    from backend.app.db.canonical_metadata import users
+    from backend.app.db.session import AsyncSessionLocal
 
-
-def get_platform_user_profile(db_path: Path, email: str) -> dict[str, Any] | None:
-    try:
-        row = _run_sync(_pg_fetch_user_row(email))
-        if row:
-            return row
-    except Exception:
-        pass
-
-    conn = _sqlite_connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT user_id,email,full_name,is_active,store_id,created_at FROM users WHERE lower(email)=lower(?)",
-            (str(email or "").strip(),),
-        ).fetchone()
-    finally:
-        conn.close()
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(
+                users.c.user_id,
+                users.c.email,
+                users.c.full_name,
+                users.c.is_active,
+                users.c.store_id,
+                users.c.created_at,
+            )
+            .where(func.lower(users.c.email) == str(email or "").strip().lower())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        row = result.mappings().first()
     return dict(row) if row is not None else None
 
 
-async def _pg_overview_metrics() -> dict[str, Any]:
+async def get_overview_metrics() -> dict[str, Any]:
     from backend.app.db.canonical_metadata import onfly_walkin_sessions
     from backend.app.db.session import AsyncSessionLocal
 
     staff_case = case((func.upper(onfly_walkin_sessions.c.role) == "STAFF", 1), else_=0)
     customer_case = case((func.upper(onfly_walkin_sessions.c.role) == "STAFF", 0), else_=1)
     conversion_case = case((func.upper(onfly_walkin_sessions.c.entry_type) == "BILLING", 1), else_=0)
+
     async with AsyncSessionLocal() as session:
         stmt = select(
             func.count().label("total_walkins"),
@@ -127,66 +92,59 @@ async def _pg_overview_metrics() -> dict[str, Any]:
         )
         result = await session.execute(stmt)
         row = result.mappings().first()
-        if not row:
-            return {}
-        total_customers = int(row["total_customers"] or 0)
-        total_conversions = int(row["total_conversions"] or 0)
-        conversion_rate = f"{((total_conversions / max(total_customers, 1)) * 100.0):.1f}%"
-        return {
-            "total_walkins": int(row["total_walkins"] or 0),
-            "total_customers": total_customers,
-            "total_staff": int(row["total_staff"] or 0),
-            "conversion_rate": conversion_rate,
-            "status": "Success",
-            "data_source": "postgres",
-        }
 
+    if not row:
+        return {"total_walkins": 0, "total_customers": 0, "total_staff": 0, "conversion_rate": "0%"}
 
-def _sqlite_overview_metrics(db_path: Path) -> dict[str, Any]:
-    conn = _sqlite_connect(db_path)
-    try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
-        ).fetchone()
-        if has_table:
-            rows = conn.execute(
-                "SELECT role, entry_type FROM onfly_walkin_sessions"
-            ).fetchall()
-            total_people = int(len(rows))
-            staff = sum(1 for row in rows if str(row["role"] or "").strip().upper() == "STAFF")
-            customers = total_people - staff
-            conversions = sum(1 for row in rows if str(row["entry_type"] or "").strip().upper() == "BILLING")
-            return {
-                "total_walkins": total_people,
-                "total_customers": customers,
-                "total_staff": staff,
-                "conversion_rate": f"{((conversions / max(customers, 1)) * 100.0):.1f}%",
-                "status": "Success",
-                "data_source": "sqlite",
-            }
-    finally:
-        conn.close()
+    total_customers = int(row["total_customers"] or 0)
+    total_conversions = int(row["total_conversions"] or 0)
+    conversion_rate = f"{((total_conversions / max(total_customers, 1)) * 100.0):.1f}%"
     return {
-        "total_walkins": 0,
-        "total_customers": 0,
-        "total_staff": 0,
-        "conversion_rate": "0%",
-        "status": "No data available.",
-        "data_source": "sqlite",
+        "total_walkins": int(row["total_walkins"] or 0),
+        "total_customers": total_customers,
+        "total_staff": int(row["total_staff"] or 0),
+        "conversion_rate": conversion_rate,
     }
 
 
-async def get_overview_metrics(db_path: Path) -> dict[str, Any]:
+def _safe_float(value: object) -> float | None:
     try:
-        pg_metrics = await _pg_overview_metrics()
-        if pg_metrics.get("total_walkins", 0):
-            return pg_metrics
+        text_val = str(value or "").strip()
+        if not text_val:
+            return None
+        number = float(text_val)
+        if math.isnan(number):
+            return None
+        return number
     except Exception:
-        pass
-    return _sqlite_overview_metrics(db_path)
+        return None
 
 
-async def _pg_store_metrics(store_id: str) -> dict[str, Any]:
+def _summarize_store_metrics(store_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "store_id": store_id,
+            "footfall": 0,
+            "bounce_rate": "0%",
+            "dwell_time": "0 min",
+            "status": "No activity recorded.",
+        }
+    footfall = len(rows)
+    conversions = sum(1 for row in rows if str(row.get("entry_type", "") or "").strip().upper() == "BILLING")
+    dwell_values = [_safe_float(row.get("time_spent_mins")) for row in rows]
+    dwell_values = [v for v in dwell_values if v is not None]
+    avg_dwell = float(sum(dwell_values) / len(dwell_values)) if dwell_values else 0.0
+    bounce_rate = ((max(footfall - conversions, 0) / max(footfall, 1)) * 100.0)
+    return {
+        "store_id": store_id,
+        "footfall": int(footfall),
+        "bounce_rate": f"{bounce_rate:.1f}%",
+        "dwell_time": f"{avg_dwell:.1f} min",
+        "status": "Success",
+    }
+
+
+async def get_store_metrics(store_id: str) -> dict[str, Any]:
     from backend.app.db.canonical_metadata import onfly_walkin_sessions
     from backend.app.db.session import AsyncSessionLocal
 
@@ -197,195 +155,87 @@ async def _pg_store_metrics(store_id: str) -> dict[str, Any]:
             onfly_walkin_sessions.c.time_spent_mins,
         ).where(onfly_walkin_sessions.c.store_id == str(store_id or "").strip())
         result = await session.execute(stmt)
-        rows = [dict(row) for row in result.mappings().all()]
-    return _summarize_store_metrics(store_id, rows, "postgres")
+        rows = [dict(r) for r in result.mappings().all()]
+    return _summarize_store_metrics(store_id, rows)
 
 
-def _safe_float(value: object) -> float | None:
-    try:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        number = float(text)
-        if math.isnan(number):
-            return None
-        return number
-    except Exception:
-        return None
+async def get_traffic_series(store_id: str | None = None, days: int = 30) -> list[dict[str, Any]]:
+    from backend.app.db.canonical_metadata import onfly_walkin_sessions
+    from backend.app.db.session import AsyncSessionLocal
+
+    cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    customer_case = case((func.upper(onfly_walkin_sessions.c.role) == "CUSTOMER", 1), else_=0)
+    staff_case = case((func.upper(onfly_walkin_sessions.c.role) == "STAFF", 1), else_=0)
+    conversion_case = case((func.upper(onfly_walkin_sessions.c.entry_type) == "BILLING", 1), else_=0)
+
+    stmt = (
+        select(
+            onfly_walkin_sessions.c.business_date.label("date"),
+            func.count().label("total"),
+            func.coalesce(func.sum(customer_case), 0).label("customers"),
+            func.coalesce(func.sum(staff_case), 0).label("staff"),
+            func.coalesce(func.sum(conversion_case), 0).label("conversions"),
+        )
+        .where(onfly_walkin_sessions.c.business_date != "")
+        .where(onfly_walkin_sessions.c.business_date >= cutoff)
+        .group_by(onfly_walkin_sessions.c.business_date)
+        .order_by(onfly_walkin_sessions.c.business_date.desc())
+        .limit(days)
+    )
+
+    if store_id:
+        stmt = stmt.where(onfly_walkin_sessions.c.store_id == str(store_id).strip())
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        return [dict(r) for r in result.mappings().all()]
 
 
-def _summarize_store_metrics(store_id: str, rows: list[dict[str, Any]], source: str) -> dict[str, Any]:
-    if not rows:
-        return {
-            "store_id": store_id,
-            "footfall": 0,
-            "bounce_rate": "0%",
-            "dwell_time": "0 min",
-            "status": "No activity recorded.",
-            "data_source": source,
-        }
-    footfall = len(rows)
-    conversions = sum(1 for row in rows if str(row.get("entry_type", "") or "").strip().upper() == "BILLING")
-    dwell_values = [_safe_float(row.get("time_spent_mins")) for row in rows]
-    dwell_values = [value for value in dwell_values if value is not None]
-    avg_dwell = float(sum(dwell_values) / len(dwell_values)) if dwell_values else 0.0
-    bounce_rate = ((max(footfall - conversions, 0) / max(footfall, 1)) * 100.0)
-    return {
-        "store_id": store_id,
-        "footfall": int(footfall),
-        "bounce_rate": f"{bounce_rate:.1f}%",
-        "dwell_time": f"{avg_dwell:.1f} min",
-        "status": "Success",
-        "data_source": source,
-    }
+async def get_pipeline_runs(limit: int = 50) -> list[dict[str, Any]]:
+    from backend.app.db.canonical_metadata import pipeline_run_log
+    from backend.app.db.session import AsyncSessionLocal
+
+    stmt = (
+        select(pipeline_run_log)
+        .order_by(pipeline_run_log.c.created_at.desc())
+        .limit(int(limit))
+    )
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        return [dict(r) for r in result.mappings().all()]
 
 
-def _sqlite_store_metrics(db_path: Path, store_id: str) -> dict[str, Any]:
-    conn = _sqlite_connect(db_path)
-    try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
-        ).fetchone()
-        if not has_table:
-            return {
-                "store_id": store_id,
-                "footfall": 0,
-                "bounce_rate": "0%",
-                "dwell_time": "0 min",
-                "status": "No data available.",
-                "data_source": "sqlite",
-            }
-        rows = conn.execute(
-            "SELECT role, entry_type, time_spent_mins FROM onfly_walkin_sessions WHERE store_id=?",
-            (str(store_id or "").strip(),),
-        ).fetchall()
-    finally:
-        conn.close()
-    return _summarize_store_metrics(store_id, [dict(row) for row in rows], "sqlite")
+async def get_walkin_sessions(store_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    from backend.app.db.canonical_metadata import onfly_walkin_sessions
+    from backend.app.db.session import AsyncSessionLocal
+
+    stmt = (
+        select(onfly_walkin_sessions)
+        .order_by(onfly_walkin_sessions.c.created_at.desc())
+        .limit(int(limit))
+    )
+    if store_id:
+        stmt = stmt.where(onfly_walkin_sessions.c.store_id == str(store_id).strip())
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        return [dict(r) for r in result.mappings().all()]
 
 
-async def get_store_metrics(db_path: Path, store_id: str) -> dict[str, Any]:
-    try:
-        pg_metrics = await _pg_store_metrics(store_id)
-        if pg_metrics.get("footfall", 0):
-            return pg_metrics
-    except Exception:
-        pass
-    return _sqlite_store_metrics(db_path, store_id)
+async def list_store_registry_stores() -> list[dict[str, Any]]:
+    from backend.app.db.canonical_metadata import stores
+    from backend.app.db.session import AsyncSessionLocal
 
-
-def get_traffic_series(db_path: Path, store_id: str | None = None, days: int = 30) -> list[dict[str, Any]]:
-    conn = _sqlite_connect(db_path)
-    try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
-        ).fetchone()
-        if not has_table:
-            return []
-        if store_id:
-            rows = conn.execute("""
-                SELECT business_date as date,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN UPPER(role)='CUSTOMER' THEN 1 ELSE 0 END) as customers,
-                       SUM(CASE WHEN UPPER(role)='STAFF' THEN 1 ELSE 0 END) as staff,
-                       SUM(CASE WHEN UPPER(entry_type)='BILLING' THEN 1 ELSE 0 END) as conversions
-                FROM onfly_walkin_sessions
-                WHERE store_id=? AND business_date != ''
-                GROUP BY business_date
-                ORDER BY business_date DESC
-                LIMIT ?
-            """, (store_id, days)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT business_date as date,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN UPPER(role)='CUSTOMER' THEN 1 ELSE 0 END) as customers,
-                       SUM(CASE WHEN UPPER(role)='STAFF' THEN 1 ELSE 0 END) as staff,
-                       SUM(CASE WHEN UPPER(entry_type)='BILLING' THEN 1 ELSE 0 END) as conversions
-                FROM onfly_walkin_sessions
-                WHERE business_date != ''
-                GROUP BY business_date
-                ORDER BY business_date DESC
-                LIMIT ?
-            """, (days,)).fetchall()
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_pipeline_runs(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
-    conn = _sqlite_connect(db_path)
-    try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_run_log'"
-        ).fetchone()
-        if not has_table:
-            return []
-        rows = conn.execute("""
-            SELECT run_id, job_key, job_name, store_id, status, remarks,
-                   triggered_by, started_at, completed_at, created_at
-            FROM pipeline_run_log
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_walkin_sessions(db_path: Path, store_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    conn = _sqlite_connect(db_path)
-    try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onfly_walkin_sessions'"
-        ).fetchone()
-        if not has_table:
-            return []
-        if store_id:
-            rows = conn.execute(
-                "SELECT * FROM onfly_walkin_sessions WHERE store_id=? ORDER BY created_at DESC LIMIT ?",
-                (str(store_id or "").strip(), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM onfly_walkin_sessions ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-    finally:
-        conn.close()
-    return [dict(row) for row in rows]
-
-
-def list_store_registry_stores(db_path: Path) -> list[dict[str, Any]]:
-    try:
-        from backend.app.db.canonical_metadata import stores
-        from backend.app.db.session import AsyncSessionLocal
-
-        async def _pg_rows() -> list[dict[str, Any]]:
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(
-                        stores.c.store_id,
-                        stores.c.store_name,
-                        stores.c.email,
-                        stores.c.drive_folder_url,
-                        stores.c.created_at,
-                        stores.c.updated_at,
-                    ).order_by(stores.c.store_id)
-                )
-                return [dict(row) for row in result.mappings().all()]
-
-        rows = _run_sync(_pg_rows())
-        if rows:
-            return rows
-    except Exception:
-        pass
-
-    conn = _sqlite_connect(db_path)
-    try:
-        rows = conn.execute(
-            "SELECT store_id,store_name,email,drive_folder_url,created_at,updated_at FROM stores ORDER BY store_id"
-        ).fetchall()
-    finally:
-        conn.close()
-    return [dict(row) for row in rows]
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(
+                stores.c.store_id,
+                stores.c.store_name,
+                stores.c.email,
+                stores.c.drive_folder_url,
+                stores.c.created_at,
+                stores.c.updated_at,
+            ).order_by(stores.c.store_id)
+        )
+        return [dict(r) for r in result.mappings().all()]
