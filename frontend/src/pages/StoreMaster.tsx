@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { adminListStoreMaster, adminUpsertStoreMaster } from "../api/client";
+import { adminListStoreMaster, adminUploadStoreMasterFile, adminUpsertStoreMaster } from "../api/client";
 import { Card, Title, Text, Button } from "@tremor/react";
 import { Upload, RefreshCw } from "lucide-react";
 
@@ -99,6 +99,7 @@ export default function StoreMaster() {
   const [rows, setRows] = useState<any[]>([]);
   const [rawInput, setRawInput] = useState("");
   const [preview, setPreview] = useState<any[]>([]);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<"table" | "import">("table");
@@ -125,6 +126,7 @@ export default function StoreMaster() {
     }
 
     const text = await file.text();
+    setSelectedFile(file);
     setRawInput(text);
     setPreview(parseStoreMaster(text));
     setTab("import");
@@ -135,14 +137,18 @@ export default function StoreMaster() {
     if (!preview.length) return;
     setImporting(true);
     try {
-      await adminUpsertStoreMaster(preview);
+      if (selectedFile) {
+        await adminUploadStoreMasterFile(selectedFile);
+      } else {
+        await adminUpsertStoreMaster(preview);
+      }
       flash(`${preview.length} row(s) imported`);
-      setRawInput(""); setPreview([]);
+      setRawInput(""); setPreview([]); setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
       setTab("table");
-    } catch {
-      flash("Import failed");
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || "Import failed");
     } finally { setImporting(false); }
   }
 
@@ -165,6 +171,7 @@ export default function StoreMaster() {
       {tab === "import" && (
         <Card className="p-5 space-y-4">
           <p className="text-sm text-slate-600">Upload a `.csv` or `.tsv` file, or paste data below. First row must contain headers like: <span className="font-mono text-xs">{COLUMNS.map((c) => c.key).join(", ")}</span></p>
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">Every <span className="font-medium">store_id</span> in this file must already exist in <span className="font-medium">Store Mapping</span>.</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={fileInputRef}
@@ -181,18 +188,24 @@ export default function StoreMaster() {
             </Button>
             <Text className="text-xs text-slate-500">Supported: comma-separated or tab-separated files.</Text>
           </div>
+          {selectedFile && (
+            <Text className="text-xs text-slate-500">Selected file: <span className="font-medium">{selectedFile.name}</span></Text>
+          )}
           <textarea
             className="w-full border rounded px-3 py-2 text-sm font-mono h-48 focus:outline-none focus:ring-2 focus:ring-blue-300"
             placeholder={"store_id,short_code,gofrugal_name,...\nBLRRRN,RRN,Kushals Jewellery RR Nagar,..."}
             value={rawInput}
-            onChange={(e) => handleRawInputChange(e.target.value)}
+            onChange={(e) => {
+              setSelectedFile(null);
+              handleRawInputChange(e.target.value);
+            }}
           />
           {preview.length > 0 && (
             <p className="text-sm text-slate-500">Preview: <span className="font-medium">{preview.length}</span> rows detected.</p>
           )}
           <div className="flex gap-2">
             <Button icon={Upload} loading={importing} disabled={!preview.length} onClick={doImport}>Import {preview.length} Rows</Button>
-            <Button variant="secondary" onClick={() => { setRawInput(""); setPreview([]); if (fileInputRef.current) fileInputRef.current.value = ""; }}>Clear</Button>
+            <Button variant="secondary" onClick={() => { setRawInput(""); setPreview([]); setSelectedFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}>Clear</Button>
           </div>
         </Card>
       )}

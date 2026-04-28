@@ -296,6 +296,7 @@ The built files in `backend/app/static/` ARE committed to git. The `frontend/dis
 | `backend/app/config.py` | All settings via env vars — reads from .env.local |
 | `backend/app/db/canonical_metadata.py` | SQLAlchemy table definitions — source of truth for DB schema |
 | `backend/app/api/routes_onfly.py` | Pipeline execution + background auto-sync loop |
+| `backend/app/api/routes_admin.py` | Admin CRUD, organisation settings, and Store Master CSV/TSV upload handling |
 | `frontend/src/api/client.ts` | All API calls from React — add new endpoints here |
 | `frontend/src/pages/SchedulerDashboard.tsx` | Web-controlled IRIS data sync console for manual runs, automation visibility, and execution history |
 | `frontend/src/pages/ReportsPage.tsx` | Management-facing reports view with summary, footfall detail, and image scanning outputs |
@@ -306,6 +307,21 @@ The built files in `backend/app/static/` ARE committed to git. The `frontend/dis
 - Organisation settings are expected to drive branding in the sidebar/top bar
 - Scheduler page must stay web-controlled; do not reintroduce fake Celery-only trigger buttons into the main demo path
 - Report tables should keep visible headers even when there is no data
+- Store Master uploads should use the backend upload endpoint for real CSV/TSV parsing, with paste import only as fallback
+
+### 2026-04-28 - Store Master Upload Fix
+- Changed paths:
+  - `backend/app/api/routes_admin.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/index-B1FLDFk4.css`
+  - `backend/app/static/assets/index-DFhYybkl.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Replaced the fragile browser-only Store Master import path with a real backend CSV/TSV upload endpoint at `/api/admin/store-master/upload`.
+  - Kept pasted table import as fallback, but file uploads now parse on the server for better compatibility with quoted CSV/TSV data and clearer validation errors.
+  - Added a user-facing validation message when uploaded rows reference store IDs that are not yet present in Store Mapping.
 
 ### What NOT To Do
 

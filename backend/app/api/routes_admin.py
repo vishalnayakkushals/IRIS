@@ -2,7 +2,9 @@
 org settings, store access, activity log, store master."""
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import os
 import secrets
 import uuid
@@ -12,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.auth.dependencies import get_current_user
 from backend.app.db.canonical_metadata import (
@@ -58,6 +61,62 @@ async def _log_activity(actor_email: str, action_code: str, store_id: str = "", 
             )
         )
         await session.commit()
+
+
+_STORE_MASTER_HEADER_ALIASES = {
+    "storeid": "store_id",
+    "store_id": "store_id",
+    "shortcode": "short_code",
+    "short_code": "short_code",
+    "gofrugalname": "gofrugal_name",
+    "gofrugal_name": "gofrugal_name",
+    "outletid": "outlet_id",
+    "outlet_id": "outlet_id",
+    "city": "city",
+    "state": "state",
+    "zone": "zone",
+    "country": "country",
+    "mobileno": "mobile_no",
+    "mobile_no": "mobile_no",
+    "storeemail": "store_email",
+    "store_email": "store_email",
+    "clustermanager": "cluster_manager",
+    "cluster_manager": "cluster_manager",
+    "areamanager": "area_manager",
+    "area_manager": "area_manager",
+}
+
+
+def _normalize_store_master_header(value: str) -> str:
+    compact = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip().lower()).strip("_")
+    while "__" in compact:
+        compact = compact.replace("__", "_")
+    return _STORE_MASTER_HEADER_ALIASES.get(compact, _STORE_MASTER_HEADER_ALIASES.get(compact.replace("_", ""), compact))
+
+
+def _parse_store_master_upload(content: bytes, filename: str) -> list[dict[str, str]]:
+    text = content.decode("utf-8-sig")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    delimiter = "\t" if filename.lower().endswith(".tsv") or "\t" in lines[0] else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+    if not reader.fieldnames:
+        return []
+
+    normalized_headers = [_normalize_store_master_header(name) for name in reader.fieldnames]
+    rows: list[dict[str, str]] = []
+    for raw_row in reader:
+        row: dict[str, str] = {}
+        for index, key in enumerate(normalized_headers):
+            if not key:
+                continue
+            original_key = reader.fieldnames[index]
+            row[key] = str(raw_row.get(original_key, "") or "").strip()
+        if str(row.get("store_id", "")).strip():
+            rows.append(row)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -749,33 +808,59 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
     now = _now()
     processed = 0
     async with AsyncSessionLocal() as session:
-        for row in rows:
-            existing = await session.execute(
-                select(store_master.c.store_id).where(store_master.c.store_id == row.store_id)
-            )
-            vals = dict(
-                short_code=row.short_code,
-                gofrugal_name=row.gofrugal_name,
-                outlet_id=row.outlet_id,
-                city=row.city,
-                state=row.state,
-                zone=row.zone,
-                country=row.country,
-                mobile_no=row.mobile_no,
-                store_email=row.store_email,
-                cluster_manager=row.cluster_manager,
-                area_manager=row.area_manager,
-                updated_at=now,
-            )
-            if existing.first():
-                await session.execute(
-                    update(store_master).where(store_master.c.store_id == row.store_id).values(**vals)
+        try:
+            for row in rows:
+                existing = await session.execute(
+                    select(store_master.c.store_id).where(store_master.c.store_id == row.store_id)
                 )
-            else:
-                await session.execute(
-                    insert(store_master).values(store_id=row.store_id, **vals)
+                vals = dict(
+                    short_code=row.short_code,
+                    gofrugal_name=row.gofrugal_name,
+                    outlet_id=row.outlet_id,
+                    city=row.city,
+                    state=row.state,
+                    zone=row.zone,
+                    country=row.country,
+                    mobile_no=row.mobile_no,
+                    store_email=row.store_email,
+                    cluster_manager=row.cluster_manager,
+                    area_manager=row.area_manager,
+                    updated_at=now,
                 )
-            processed += 1
-        await session.commit()
+                if existing.first():
+                    await session.execute(
+                        update(store_master).where(store_master.c.store_id == row.store_id).values(**vals)
+                    )
+                else:
+                    await session.execute(
+                        insert(store_master).values(store_id=row.store_id, **vals)
+                    )
+                processed += 1
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail="Store Master upload failed. Make sure every store_id already exists in Store Mapping first.",
+            ) from exc
     await _log_activity(actor, "store_master.upsert", "", {"count": processed})
     return {"processed": processed}
+
+
+@router.post("/store-master/upload", status_code=status.HTTP_201_CREATED)
+async def upload_store_master_file(file: UploadFile, actor: str = Depends(get_current_user)) -> dict:
+    filename = (file.filename or "").lower()
+    if not filename.endswith((".csv", ".tsv", ".txt")):
+        raise HTTPException(status_code=422, detail="Use a CSV or TSV file")
+
+    content = await file.read()
+    try:
+        parsed_rows = _parse_store_master_upload(content, filename)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="File must be UTF-8 encoded") from exc
+
+    if not parsed_rows:
+        raise HTTPException(status_code=422, detail="No valid rows found. Include a store_id column.")
+
+    rows = [StoreMasterRow(**row) for row in parsed_rows]
+    return await upsert_store_master(rows, actor)

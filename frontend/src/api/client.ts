@@ -184,6 +184,13 @@ export const adminListActivity = (actor?: string, limit = 100) =>
 // ── Admin — Store Master ──────────────────────────────────────────────────────
 export const adminListStoreMaster = () => api.get<any[]>("/admin/store-master");
 export const adminUpsertStoreMaster = (rows: any[]) => api.post("/admin/store-master", rows);
+export const adminUploadStoreMasterFile = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post("/admin/store-master/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const reportsWalkins = (storeId?: string, date?: string, limit = 200) => {
