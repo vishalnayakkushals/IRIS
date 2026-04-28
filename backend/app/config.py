@@ -6,10 +6,13 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
+_INSECURE_JWT_DEFAULT = "change_me_in_env"
+
+
 class Settings(BaseSettings):
     postgres_url: str = "postgresql+asyncpg://iris_user:password@localhost/iris_db"
     redis_url: str = "redis://redis:6379/0"
-    jwt_secret: str = "change_me_in_env"
+    jwt_secret: str = _INSECURE_JWT_DEFAULT
     jwt_expire_days: int = 14
     store_id: str = "TEST_STORE_D07"
     data_root: str = "/app/data"
@@ -19,8 +22,18 @@ class Settings(BaseSettings):
     onfly_source_url: str = ""
     yolo_conf: float = 0.18
     max_images: int = 100
+    # Comma-separated allowed CORS origins; defaults cover local dev only
+    cors_origins: str = "http://localhost:3000,http://localhost:8766,http://127.0.0.1:8766"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def jwt_is_insecure(self) -> bool:
+        return self.jwt_secret == _INSECURE_JWT_DEFAULT
 
     @property
     def get_db_url(self) -> str:

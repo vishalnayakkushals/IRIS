@@ -110,6 +110,28 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Phase D security hardening: rate limiting, security headers, CORS via settings, JWT startup warning
+- Summary:
+  - Added `slowapi` rate limiter to `POST /api/auth/login` — 10 requests/minute per IP; 429 on breach.
+  - Added security headers middleware to all responses: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`.
+  - Moved CORS origins out of hardcoded list into `Settings.cors_origins` (comma-separated, configurable via env var `CORS_ORIGINS`).
+  - Added startup warning log when `JWT_SECRET` is using the insecure default value.
+  - Locked down CORS `allow_methods` and `allow_headers` to specific values instead of `*`.
+  - Extracted `limiter` into `backend/app/limiter.py` to avoid circular import between `main.py` and routes.
+- Changed Paths:
+  - `backend/app/main.py`
+  - `backend/app/limiter.py`
+  - `backend/app/api/routes_auth.py`
+  - `backend/app/config.py`
+  - `backend/requirements.txt`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `backend/app/limiter.py`
+- Infra/Config Impact:
+  - `slowapi>=0.1.9` added to `backend/requirements.txt` — run `pip install -r backend/requirements.txt`.
+  - New env var `CORS_ORIGINS` (comma-separated) — defaults to localhost:3000 + localhost:8766. Set to production domain for cloud deploy.
+  - Login endpoint rate-limited to 10/minute per IP.
+
 ### 2026-04-28 | Batch cleanup: fix all "Commit pending" labels, add gitignore rules, commit cloud + migration artifacts
 - Summary:
   - Replaced all 80 "Commit pending" labels in CHANGE_LEDGER with "committed" since the backing commits already existed in git history.
