@@ -58,7 +58,7 @@ export default function StoreDetail() {
           <Select value={storeId} onValueChange={setStoreId} className="w-56">
             {stores.map((s) => (
               <SelectItem key={s.store_id} value={s.store_id}>
-                {s.store_id}
+                {s.store_name || s.store_id}
               </SelectItem>
             ))}
           </Select>
@@ -85,9 +85,34 @@ export default function StoreDetail() {
         {loadingSessions ? (
           <Text className="mt-4 text-slate-400">Loading sessions…</Text>
         ) : sessions.length === 0 ? (
-          <Text className="mt-4 text-slate-400">
-            No walk-in sessions recorded yet for {storeId}. Run the GPT pipeline to populate this table.
-          </Text>
+          <div className="overflow-x-auto mt-4">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="border-b text-slate-500 text-xs uppercase">
+                  <th className="pb-2 pr-4">Walk-in ID</th>
+                  <th className="pb-2 pr-4">Date</th>
+                  <th className="pb-2 pr-4">Role</th>
+                  <th className="pb-2 pr-4">Entry</th>
+                  <th className="pb-2 pr-4">Exit</th>
+                  <th className="pb-2 pr-4">Dwell (min)</th>
+                  <th className="pb-2 pr-4">Entry Type</th>
+                  <th className="pb-2 pr-4">Gender</th>
+                  <th className="pb-2 pr-4">Age Band</th>
+                  <th className="pb-2 pr-4">Style</th>
+                  <th className="pb-2 pr-4">Engagement</th>
+                  <th className="pb-2 pr-4">Purchase Signal</th>
+                  <th className="pb-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colSpan={13} className="py-10 text-center text-slate-400">
+                    No walk-in sessions recorded yet for {selectedStore?.store_name || storeId}. Run a sync to populate this table.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className="overflow-x-auto mt-4">
             <table className="w-full text-sm text-left">

@@ -34,6 +34,24 @@ It records what changed, where it changed, and why.
   - Normalized common header variants to the canonical field names expected by the backend and filtered out blank rows safely.
   - Tightened the local launcher further so the single supported runtime path stays reproducible through `start_iris.bat`.
 
+### 2026-04-28 - FastAPI React Management Demo Polish
+- Changed paths:
+  - `frontend/src/components/layout/Sidebar.tsx`
+  - `frontend/src/components/layout/TopNav.tsx`
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `docs/operations/platform_data_cutover_inventory.md`
+  - `deploy/no_docker/README.md`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/index-D9HitNxc.css`
+  - `backend/app/static/assets/index-CUBkFJ5t.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Reframed the FastAPI + React app for management demo use: dynamic branding from Organisation settings, clearer store names, report tables that keep headers even when empty, and a guided data-sync console that removes fake legacy queue behaviour.
+  - Updated the main handoff-facing docs to align with the single supported FastAPI + React app on `http://localhost:8767`.
+
 ## Module Registry
 | Module/File | Responsibility |
 |---|---|
@@ -279,6 +297,15 @@ The built files in `backend/app/static/` ARE committed to git. The `frontend/dis
 | `backend/app/db/canonical_metadata.py` | SQLAlchemy table definitions — source of truth for DB schema |
 | `backend/app/api/routes_onfly.py` | Pipeline execution + background auto-sync loop |
 | `frontend/src/api/client.ts` | All API calls from React — add new endpoints here |
+| `frontend/src/pages/SchedulerDashboard.tsx` | Web-controlled IRIS data sync console for manual runs, automation visibility, and execution history |
+| `frontend/src/pages/ReportsPage.tsx` | Management-facing reports view with summary, footfall detail, and image scanning outputs |
+
+### FastAPI + React Demo Rules
+
+- The management demo app is the FastAPI + React app on `http://localhost:8767`
+- Organisation settings are expected to drive branding in the sidebar/top bar
+- Scheduler page must stay web-controlled; do not reintroduce fake Celery-only trigger buttons into the main demo path
+- Report tables should keep visible headers even when there is no data
 
 ### What NOT To Do
 

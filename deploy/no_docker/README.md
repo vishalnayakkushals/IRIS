@@ -1,14 +1,14 @@
 # IRIS No-Docker Deployment Pack
 
-> **Primary UI:** React + FastAPI at `http://localhost:8766` (port 8766).
+> **Primary UI:** React + FastAPI at `http://localhost:8767` (port 8767).
 > Start with `python scripts/start_api_server.py`.
 >
-> **Legacy UI:** Streamlit at port 8765 — kept for admin operations not yet
+> **Legacy UI:** Streamlit at port 8765 — kept only as a temporary fallback for operations not yet
 > migrated to React. Will be retired once full React parity is achieved.
 
 This folder prepares IRIS to run without Docker as:
 
-- FastAPI + React web app (primary, port 8766)
+- FastAPI + React web app (primary, port 8767)
 - Streamlit web app (legacy, port 8765)
 - core scheduler worker
 - on-fly scheduler worker
@@ -18,7 +18,7 @@ This folder prepares IRIS to run without Docker as:
 
 ### Primary web app (React + FastAPI)
 - Startup script: `scripts/start_api_server.py`
-- Opens at `http://localhost:8766`
+- Opens at `http://localhost:8767`
 - Features: Overview, Store Detail, Pipeline Scheduler, QA Review, Run Detail
 
 ### Legacy web app (Streamlit — maintenance mode)
@@ -144,10 +144,10 @@ After services are running:
 6. FastAPI + React service started (`python scripts/start_api_server.py`)
 7. core scheduler service installed
 8. on-fly scheduler service installed
-9. port `8766` (React/FastAPI) exposed behind reverse proxy — primary entry point
+9. port `8767` (React/FastAPI) exposed behind reverse proxy — primary entry point
 10. port `8765` (Streamlit) exposed internally only — admin fallback
 11. Google/OpenAI keys validated
-12. first browser login at port 8766 + scheduler status verified
+12. first browser login at port 8767 + scheduler status verified
 
 ## Notes
 

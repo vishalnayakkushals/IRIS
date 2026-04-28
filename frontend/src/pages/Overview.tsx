@@ -14,6 +14,7 @@ export default function Overview() {
   const [series, setSeries] = useState<TrafficPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(true);
+  const storeMap = Object.fromEntries(stores.map((store) => [store.store_id, store.store_name || store.store_id]));
 
   useEffect(() => {
     fetchOverview()
@@ -57,7 +58,7 @@ export default function Overview() {
           >
             <SelectItem value="all">All Stores</SelectItem>
             {stores.map((s) => (
-              <SelectItem key={s.store_id} value={s.store_id}>{s.store_id}</SelectItem>
+              <SelectItem key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</SelectItem>
             ))}
           </Select>
         )}
@@ -103,6 +104,9 @@ export default function Overview() {
             showAnimation
             yAxisWidth={40}
           />
+        )}
+        {storeFilter && (
+          <Text className="mt-3 text-xs text-slate-400">Filtered for {storeMap[storeFilter] || storeFilter}</Text>
         )}
       </Card>
     </div>

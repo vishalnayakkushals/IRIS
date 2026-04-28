@@ -1,16 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bell, User, LogOut, ChevronDown } from "lucide-react";
-import { getMe } from "../../api/client";
+import { adminGetSettings, getMe } from "../../api/client";
 
 export function TopNav() {
   const [open, setOpen] = useState(false);
   const [user, setUser] = useState<{ email: string; full_name: string } | null>(null);
+  const [branding, setBranding] = useState<Record<string, string>>({});
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     getMe().then((r) => setUser(r.data)).catch(() => {});
+    adminGetSettings().then((r) => {
+      const data = r.data || {};
+      setBranding(data);
+      const appName = data.app_name?.trim() || "IRIS";
+      const orgName = data.org_name?.trim();
+      document.title = orgName ? `${appName} | ${orgName}` : appName;
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -29,16 +37,21 @@ export function TopNav() {
   const initials = user?.full_name
     ? user.full_name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2)
     : <User size={16} />;
+  const appName = branding.app_name?.trim() || "IRIS";
+  const supportEmail = branding.support_email?.trim() || "";
+  const timezone = branding.timezone?.trim() || "Asia/Kolkata";
+  const brandPrimary = branding.brand_color_primary?.trim() || "#2563EB";
 
   return (
     <header className="h-16 border-b bg-background flex items-center justify-between px-6 sticky top-0 z-10 w-full select-none">
-      <div className="flex items-center text-muted-foreground bg-muted/50 rounded-md px-3 py-1.5 w-64 border border-border/50">
-        <span className="mr-2 opacity-50 text-sm">🔍</span>
-        <input
-          type="text"
-          placeholder="Search stores or insights..."
-          className="bg-transparent border-none outline-none text-sm w-full placeholder:text-muted-foreground text-foreground"
-        />
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="h-10 w-1 rounded-full" style={{ backgroundColor: brandPrimary }} />
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-foreground truncate">{appName} Control Center</p>
+          <p className="text-xs text-muted-foreground truncate">
+            {supportEmail ? `Support: ${supportEmail}` : "Management preview build"} • {timezone}
+          </p>
+        </div>
       </div>
 
       <div className="flex items-center space-x-3">

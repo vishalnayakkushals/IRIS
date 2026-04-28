@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { adminGetSettings } from "../../api/client";
 import {
   Building2,
   Camera,
@@ -55,22 +56,43 @@ const menu: NavItem[] = [
 
 export function Sidebar() {
   const location = useLocation();
+  const [branding, setBranding] = useState<Record<string, string>>({});
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => ({
     Admin: location.pathname.startsWith("/admin"),
     "Quality Assurance": location.pathname.startsWith("/quality") || location.pathname.startsWith("/qa/"),
   }));
 
+  useEffect(() => {
+    adminGetSettings().then((r) => setBranding(r.data || {})).catch(() => {});
+  }, []);
+
   function toggleGroup(name: string) {
     setOpenGroups((prev) => ({ ...prev, [name]: !prev[name] }));
   }
 
+  const appName = branding.app_name?.trim() || "IRIS";
+  const orgName = branding.org_name?.trim() || "Retail Intelligence";
+  const brandPrimary = branding.brand_color_primary?.trim() || "#2563EB";
+  const logoPath = branding.logo_path?.trim() || "";
+
   return (
     <aside className="w-64 border-r bg-background min-h-screen hidden md:flex flex-col select-none">
-      <div className="h-16 flex items-center px-6 border-b flex-shrink-0">
-        <h1 className="text-xl font-bold tracking-tight text-primary">
-          <span className="text-brand-blue">IRIS</span>
-          <span className="text-muted-foreground text-sm ml-2 font-normal">Intelligence</span>
-        </h1>
+      <div className="border-b flex-shrink-0 px-5 py-4">
+        <div className="flex items-center gap-3">
+          {logoPath ? (
+            <img src={logoPath} alt={appName} className="h-8 w-8 rounded-lg border object-contain bg-white p-1" />
+          ) : (
+            <div className="h-8 w-8 rounded-lg text-white flex items-center justify-center text-xs font-bold" style={{ backgroundColor: brandPrimary }}>
+              {appName.slice(0, 1).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0">
+            <h1 className="text-base font-bold tracking-tight truncate" style={{ color: brandPrimary }}>
+              {appName}
+            </h1>
+            <p className="text-xs text-muted-foreground truncate">{orgName}</p>
+          </div>
+        </div>
       </div>
       <nav className="p-3 space-y-0.5 flex-1 overflow-y-auto">
         {menu.map((item) => {
