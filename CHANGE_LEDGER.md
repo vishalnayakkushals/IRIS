@@ -110,6 +110,22 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Streamlit retirement: deprecation banner + React as primary UI in deployment docs
+- Summary:
+  - Added persistent info banner in `iris_dashboard.py` main() that directs all users to `http://localhost:8766` (React + FastAPI), explains Streamlit is in maintenance mode, and will be retired when full React parity is achieved.
+  - Rewrote `deploy/no_docker/README.md` Runtime shape section to put React + FastAPI (port 8766) as the primary entry point, Streamlit (port 8765) as legacy admin fallback.
+  - Updated VM go-live checklist to list port 8766 as the main exposed port, port 8765 as internal admin only, and include Postgres + `alembic upgrade head` steps.
+  - Streamlit code and `start_web_app.py` are intentionally preserved — React does not yet have full feature parity (store config, employee management, image viewer with annotations, model feedback). Full removal is Phase 3.
+- Changed Paths:
+  - `src/iris/iris_dashboard.py`
+  - `deploy/no_docker/README.md`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - None
+- Infra/Config Impact:
+  - Operators should update reverse proxies to route primary traffic to port 8766.
+  - Streamlit remains available at port 8765 for admin operations not yet in React.
+
 ### 2026-04-28 | Phase F: React UI completions — RunDetail, QA Review, run history links
 - Summary:
   - Added `RunDetail.tsx` page (`/runs/:runId`): stage timeline with status dots, meta grid (store, trigger, start/end, duration, remarks), linked from run history table in SchedulerDashboard.

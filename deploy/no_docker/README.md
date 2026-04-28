@@ -1,21 +1,34 @@
 # IRIS No-Docker Deployment Pack
 
+> **Primary UI:** React + FastAPI at `http://localhost:8766` (port 8766).
+> Start with `python scripts/start_api_server.py`.
+>
+> **Legacy UI:** Streamlit at port 8765 — kept for admin operations not yet
+> migrated to React. Will be retired once full React parity is achieved.
+
 This folder prepares IRIS to run without Docker as:
 
-- web app
+- FastAPI + React web app (primary, port 8766)
+- Streamlit web app (legacy, port 8765)
 - core scheduler worker
 - on-fly scheduler worker
 - browser-managed operations
 
 ## Runtime shape
 
-### Web app
+### Primary web app (React + FastAPI)
+- Startup script: `scripts/start_api_server.py`
+- Opens at `http://localhost:8766`
+- Features: Overview, Store Detail, Pipeline Scheduler, QA Review, Run Detail
+
+### Legacy web app (Streamlit — maintenance mode)
 - Startup script: `scripts/start_web_app.py`
-- Opens Streamlit on `IRIS_STREAMLIT_HOST:IRIS_STREAMLIT_PORT`
-- Browser ops remain in:
-  - `Reports`
-  - `Access`
-  - `Operations`
+- Opens Streamlit on `IRIS_STREAMLIT_HOST:IRIS_STREAMLIT_PORT` (default 8765)
+- Used for admin operations not yet in React:
+  - Store configuration
+  - Employee management
+  - Model feedback / retraining
+  - Image viewer with annotations
 
 ### Core scheduler worker
 - Startup script: `scripts/start_scheduler_worker_service.py`
@@ -124,15 +137,17 @@ After services are running:
 ## Recommended VM go-live checklist
 
 1. Python installed and venv created
-2. `requirements.txt` installed
-3. `IRIS_ENV_FILE` created and secured
-4. writable persistent data directory created
-5. web app service installed
-6. core scheduler service installed
-7. on-fly scheduler service installed
-8. port `8765` exposed behind reverse proxy / firewall
-9. Google/OpenAI keys validated
-10. first browser login + scheduler status verified
+2. `requirements.txt` and `backend/requirements.txt` installed
+3. `IRIS_ENV_FILE` + `.env.local` created and secured (POSTGRES_URL, JWT_SECRET, CORS_ORIGINS)
+4. Postgres 17 running, `alembic upgrade head` applied
+5. writable persistent data directory created
+6. FastAPI + React service started (`python scripts/start_api_server.py`)
+7. core scheduler service installed
+8. on-fly scheduler service installed
+9. port `8766` (React/FastAPI) exposed behind reverse proxy — primary entry point
+10. port `8765` (Streamlit) exposed internally only — admin fallback
+11. Google/OpenAI keys validated
+12. first browser login at port 8766 + scheduler status verified
 
 ## Notes
 

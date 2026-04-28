@@ -7993,6 +7993,20 @@ def main() -> None:
         default_password=org_settings.get("default_admin_password", "AdminChangeMe123!"),
     )
     _inject_clean_ui_css(org_settings)
+
+    # ── LEGACY NOTICE ────────────────────────────────────────────────────────
+    # This Streamlit dashboard is now in maintenance mode.
+    # The primary IRIS UI runs at http://localhost:8766 (React + FastAPI).
+    # Streamlit remains available for admin operations not yet migrated to React.
+    st.info(
+        "**IRIS is moving to a new interface.** "
+        "The primary dashboard is now at **[http://localhost:8766](http://localhost:8766)** "
+        "(React + FastAPI). This Streamlit view is kept for legacy admin operations "
+        "and will be retired once full feature parity is reached.",
+        icon="ℹ️",
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     auth_token_from_query = _query_value("auth", "").strip()
     if not st.session_state.get("is_authenticated", False) and auth_token_from_query:
         session_user = get_user_by_session_token(db_path=db_path, token=auth_token_from_query)
