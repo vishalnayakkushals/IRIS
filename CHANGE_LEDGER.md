@@ -110,6 +110,55 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Phase G+H: Full admin/reports UI — 11 React pages + backend CRUD routes
+- Summary:
+  - Built `routes_admin.py`: full CRUD for stores, users, roles+permissions, app settings, employees (photo upload), camera configs, location master, user store access, activity log, store master — all using SQLAlchemy async.
+  - Built `routes_reports.py`: walkin sessions, store day summary, image scan results, model accuracy, stores-with-data, pipeline quality endpoints.
+  - Registered both routers in `main.py` under `/api/admin` and `/api/reports`.
+  - Added all new API calls to `frontend/src/api/client.ts` (admin and reports exports).
+  - Built 11 new React pages: `ReportsPage`, `CustomerJourneys`, `StoreMapping`, `CameraZones`, `EmployeeManagement`, `Organisation`, `UsersPage`, `RolePermissions`, `StoreAccess`, `ModelAccuracy`, `ActivityLogs`, `StoreMaster`.
+  - Rewrote `Sidebar.tsx`: collapsible Admin section with 10 sub-pages, new top-level Reports and Customer Journeys links.
+  - Rewrote `App.tsx`: 18 routes total including all admin sub-paths; old `/admin` redirects to `/admin/stores`.
+  - Built React and deployed to `backend/app/static/`.
+- Changed Paths:
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_reports.py`
+  - `backend/app/main.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/App.tsx`
+  - `frontend/src/components/layout/Sidebar.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/CustomerJourneys.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/EmployeeManagement.tsx`
+  - `frontend/src/pages/Organisation.tsx`
+  - `frontend/src/pages/UsersPage.tsx`
+  - `frontend/src/pages/RolePermissions.tsx`
+  - `frontend/src/pages/StoreAccess.tsx`
+  - `frontend/src/pages/ModelAccuracy.tsx`
+  - `frontend/src/pages/ActivityLogs.tsx`
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `backend/app/static/` (React build output)
+- New Modules Introduced:
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_reports.py`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/CustomerJourneys.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/EmployeeManagement.tsx`
+  - `frontend/src/pages/Organisation.tsx`
+  - `frontend/src/pages/UsersPage.tsx`
+  - `frontend/src/pages/RolePermissions.tsx`
+  - `frontend/src/pages/StoreAccess.tsx`
+  - `frontend/src/pages/ModelAccuracy.tsx`
+  - `frontend/src/pages/ActivityLogs.tsx`
+  - `frontend/src/pages/StoreMaster.tsx`
+- Infra/Config Impact:
+  - No new env vars. No new DB tables. All endpoints use existing Postgres schema from `canonical_metadata.py`.
+  - Employee photo upload writes to `data/employee_assets/{store_id}/` on the server filesystem.
+
 ### 2026-04-28 | Streamlit retirement: deprecation banner + React as primary UI in deployment docs
 - Summary:
   - Added persistent info banner in `iris_dashboard.py` main() that directs all users to `http://localhost:8766` (React + FastAPI), explains Streamlit is in maintenance mode, and will be retired when full React parity is achieved.

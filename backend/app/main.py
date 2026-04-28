@@ -10,12 +10,14 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from backend.app.api.routes_admin import router as admin_router
 from backend.app.api.routes_auth import router as auth_router
-from backend.app.api.routes_health import router as health_router
-from backend.app.api.routes_jobs import router as jobs_router
-from backend.app.api.routes_runs import router as runs_router
 from backend.app.api.routes_dashboard import router as dashboard_router
 from backend.app.api.routes_detail import router as detail_router
+from backend.app.api.routes_health import router as health_router
+from backend.app.api.routes_jobs import router as jobs_router
+from backend.app.api.routes_reports import router as reports_router
+from backend.app.api.routes_runs import router as runs_router
 from backend.app.config import get_settings
 from backend.app.limiter import limiter
 
@@ -65,6 +67,8 @@ app.include_router(jobs_router, prefix="/api")
 app.include_router(runs_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api/dashboard")
 app.include_router(detail_router, prefix="/api/detail")
+app.include_router(admin_router, prefix="/api")
+app.include_router(reports_router, prefix="/api")
 
 # Serve React build from /app/backend/app/static with SPA fallback
 _static_dir = Path(__file__).parent / "static"

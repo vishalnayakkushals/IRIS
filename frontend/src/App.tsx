@@ -5,8 +5,19 @@ import SchedulerDashboard from "./pages/SchedulerDashboard";
 import Overview from "./pages/Overview";
 import StoreDetail from "./pages/StoreDetail";
 import QualityFeedback from "./pages/QualityFeedback";
-import StoreAdmin from "./pages/StoreAdmin";
 import RunDetail from "./pages/RunDetail";
+import ReportsPage from "./pages/ReportsPage";
+import CustomerJourneys from "./pages/CustomerJourneys";
+import StoreMapping from "./pages/StoreMapping";
+import CameraZones from "./pages/CameraZones";
+import EmployeeManagement from "./pages/EmployeeManagement";
+import Organisation from "./pages/Organisation";
+import UsersPage from "./pages/UsersPage";
+import RolePermissions from "./pages/RolePermissions";
+import StoreAccess from "./pages/StoreAccess";
+import ModelAccuracy from "./pages/ModelAccuracy";
+import ActivityLogs from "./pages/ActivityLogs";
+import StoreMaster from "./pages/StoreMaster";
 
 import { AppLayout } from "./components/layout/AppLayout";
 import { getMe } from "./api/client";
@@ -34,28 +45,18 @@ function RequireAuth({ children }: { children: ReactNode }) {
     let active = true;
     getMe()
       .then(() => {
-        if (active) {
-          setStatus("authenticated");
-        }
+        if (active) setStatus("authenticated");
       })
       .catch(() => {
         localStorage.removeItem("iris_token");
-        if (active) {
-          setStatus("unauthenticated");
-        }
+        if (active) setStatus("unauthenticated");
       });
 
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
 
-  if (status === "checking") {
-    return <AuthLoading />;
-  }
-  if (status === "unauthenticated") {
-    return <Navigate to="/login" replace />;
-  }
+  if (status === "checking") return <AuthLoading />;
+  if (status === "unauthenticated") return <Navigate to="/login" replace />;
   return <AppLayout>{children}</AppLayout>;
 }
 
@@ -64,37 +65,26 @@ function LoginRoute() {
 
   useEffect(() => {
     const token = localStorage.getItem("iris_token");
-    if (!token) {
-      setStatus("ready");
-      return;
-    }
+    if (!token) { setStatus("ready"); return; }
 
     let active = true;
     getMe()
-      .then(() => {
-        if (active) {
-          setStatus("redirect");
-        }
-      })
+      .then(() => { if (active) setStatus("redirect"); })
       .catch(() => {
         localStorage.removeItem("iris_token");
-        if (active) {
-          setStatus("ready");
-        }
+        if (active) setStatus("ready");
       });
 
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
 
-  if (status === "checking") {
-    return <AuthLoading />;
-  }
-  if (status === "redirect") {
-    return <Navigate to="/overview" replace />;
-  }
+  if (status === "checking") return <AuthLoading />;
+  if (status === "redirect") return <Navigate to="/overview" replace />;
   return <Login />;
+}
+
+function auth(el: ReactNode) {
+  return <RequireAuth>{el}</RequireAuth>;
 }
 
 export default function App() {
@@ -102,54 +92,33 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
-        <Route
-          path="/scheduler"
-          element={
-            <RequireAuth>
-              <SchedulerDashboard />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/overview"
-          element={
-             <RequireAuth>
-               <Overview />
-             </RequireAuth>
-          }
-        />
-        <Route
-          path="/detail"
-          element={
-             <RequireAuth>
-               <StoreDetail />
-             </RequireAuth>
-          }
-        />
-        <Route
-          path="/quality"
-          element={
-             <RequireAuth>
-               <QualityFeedback />
-             </RequireAuth>
-          }
-        />
-        <Route
-          path="/admin"
-          element={
-             <RequireAuth>
-               <StoreAdmin />
-             </RequireAuth>
-          }
-        />
-        <Route
-          path="/runs/:runId"
-          element={
-            <RequireAuth>
-              <RunDetail />
-            </RequireAuth>
-          }
-        />
+
+        {/* Core */}
+        <Route path="/overview" element={auth(<Overview />)} />
+        <Route path="/detail" element={auth(<StoreDetail />)} />
+        <Route path="/quality" element={auth(<QualityFeedback />)} />
+        <Route path="/scheduler" element={auth(<SchedulerDashboard />)} />
+        <Route path="/runs/:runId" element={auth(<RunDetail />)} />
+
+        {/* Reports */}
+        <Route path="/reports" element={auth(<ReportsPage />)} />
+        <Route path="/journeys" element={auth(<CustomerJourneys />)} />
+
+        {/* Admin */}
+        <Route path="/admin/stores" element={auth(<StoreMapping />)} />
+        <Route path="/admin/store-master" element={auth(<StoreMaster />)} />
+        <Route path="/admin/cameras" element={auth(<CameraZones />)} />
+        <Route path="/admin/employees" element={auth(<EmployeeManagement />)} />
+        <Route path="/admin/users" element={auth(<UsersPage />)} />
+        <Route path="/admin/roles" element={auth(<RolePermissions />)} />
+        <Route path="/admin/store-access" element={auth(<StoreAccess />)} />
+        <Route path="/admin/organisation" element={auth(<Organisation />)} />
+        <Route path="/admin/model-accuracy" element={auth(<ModelAccuracy />)} />
+        <Route path="/admin/activity" element={auth(<ActivityLogs />)} />
+
+        {/* Legacy redirect — old /admin path goes to store mapping */}
+        <Route path="/admin" element={<Navigate to="/admin/stores" replace />} />
+
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>

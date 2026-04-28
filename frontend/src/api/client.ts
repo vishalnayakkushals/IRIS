@@ -126,3 +126,80 @@ export const fetchWalkins = (storeId?: string, limit = 200) =>
   storeId
     ? api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/${storeId}/walkins?limit=${limit}`)
     : api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/walkins?limit=${limit}`);
+
+// ── Admin — Stores ────────────────────────────────────────────────────────────
+export const adminListStores = () => api.get<any[]>("/admin/stores");
+export const adminCreateStore = (body: any) => api.post("/admin/stores", body);
+export const adminUpdateStore = (id: string, body: any) => api.put(`/admin/stores/${id}`, body);
+export const adminDeleteStore = (id: string) => api.delete(`/admin/stores/${id}`);
+
+// ── Admin — Users ─────────────────────────────────────────────────────────────
+export const adminListUsers = () => api.get<any[]>("/admin/users");
+export const adminCreateUser = (body: any) => api.post("/admin/users", body);
+export const adminUpdateUser = (email: string, body: any) => api.put(`/admin/users/${encodeURIComponent(email)}`, body);
+export const adminDeleteUser = (email: string) => api.delete(`/admin/users/${encodeURIComponent(email)}`);
+export const adminResetPassword = (email: string, new_password: string) =>
+  api.post(`/admin/users/${encodeURIComponent(email)}/password`, { new_password });
+
+// ── Admin — Roles ─────────────────────────────────────────────────────────────
+export const adminListRoles = () => api.get<any[]>("/admin/roles");
+export const adminCreateRole = (body: any) => api.post("/admin/roles", body);
+export const adminDeleteRole = (name: string) => api.delete(`/admin/roles/${encodeURIComponent(name)}`);
+export const adminSetPermissions = (role: string, perms: any[]) =>
+  api.put(`/admin/roles/${encodeURIComponent(role)}/permissions`, perms);
+export const adminListPermissionCodes = () => api.get<string[]>("/admin/permissions/codes");
+
+// ── Admin — Settings ──────────────────────────────────────────────────────────
+export const adminGetSettings = () => api.get<Record<string, string>>("/admin/settings");
+export const adminUpdateSettings = (body: Record<string, string>) => api.put("/admin/settings", body);
+
+// ── Admin — Employees ─────────────────────────────────────────────────────────
+export const adminListEmployees = (storeId: string) => api.get<any[]>(`/admin/employees/${storeId}`);
+export const adminDeleteEmployee = (storeId: string, id: number) =>
+  api.delete(`/admin/employees/${storeId}/${id}`);
+
+// ── Admin — Cameras ───────────────────────────────────────────────────────────
+export const adminListCameras = (storeId: string) => api.get<any[]>(`/admin/cameras/${storeId}`);
+export const adminUpsertCamera = (storeId: string, body: any) => api.post(`/admin/cameras/${storeId}`, body);
+export const adminDeleteCamera = (storeId: string, cameraId: string) =>
+  api.delete(`/admin/cameras/${storeId}/${encodeURIComponent(cameraId)}`);
+
+// ── Admin — Locations ─────────────────────────────────────────────────────────
+export const adminListLocations = (storeId: string) => api.get<any[]>(`/admin/locations/${storeId}`);
+export const adminUpsertLocation = (storeId: string, body: any) => api.post(`/admin/locations/${storeId}`, body);
+export const adminDeleteLocation = (storeId: string, floor: string, location: string) =>
+  api.delete(`/admin/locations/${storeId}?floor_name=${encodeURIComponent(floor)}&location_name=${encodeURIComponent(location)}`);
+
+// ── Admin — Store Access ──────────────────────────────────────────────────────
+export const adminGetStoreAccess = (email: string) => api.get<any[]>(`/admin/store-access/${encodeURIComponent(email)}`);
+export const adminReplaceStoreAccess = (email: string, store_ids: string[]) =>
+  api.post(`/admin/store-access/${encodeURIComponent(email)}`, { store_ids });
+
+// ── Admin — Activity Log ──────────────────────────────────────────────────────
+export const adminListActivity = (actor?: string, limit = 100) =>
+  api.get<any[]>(`/admin/activity?limit=${limit}${actor ? `&actor_email=${encodeURIComponent(actor)}` : ""}`);
+
+// ── Admin — Store Master ──────────────────────────────────────────────────────
+export const adminListStoreMaster = () => api.get<any[]>("/admin/store-master");
+export const adminUpsertStoreMaster = (rows: any[]) => api.post("/admin/store-master", rows);
+
+// ── Reports ───────────────────────────────────────────────────────────────────
+export const reportsWalkins = (storeId?: string, date?: string, limit = 200) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get<any[]>(`/reports/walkins?${params}`);
+};
+export const reportsSummary = (storeId?: string, limit = 90) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  return api.get<any[]>(`/reports/summary?${params}`);
+};
+export const reportsImageScans = (storeId?: string, date?: string, limit = 200) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get<any[]>(`/reports/image-scans?${params}`);
+};
+export const reportsModelAccuracy = () => api.get<any[]>("/reports/model-accuracy");
+export const reportsStoresWithData = () => api.get<any[]>("/reports/stores-with-data");
