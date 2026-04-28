@@ -6,6 +6,7 @@ import Overview from "./pages/Overview";
 import StoreDetail from "./pages/StoreDetail";
 import QualityFeedback from "./pages/QualityFeedback";
 import StoreAdmin from "./pages/StoreAdmin";
+import RunDetail from "./pages/RunDetail";
 
 import { AppLayout } from "./components/layout/AppLayout";
 import { getMe } from "./api/client";
@@ -139,6 +140,14 @@ export default function App() {
              <RequireAuth>
                <StoreAdmin />
              </RequireAuth>
+          }
+        />
+        <Route
+          path="/runs/:runId"
+          element={
+            <RequireAuth>
+              <RunDetail />
+            </RequireAuth>
           }
         />
         <Route path="/" element={<Navigate to="/overview" replace />} />

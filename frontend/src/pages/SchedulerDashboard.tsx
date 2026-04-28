@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { getJobs, getRuns, triggerAll, triggerJob } from "../api/client";
 import type { JobStatus, RunRecord } from "../api/client";
 import JobTable from "../components/JobTable";
@@ -154,9 +155,16 @@ export default function SchedulerDashboard() {
                     <tbody className="divide-y divide-slate-100">
                       {runs.map((r) => (
                         <tr key={r.run_id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-slate-700">{r.job_name}</td>
+                          <td className="px-6 py-4 font-medium text-slate-700">
+                            <Link
+                              to={`/runs/${r.run_id}`}
+                              className="hover:text-blue-600 hover:underline"
+                            >
+                              {r.job_name}
+                            </Link>
+                          </td>
                           <td className="px-6 py-4">
-                            <Badge 
+                            <Badge
                               color={
                                 r.status === "done" ? "emerald" :
                                 r.status === "failed" ? "rose" :

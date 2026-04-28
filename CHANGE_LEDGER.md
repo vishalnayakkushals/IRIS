@@ -110,6 +110,26 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Phase F: React UI completions — RunDetail, QA Review, run history links
+- Summary:
+  - Added `RunDetail.tsx` page (`/runs/:runId`): stage timeline with status dots, meta grid (store, trigger, start/end, duration, remarks), linked from run history table in SchedulerDashboard.
+  - Rewrote `QualityFeedback.tsx` from placeholder to real QA review table: loads last 100 walk-in sessions, per-row approve/reject buttons, summary cards, filter by review state.
+  - Fixed `routes_runs.py`: was calling old SQLite `get_recent_runs(db_path, limit)` signature — switched to async Postgres version. Added `GET /api/runs/{run_id}` endpoint.
+  - Added clickable job-name links in SchedulerDashboard Run History tab that navigate to `/runs/:runId`.
+  - Built and deployed React to `backend/app/static/`.
+- Changed Paths:
+  - `frontend/src/pages/RunDetail.tsx`
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `frontend/src/App.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `backend/app/api/routes_runs.py`
+  - `backend/app/static/` (rebuilt React dist)
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `frontend/src/pages/RunDetail.tsx`
+- Infra/Config Impact:
+  - New API route `GET /api/runs/{run_id}` — requires Postgres to be running.
+
 ### 2026-04-28 | Phase E: BoT-SORT tracker + session state machine
 - Summary:
   - Added `src/iris/bot_sort_tracker.py`: pure-Python IoU-based multi-object tracker (BoT-SORT-compatible API). No external dependencies. Greedy IoU matching, configurable max_age/min_hits, static-object suppression via bbox-stability check.
