@@ -11,6 +11,15 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-04-28 - Startup Hardening For Port 8767
+- Changed paths:
+  - `start_iris.ps1`
+  - `backend/app/config.py`
+- Summary:
+  - Hardened the local `8767` startup path to use only the approved interpreter `C:\Python312\python.exe`.
+  - Added fail-fast validation in `start_iris.ps1` so startup stops if `.env.local` is missing `POSTGRES_URL` or if it does not exactly match the approved local Postgres URI `postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db`.
+  - Removed stale test-store defaults from `backend/app/config.py` by clearing the default `store_id` and aligning the fallback Postgres URI with the approved local configuration.
+
 ## Module Registry
 | Module/File | Responsibility |
 |---|---|

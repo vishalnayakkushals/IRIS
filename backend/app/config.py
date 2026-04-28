@@ -10,11 +10,11 @@ _INSECURE_JWT_DEFAULT = "change_me_in_env"
 
 
 class Settings(BaseSettings):
-    postgres_url: str = "postgresql+asyncpg://iris_user:password@localhost/iris_db"
+    postgres_url: str = "postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db"
     redis_url: str = "redis://redis:6379/0"
     jwt_secret: str = _INSECURE_JWT_DEFAULT
     jwt_expire_days: int = 14
-    store_id: str = "TEST_STORE_D07"
+    store_id: str = ""
     data_root: str = "/app/data"
     google_api_key: str = ""
     openai_api_key: str = ""
