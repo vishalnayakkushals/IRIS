@@ -14,6 +14,8 @@ stores = Table(
     Column("store_name", String(255), nullable=False),
     Column("email", String(255), nullable=False, unique=True),
     Column("drive_folder_url", Text, nullable=False, server_default=""),
+    Column("sync_enabled", Boolean, nullable=False, server_default="0"),
+    Column("sync_interval_hours", Integer, nullable=False, server_default="1"),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )

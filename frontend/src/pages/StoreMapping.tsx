@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore, onFlyListStores, onFlySync } from "../api/client";
+import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore, adminToggleStoreSync, onFlyListStores, onFlySync } from "../api/client";
 import { Card, Title, Text, Button, Badge } from "@tremor/react";
 import { Plus, Pencil, Trash2, X, Check, Play } from "lucide-react";
 
@@ -111,6 +111,16 @@ export default function StoreMapping() {
     } finally { setSyncing(null); }
   }
 
+  async function handleToggleSync(storeId: string, enable: boolean, intervalHours = 1) {
+    try {
+      await adminToggleStoreSync(storeId, { sync_enabled: enable, sync_interval_hours: intervalHours });
+      flash(enable ? `Auto-sync enabled for ${storeId}` : `Auto-sync disabled for ${storeId}`);
+      load();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || "Toggle failed");
+    }
+  }
+
   async function handleCreate(v: typeof EMPTY) {
     await adminCreateStore(v);
     setShowNew(false);
@@ -161,6 +171,7 @@ export default function StoreMapping() {
               <th className="px-5 py-3">Email</th>
               <th className="px-5 py-3">Drive Link</th>
               <th className="px-5 py-3">Last Sync</th>
+              <th className="px-5 py-3">Auto Sync</th>
               <th className="px-5 py-3">Actions</th>
             </tr>
           </thead>
@@ -191,6 +202,21 @@ export default function StoreMapping() {
                     ) : <span className="text-slate-400 text-xs">Never</span>}
                   </td>
                   <td className="px-5 py-3">
+                    <div className="flex flex-col items-start gap-1">
+                      <button
+                        onClick={() => handleToggleSync(r.store_id, !r.sync_enabled, r.sync_interval_hours || 1)}
+                        disabled={!r.drive_folder_url}
+                        title={r.sync_enabled ? "Auto-sync ON — click to disable" : "Auto-sync OFF — click to enable"}
+                        className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full transition-colors focus:outline-none disabled:opacity-30 ${r.sync_enabled ? "bg-emerald-500" : "bg-slate-200"}`}
+                      >
+                        <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${r.sync_enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </button>
+                      {r.sync_enabled && (
+                        <span className="text-[10px] text-emerald-600 font-medium">Every {r.sync_interval_hours || 1}h</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-5 py-3">
                     <div className="flex gap-2 items-center">
                       <button
                         onClick={() => handleSync(r.store_id)}
@@ -211,7 +237,7 @@ export default function StoreMapping() {
                 </tr>
                 {editing === r.store_id && (
                   <tr key={`edit-${r.store_id}`}>
-                    <td colSpan={6} className="px-5 py-3">
+                    <td colSpan={7} className="px-5 py-3">
                       <StoreForm
                         initial={r}
                         onSave={handleUpdate}
@@ -226,7 +252,7 @@ export default function StoreMapping() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-12 text-gray-400 text-sm">No stores configured.</td>
+                <td colSpan={7} className="text-center py-12 text-gray-400 text-sm">No stores configured.</td>
               </tr>
             )}
           </tbody>

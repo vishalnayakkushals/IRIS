@@ -133,6 +133,33 @@ async def delete_store(store_id: str, actor: str = Depends(get_current_user)) ->
     return {"store_id": store_id, "deleted": True}
 
 
+class SyncToggleIn(BaseModel):
+    sync_enabled: bool
+    sync_interval_hours: int = 1
+
+
+@router.put("/stores/{store_id}/sync")
+async def toggle_store_sync(store_id: str, body: SyncToggleIn, actor: str = Depends(get_current_user)) -> dict:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            update(stores)
+            .where(stores.c.store_id == store_id)
+            .values(
+                sync_enabled=body.sync_enabled,
+                sync_interval_hours=body.sync_interval_hours,
+                updated_at=_now(),
+            )
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Store not found")
+        await session.commit()
+    await _log_activity(actor, "store.sync_toggle", store_id, {
+        "sync_enabled": body.sync_enabled,
+        "sync_interval_hours": body.sync_interval_hours,
+    })
+    return {"store_id": store_id, "sync_enabled": body.sync_enabled, "sync_interval_hours": body.sync_interval_hours}
+
+
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------

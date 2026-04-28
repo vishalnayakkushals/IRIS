@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from backend.app.api.routes_dashboard import router as dashboard_router
 from backend.app.api.routes_detail import router as detail_router
 from backend.app.api.routes_health import router as health_router
 from backend.app.api.routes_jobs import router as jobs_router
-from backend.app.api.routes_onfly import router as onfly_router
+from backend.app.api.routes_onfly import auto_sync_loop, router as onfly_router
 from backend.app.api.routes_qa import router as qa_router
 from backend.app.api.routes_reports import router as reports_router
 from backend.app.api.routes_runs import router as runs_router
@@ -61,6 +62,7 @@ async def startup_checks() -> None:
             "JWT_SECRET is using the insecure default value. "
             "Set the JWT_SECRET environment variable before going to production."
         )
+    asyncio.create_task(auto_sync_loop())
 
 
 app.include_router(health_router, prefix="/api")

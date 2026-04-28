@@ -132,6 +132,8 @@ export const adminListStores = () => api.get<any[]>("/admin/stores");
 export const adminCreateStore = (body: any) => api.post("/admin/stores", body);
 export const adminUpdateStore = (id: string, body: any) => api.put(`/admin/stores/${id}`, body);
 export const adminDeleteStore = (id: string) => api.delete(`/admin/stores/${id}`);
+export const adminToggleStoreSync = (id: string, body: { sync_enabled: boolean; sync_interval_hours?: number }) =>
+  api.put(`/admin/stores/${id}/sync`, body);
 
 // ── Admin — Users ─────────────────────────────────────────────────────────────
 export const adminListUsers = () => api.get<any[]>("/admin/users");
