@@ -25,7 +25,15 @@ const menu: NavItem[] = [
   { name: "Store Detail", path: "/detail", icon: <Building2 size={18} /> },
   { name: "Reports", path: "/reports", icon: <BarChart3 size={18} /> },
   { name: "Customer Journeys", path: "/journeys", icon: <Network size={18} /> },
-  { name: "Quality Assurance", path: "/quality", icon: <Camera size={18} /> },
+  {
+    name: "Quality Assurance",
+    icon: <Camera size={18} />,
+    children: [
+      { name: "QA Overview", path: "/quality" },
+      { name: "Frame Review", path: "/qa/frame-review" },
+      { name: "Model Feedback", path: "/qa/model-feedback" },
+    ],
+  },
   { name: "Pipeline Jobs", path: "/scheduler", icon: <Clock size={18} /> },
   {
     name: "Admin",
@@ -47,9 +55,14 @@ const menu: NavItem[] = [
 
 export function Sidebar() {
   const location = useLocation();
-  const [adminOpen, setAdminOpen] = useState(
-    location.pathname.startsWith("/admin")
-  );
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => ({
+    Admin: location.pathname.startsWith("/admin"),
+    "Quality Assurance": location.pathname.startsWith("/quality") || location.pathname.startsWith("/qa/"),
+  }));
+
+  function toggleGroup(name: string) {
+    setOpenGroups((prev) => ({ ...prev, [name]: !prev[name] }));
+  }
 
   return (
     <aside className="w-64 border-r bg-background min-h-screen hidden md:flex flex-col select-none">
@@ -62,11 +75,12 @@ export function Sidebar() {
       <nav className="p-3 space-y-0.5 flex-1 overflow-y-auto">
         {menu.map((item) => {
           if (item.children) {
+            const isOpen = openGroups[item.name] ?? false;
             const anyChildActive = item.children.some((c) => location.pathname === c.path);
             return (
               <div key={item.name}>
                 <button
-                  onClick={() => setAdminOpen((o) => !o)}
+                  onClick={() => toggleGroup(item.name)}
                   className={cn(
                     "w-full flex items-center justify-between px-3 py-2.5 rounded-md transition-colors text-sm font-medium",
                     anyChildActive
@@ -78,9 +92,9 @@ export function Sidebar() {
                     <span className="mr-3">{item.icon}</span>
                     {item.name}
                   </span>
-                  {adminOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
-                {adminOpen && (
+                {isOpen && (
                   <div className="ml-6 mt-0.5 space-y-0.5 border-l pl-3">
                     {item.children.map((child) => {
                       const isActive = location.pathname === child.path;

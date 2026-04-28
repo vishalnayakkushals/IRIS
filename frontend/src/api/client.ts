@@ -203,3 +203,24 @@ export const reportsImageScans = (storeId?: string, date?: string, limit = 200) 
 };
 export const reportsModelAccuracy = () => api.get<any[]>("/reports/model-accuracy");
 export const reportsStoresWithData = () => api.get<any[]>("/reports/stores-with-data");
+
+// ── On-fly pipeline (no Celery) ───────────────────────────────────────────────
+export const onFlyListStores = () => api.get<any[]>("/onfly/stores");
+export const onFlyStoreStatus = (storeId: string) => api.get<any>(`/onfly/status/${storeId}`);
+export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean }) =>
+  api.post<any>(`/onfly/sync/${storeId}`, body);
+
+// ── QA Feedback ───────────────────────────────────────────────────────────────
+export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 200) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (reviewStatus) params.set("review_status", reviewStatus);
+  return api.get<any[]>(`/qa/feedback?${params}`);
+};
+export const qaUpdateFeedback = (id: number, body: { review_status: string; corrected_label?: string; comment?: string }) =>
+  api.put(`/qa/feedback/${id}`, body);
+export const qaDeleteFeedback = (id: number) => api.delete(`/qa/feedback/${id}`);
+export const qaRetrain = (storeId: string) => api.post<any>(`/qa/retrain/${storeId}`);
+export const qaAccuracy = (storeId: string) => api.get<any>(`/qa/accuracy/${storeId}`);
+export const qaImageUrl = (path: string) =>
+  `${(import.meta.env.VITE_API_URL ?? "/api")}/qa/image?path=${encodeURIComponent(path)}`;

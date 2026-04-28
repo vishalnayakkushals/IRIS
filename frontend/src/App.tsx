@@ -18,6 +18,8 @@ import StoreAccess from "./pages/StoreAccess";
 import ModelAccuracy from "./pages/ModelAccuracy";
 import ActivityLogs from "./pages/ActivityLogs";
 import StoreMaster from "./pages/StoreMaster";
+import FrameReview from "./pages/FrameReview";
+import ModelFeedback from "./pages/ModelFeedback";
 
 import { AppLayout } from "./components/layout/AppLayout";
 import { getMe } from "./api/client";
@@ -103,6 +105,10 @@ export default function App() {
         {/* Reports */}
         <Route path="/reports" element={auth(<ReportsPage />)} />
         <Route path="/journeys" element={auth(<CustomerJourneys />)} />
+
+        {/* QA */}
+        <Route path="/qa/frame-review" element={auth(<FrameReview />)} />
+        <Route path="/qa/model-feedback" element={auth(<ModelFeedback />)} />
 
         {/* Admin */}
         <Route path="/admin/stores" element={auth(<StoreMapping />)} />

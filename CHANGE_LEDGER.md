@@ -2838,3 +2838,40 @@ Use this template for each new change:
   - `POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db` must be in env.
   - SQLite (`store_registry.db`) is no longer read by the FastAPI layer — Postgres is the sole data store.
 
+---
+
+## Phase I — QA, Frame Review, Model Feedback, Direct Pipeline Sync (2026-04-28)
+- Summary:
+  - Replaced Celery-based scheduler trigger with direct `run_onfly_pipeline()` execution via `ThreadPoolExecutor`. Sync Now button in the React UI now actually runs the pipeline — no Redis/Celery required.
+  - Added `engine_sync` (psycopg2/sync SQLAlchemy) to `session.py` so background threads can write to Postgres without an asyncio event loop.
+  - Added `routes_onfly.py`: `/api/onfly/stores`, `/api/onfly/sync/{store_id}`, `/api/onfly/status/{store_id}`. Stores sync state in `store_sync_state` Postgres table.
+  - Added `routes_qa.py`: full CRUD for `qa_feedback` table, annotated image serving at `/api/qa/image`, retrain endpoint at `/api/qa/retrain/{store_id}` (writes JSON rule file + registers in `model_versions`), accuracy summary at `/api/qa/accuracy/{store_id}`.
+  - Added `FrameReview.tsx`: image grid of QA feedback rows with confirm/reject/delete per frame. Corrected label dropdown + comment. Store + status filter.
+  - Added `ModelFeedback.tsx`: accuracy summary cards, Generate Rule File button, retrain workflow guide, rule file version history.
+  - Updated `SchedulerDashboard.tsx`: wired to `onFlySync()` / `onFlyStoreStatus()`. GPT checkbox + BoT-SORT tracker checkbox both pass through to `OnFlyConfig`.
+  - Updated `StoreMapping.tsx`: added "Last Sync" column with live badge + per-row quick-sync Play button.
+  - Updated `Sidebar.tsx`: Quality Assurance is now a collapsible group with QA Overview, Frame Review, Model Feedback children. Multi-group open state via `openGroups` Record.
+  - Updated `App.tsx`: added `/qa/frame-review` and `/qa/model-feedback` routes.
+  - Deleted `frontend/src/pages/StoreAdmin.tsx` (dead code, superseded by StoreMapping).
+  - Rebuilt React and re-deployed to `backend/app/static/`.
+  - Installed `psycopg2-binary` for sync engine support.
+- Changed Paths:
+  - `backend/app/db/session.py` (engine_sync added)
+  - `backend/app/main.py` (onfly + qa routers registered)
+  - `frontend/src/components/layout/Sidebar.tsx`
+  - `frontend/src/App.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `backend/app/static/` (rebuilt React dist)
+- New Modules Introduced:
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/routes_qa.py`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/ModelFeedback.tsx`
+- Deleted:
+  - `frontend/src/pages/StoreAdmin.tsx`
+- Infra/Config Impact:
+  - `psycopg2-binary` must be installed (`pip install psycopg2-binary`).
+  - Postgres must have `store_sync_state`, `qa_feedback`, and `model_versions` tables (created by Alembic migrations or canonical_metadata.py init).
+  - No Celery or Redis required — pipeline runs in-process via ThreadPoolExecutor.
+

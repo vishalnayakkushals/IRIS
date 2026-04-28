@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore } from "../api/client";
-import { Card, Title, Text, Button } from "@tremor/react";
-import { Plus, Pencil, Trash2, X, Check } from "lucide-react";
+import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore, onFlyListStores, onFlySync } from "../api/client";
+import { Card, Title, Text, Button, Badge } from "@tremor/react";
+import { Plus, Pencil, Trash2, X, Check, Play } from "lucide-react";
 
 const EMPTY = { store_id: "", store_name: "", email: "", drive_folder_url: "" };
 
@@ -85,12 +85,31 @@ export default function StoreMapping() {
     setTimeout(() => setToast(""), 3500);
   }
 
+  const [syncData, setSyncData] = useState<Record<string, any>>({});
+  const [syncing, setSyncing] = useState<string | null>(null);
+
   async function load() {
-    const r = await adminListStores();
-    setRows(r.data);
+    const [adminR, syncR] = await Promise.all([
+      adminListStores(),
+      onFlyListStores().catch(() => ({ data: [] })),
+    ]);
+    setRows(adminR.data);
+    const byId: Record<string, any> = {};
+    for (const s of (syncR as any).data) byId[s.store_id] = s;
+    setSyncData(byId);
   }
 
   useEffect(() => { load(); }, []);
+
+  async function handleSync(storeId: string) {
+    setSyncing(storeId);
+    try {
+      const { data } = await onFlySync(storeId, { gpt_enabled: false });
+      flash(data.message || "Sync started");
+    } catch (e: any) {
+      flash(e?.response?.data?.detail || "Sync failed");
+    } finally { setSyncing(null); }
+  }
 
   async function handleCreate(v: typeof EMPTY) {
     await adminCreateStore(v);
@@ -141,11 +160,14 @@ export default function StoreMapping() {
               <th className="px-5 py-3">Name</th>
               <th className="px-5 py-3">Email</th>
               <th className="px-5 py-3">Drive Link</th>
+              <th className="px-5 py-3">Last Sync</th>
               <th className="px-5 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {rows.map((r) => (
+            {rows.map((r) => {
+              const sync = syncData[r.store_id];
+              return (
               <>
                 <tr key={r.store_id} className="hover:bg-slate-50/50">
                   <td className="px-5 py-3 font-medium font-mono text-xs">{r.store_id}</td>
@@ -156,10 +178,28 @@ export default function StoreMapping() {
                       <a href={r.drive_folder_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
                         {r.drive_folder_url}
                       </a>
-                    ) : "—"}
+                    ) : <span className="text-rose-400">Not set</span>}
                   </td>
                   <td className="px-5 py-3">
-                    <div className="flex gap-2">
+                    {sync ? (
+                      <div className="space-y-0.5">
+                        <Badge color={sync.last_status === "ok" ? "emerald" : sync.last_status === "error" ? "rose" : "slate"}>
+                          {sync.last_status || "never"}
+                        </Badge>
+                        {sync.last_sync_at && <p className="text-xs text-slate-400">{new Date(sync.last_sync_at).toLocaleDateString("en-IN")}</p>}
+                      </div>
+                    ) : <span className="text-slate-400 text-xs">Never</span>}
+                  </td>
+                  <td className="px-5 py-3">
+                    <div className="flex gap-2 items-center">
+                      <button
+                        onClick={() => handleSync(r.store_id)}
+                        disabled={syncing === r.store_id || !r.drive_folder_url}
+                        className="text-slate-400 hover:text-emerald-600 disabled:opacity-30"
+                        title="Sync now"
+                      >
+                        <Play size={14} />
+                      </button>
                       <button onClick={() => setEditing(editing === r.store_id ? null : r.store_id)} className="text-slate-400 hover:text-blue-600">
                         <Pencil size={15} />
                       </button>
@@ -171,7 +211,7 @@ export default function StoreMapping() {
                 </tr>
                 {editing === r.store_id && (
                   <tr key={`edit-${r.store_id}`}>
-                    <td colSpan={5} className="px-5 py-3">
+                    <td colSpan={6} className="px-5 py-3">
                       <StoreForm
                         initial={r}
                         onSave={handleUpdate}
@@ -182,10 +222,11 @@ export default function StoreMapping() {
                   </tr>
                 )}
               </>
-            ))}
+              );
+            })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center py-12 text-gray-400 text-sm">No stores configured.</td>
+                <td colSpan={6} className="text-center py-12 text-gray-400 text-sm">No stores configured.</td>
               </tr>
             )}
           </tbody>
