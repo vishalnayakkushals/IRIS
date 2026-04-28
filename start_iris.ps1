@@ -10,10 +10,11 @@ Write-Host "  IRIS - Starting API Server on :8767  " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$pythonExe = "C:\Python312\python.exe"
+$approvedPython = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
+$pythonExe = $approvedPython
 if (-not (Test-Path $pythonExe)) {
     Write-Host "ERROR: Approved Python not found at $pythonExe" -ForegroundColor Red
-    Write-Host "Install or restore the approved system Python before starting IRIS." -ForegroundColor Red
+    Write-Host "Install Python 3.12 in the standard local path before starting IRIS." -ForegroundColor Red
     exit 1
 }
 
@@ -52,7 +53,8 @@ if (Test-Path $envFile) {
     }
     Write-Host "Loaded .env.local" -ForegroundColor Green
 } else {
-    Write-Host "WARNING: .env.local not found" -ForegroundColor Red
+    Write-Host "ERROR: .env.local not found" -ForegroundColor Red
+    exit 1
 }
 
 $approvedPostgres = "postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db"
@@ -65,6 +67,14 @@ if ($env:POSTGRES_URL -ne $approvedPostgres) {
     Write-Host "  $approvedPostgres" -ForegroundColor Yellow
     Write-Host "Current value:" -ForegroundColor Red
     Write-Host "  $($env:POSTGRES_URL)" -ForegroundColor Yellow
+    exit 1
+}
+if (-not $env:JWT_SECRET) {
+    Write-Host "ERROR: JWT_SECRET is missing from .env.local" -ForegroundColor Red
+    exit 1
+}
+if ($env:API_PORT -and $env:API_PORT -ne "8767") {
+    Write-Host "ERROR: API_PORT must stay 8767. Current value: $($env:API_PORT)" -ForegroundColor Red
     exit 1
 }
 

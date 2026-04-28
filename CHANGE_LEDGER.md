@@ -15,10 +15,24 @@ It records what changed, where it changed, and why.
 - Changed paths:
   - `start_iris.ps1`
   - `backend/app/config.py`
+  - `CHANGE_LEDGER.md`
 - Summary:
-  - Hardened the local `8767` startup path to use only the approved interpreter `C:\Python312\python.exe`.
-  - Added fail-fast validation in `start_iris.ps1` so startup stops if `.env.local` is missing `POSTGRES_URL` or if it does not exactly match the approved local Postgres URI `postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db`.
+  - Hardened the local `8767` startup path to use only the approved interpreter path resolved by the launcher for the single supported startup flow `start_iris.bat` → `start_iris.ps1`.
+  - Added fail-fast validation in `start_iris.ps1` so startup stops if `.env.local` is missing, if `POSTGRES_URL` is missing or incorrect, if `JWT_SECRET` is missing, or if `API_PORT` is changed away from `8767`.
   - Removed stale test-store defaults from `backend/app/config.py` by clearing the default `store_id` and aligning the fallback Postgres URI with the approved local configuration.
+
+### 2026-04-28 - Store Master CSV And TSV Upload
+- Changed paths:
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `start_iris.ps1`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/index-B4q25CrQ.css`
+  - `backend/app/static/assets/index-BYE_eSKJ.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added real file upload support for Store Master imports so the page now accepts `.csv`, `.tsv`, and pasted data with preview before import.
+  - Normalized common header variants to the canonical field names expected by the backend and filtered out blank rows safely.
+  - Tightened the local launcher further so the single supported runtime path stays reproducible through `start_iris.bat`.
 
 ## Module Registry
 | Module/File | Responsibility |
@@ -122,7 +136,9 @@ The server is **not a Windows service**. It does not auto-start. After every reb
 Double-click:  C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\start_iris.bat
 ```
 
-Or from PowerShell:
+`start_iris.bat` is the official local launcher. It calls `start_iris.ps1` internally. Use the `.bat` file for normal local startup.
+
+Only if you are debugging startup itself, you may call the PowerShell script directly:
 ```powershell
 cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
 powershell -ExecutionPolicy Bypass -File start_iris.ps1
@@ -140,21 +156,25 @@ This kills any old process on port 8767, loads `.env.local`, sets `PYTHONPATH`, 
 
 **Do not change any port number to 8766.** The entire codebase has been migrated to 8767. Any code or config that still says 8766 is a bug — fix it to 8767.
 
-### Python Environment — System Python Only
+### Python Environment — Single Local Python Only
 
 **Do NOT use Docker, venv, conda, or any virtual environment.**
 
-All packages are installed in the **system Python** at `C:\Python312\`.
+All packages are installed in the single local Python used by `start_iris.bat`.
+Approved interpreter path:
+`C:\Users\Kushals.DESKTOP-D51MT8S\AppData\Local\Programs\Python\Python312\python.exe`
 
 To install missing packages:
 ```powershell
-pip install -r backend/requirements.txt
+& "C:\Users\Kushals.DESKTOP-D51MT8S\AppData\Local\Programs\Python\Python312\python.exe" -m pip install -r backend/requirements.txt
 ```
 
 To verify which Python is being used:
 ```powershell
-where python   # Must return C:\Python312\python.exe
+where python
 ```
+
+The launcher does not trust `where python`. It starts the approved interpreter path directly.
 
 If you create a venv or use Docker, the server will fail to import packages the user already has installed.
 
@@ -170,10 +190,12 @@ User:     iris_user
 Password: iris_password
 ```
 
-Connection string (already in `.env.local`):
+Connection string (required in `.env.local`):
 ```
 POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db
 ```
+
+If `.env.local` is missing, if `POSTGRES_URL` is wrong, if `JWT_SECRET` is blank, or if `API_PORT` is changed away from `8767`, `start_iris.bat` will stop instead of starting a wrong app.
 
 To verify Postgres is running (PowerShell):
 ```powershell
