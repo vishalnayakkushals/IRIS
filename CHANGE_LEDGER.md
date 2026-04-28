@@ -110,6 +110,66 @@ Use this template for each new change:
 
 ## Change Entries
 
+### 2026-04-28 | Batch cleanup: fix all "Commit pending" labels, add gitignore rules, commit cloud + migration artifacts
+- Summary:
+  - Replaced all 80 "Commit pending" labels in CHANGE_LEDGER with "committed" since the backing commits already existed in git history.
+  - Added `frontend/node_modules/`, `frontend/dist/`, `deploy/no_docker/runtime_logs/`, and `.claude/settings.local.json` to `.gitignore` to stop them appearing as untracked.
+  - Committed `backend/migrations/versions/001_initial_schema_with_indexes.py` (Alembic full production schema) and `deploy/cloud/` (Ubuntu deployment artifacts) that were untracked since Phase D.
+  - Committed `scripts/add_user.py` utility and `frontend/package.json` package update.
+  - Minor Sidebar.tsx cleanup (removed unused import line).
+- Changed Paths:
+  - `CHANGE_LEDGER.md`
+  - `.gitignore`
+  - `backend/migrations/versions/001_initial_schema_with_indexes.py`
+  - `deploy/cloud/` (setup_ubuntu.sh, postgres_init.sql, nginx.conf, iris-api.service, iris-celery-worker.service, iris-web.service, README.md)
+  - `scripts/add_user.py`
+  - `frontend/package.json`
+  - `frontend/src/components/layout/Sidebar.tsx`
+- New Modules Introduced:
+  - `backend/migrations/versions/001_initial_schema_with_indexes.py`
+  - `deploy/cloud/setup_ubuntu.sh`
+  - `deploy/cloud/postgres_init.sql`
+  - `deploy/cloud/nginx.conf`
+  - `deploy/cloud/iris-api.service`
+  - `deploy/cloud/iris-celery-worker.service`
+  - `deploy/cloud/iris-web.service`
+  - `scripts/add_user.py`
+- Infra/Config Impact:
+  - `deploy/cloud/setup_ubuntu.sh` is the one-command Ubuntu setup script for cloud go-live.
+  - `backend/migrations/versions/001_initial_schema_with_indexes.py`: run `alembic upgrade head` once to create all 29 Postgres tables.
+
+### 2026-04-28 | Phase C + D complete: cloud deployment artifacts and Postgres-only FastAPI layer
+- Summary:
+  - Phase D: Eliminated SQLite from FastAPI entirely — rewrote `platform_data.py` and `pipeline_log.py` as pure-async Postgres using SQLAlchemy asyncpg. All 8 API endpoints backed by Postgres only.
+  - Added Alembic migration `001_initial_schema_with_indexes.py` with full production schema: 29 tables, partitioned `onfly_walkin_sessions` and `onfly_pipeline_run_events`, 10 critical indexes — ready for 150-store scale.
+  - Added `scripts/migrate_sqlite_to_postgres.py` for one-time SQLite → Postgres migration with savepoint-per-row error isolation, datetime parsing, and bool casting.
+  - Fixed `JobStatus` Pydantic model for Postgres `datetime` return type using `field_serializer`.
+  - Phase C: Created `deploy/cloud/` Ubuntu deployment package — `setup_ubuntu.sh`, `postgres_init.sql`, `nginx.conf`, three `systemd` service files, `.env.production.example`, and `README.md`.
+  - 3× full test pass: login, all 8 API endpoints, wrong-password rejection — Postgres only, no SQLite fallback.
+- Changed Paths:
+  - `backend/app/db/platform_data.py`
+  - `backend/app/db/pipeline_log.py`
+  - `backend/app/db/session.py`
+  - `backend/app/api/routes_auth.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `backend/app/api/routes_detail.py`
+  - `backend/app/api/routes_jobs.py`
+  - `backend/app/models/jobs.py`
+  - `backend/alembic.ini`
+  - `backend/migrations/versions/001_initial_schema_with_indexes.py`
+  - `scripts/migrate_sqlite_to_postgres.py`
+  - `deploy/cloud/`
+  - `CHANGE_LEDGER.md`
+- New Modules Introduced:
+  - `scripts/migrate_sqlite_to_postgres.py`
+  - `deploy/cloud/`
+- Infra/Config Impact:
+  - Postgres required: `postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db`.
+  - Run `alembic upgrade head` in `backend/` to create all tables.
+  - Run `python scripts/migrate_sqlite_to_postgres.py` once to migrate existing data.
+  - Env vars: `POSTGRES_URL`, `JWT_SECRET` (required in `.env.local` for local dev).
+  - Local Postgres (Win): `& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" start -D "C:\Program Files\PostgreSQL\17\data"`.
+
 ### 2026-04-27 | Phase B Complete — Real data wired into all React pages
 
 - Summary:
@@ -160,7 +220,7 @@ Use this template for each new change:
   - Default user password is `ChangeMe123!` — must be changed before cloud go-live.
   - No Docker, no Postgres required — SQLite fallback is fully functional.
 
-### 2026-04-27 | Commit pending
+### 2026-04-27 | committed
 - Summary:
   - Added a FastAPI platform-data bridge that prefers Postgres-backed auth, store registry, and on-fly session reads while falling back to the current SQLite runtime when Postgres is unavailable or not backfilled.
   - Updated backend auth, overview, and store-detail routes to use the bridge instead of hardcoded local CSV parsing for their primary data access path.
@@ -177,7 +237,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - FastAPI runtime now attempts Postgres access through SQLAlchemy/asyncpg first for selected domains, but automatically falls back to SQLite when Postgres is unavailable or not yet populated.
 
-### 2026-04-27 | Commit pending
+### 2026-04-27 | committed
 - Summary:
   - Reworked `Manual data sync of IRIS` into a simpler one-section-at-a-time dashboard with clear views for status, run now, run list, run detail, stage timeline, and scheduler history.
   - Added real local scheduler-service state visibility so the page now distinguishes a saved schedule from an actually running on-fly scheduler service.
@@ -190,7 +250,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Mapped the live SQLite runtime tables and CSV artifacts still used by production-style paths and documented which ones must migrate vs remain export-only.
   - Defined the canonical Postgres target schema in SQLAlchemy metadata without touching the core analytics brain modules.
@@ -207,7 +267,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Declares `sqlalchemy`, `alembic`, and `asyncpg` in backend requirements and sets Alembic `target_metadata` to the canonical Postgres schema definition for future migrations.
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Stabilized the React/FastAPI auth flow by validating protected-page tokens through `/api/auth/me` instead of trusting any `localStorage` token string.
   - Added login-route session reuse so already-authenticated users are redirected into the app instead of seeing the login form again.
@@ -221,7 +281,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Fixed React/FastAPI login to use the real IRIS `data/store_registry.db` during local runs instead of an empty `C:\app\data\store_registry.db`, which was causing valid credentials to fail.
   - Kept Docker compatibility by resolving the default `/app/data` setting back to the repo `data/` folder automatically from backend code.
@@ -235,7 +295,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars. Local backend auth now resolves the default data path to the repository `data/` folder automatically, while container `/app/data` behavior remains aligned.
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Renamed GPT/YOLO report labels to business-friendly names and grouped Report Module into `Main Reports`, `Operations Reports`, and `Model Related Reports`.
   - Kept management-facing footfall summaries in the main group while moving validation and accuracy diagnostics out of the primary review flow.
@@ -248,7 +308,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Scaffolding Phase 1 UI Migration using Vite, React, Shadcn, Tremor, and Lucide.
   - Added basic AppLayout, TopNav, and Sidebar shells in the frontend workspace.
@@ -273,7 +333,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Defined Postgres URI `postgresql+asyncpg://iris_user:password@localhost/iris_db` for phase cutoff routing.
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Made Report Module show empty tables with column headers for every report type instead of blank panels when a store/date has no rows yet.
   - Fixed on-fly report file loading on Windows by resolving stored `/app/data/...` runtime paths back to the local workspace before reading report CSVs.
@@ -286,7 +346,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Renamed business report labels to clearer store-facing names, removed the `Data Health` report option from Report Module, and kept empty GPT/QA reports visible with their column headers.
   - Preserved YOLO-stage visibility for stores with partial on-fly output by loading storewise scan results even when downstream GPT artifacts are missing.
@@ -301,7 +361,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars. Nightly on-fly scheduler behavior now automatically fans out across all mapped stores with non-empty source URLs.
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Fixed Report Module `Data Health` so it no longer crashes when a store only has on-fly/YOLO-shaped output columns instead of the full classic export schema.
   - Switched key store selectors to display full store names, exposed RR Nagar in report/customer-journey selection flows, and added a clear fallback message when only YOLO/on-fly output exists.
@@ -315,7 +375,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Local runtime data cleanup only: deleted `TEST_STORE_D07` rows from SQLite runtime tables and removed matching local export/store folders under `data/`.
 
-### 2026-04-26 | Commit pending
+### 2026-04-26 | committed
 - Summary:
   - Fixed Organisation-driven header branding so the saved logo path renders reliably even when the stored path is an older `/app/data/...` runtime path.
   - Replaced the oversized Streamlit brand block with a compact small-logo + app-name header and tightened top-page spacing without changing other page logic.
@@ -328,7 +388,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-25 | Commit pending
+### 2026-04-25 | committed
 - Summary:
   - Simplified IRIS manual data sync so scheduler source comes from `Store Mapping`, the sync page shows a clearer storewise status table, and users can sync/run RR Nagar without re-entering paths.
   - Moved the IRIS data sync scheduler controls under `Config > Scheduler`, added plain-language setting explanations, and removed duplicate/legacy report wording from the Report Module.
@@ -344,7 +404,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars or dependencies. On-fly scheduler now prefers each store's mapped source URL from `stores.drive_folder_url` before any legacy saved scheduler path.
 
-### 2026-04-25 | Commit pending
+### 2026-04-25 | committed
 - Summary:
   - Added a no-PowerShell local runtime manager so IRIS can be started, stopped, checked, and opened from simple double-clickable `.bat` files instead of requiring PowerShell commands.
   - Added automatic local env bootstrapping from the existing OpenAI/Google key text files into `deploy/no_docker/.env.local`, keeping the browser/no-Docker flow easier for everyday use.
@@ -367,7 +427,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `deploy/no_docker/.env.local` can now be auto-generated from the existing local key files when missing.
 
-### 2026-04-25 | Commit pending
+### 2026-04-25 | committed
 - Summary:
   - Profiled the Streamlit dashboard load path and confirmed the main UI slowdown came from eagerly loading full legacy exports on every page before routing, plus repeated walk-in CSV scans/aggregations and chart construction during render.
   - Added UI performance timing logs for bootstrap, navigation resolution, legacy export loads, source-image counting, walk-in dataset loads, store/report pipeline queries, aggregations, chart builds, and full page render; logs now write to `data/exports/current/ui_perf/ui_perf_events.jsonl`.
@@ -382,7 +442,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-25 | Commit pending
+### 2026-04-25 | committed
 - Summary:
   - Added quota-aware GPT fallback behavior so on-fly runs keep YOLO results intact, mark GPT quota failures explicitly, and queue GPT-only retries instead of misreporting full failure.
   - Surfaced GPT quota retry state clearly in the Pipeline Journey UI with queue counts, retry warnings, and partial-run messaging for browser-only visibility.
@@ -403,7 +463,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `None`
 
-### 2026-04-24 | Commit pending
+### 2026-04-24 | committed
 - Summary:
   - Added a no-Docker deployment pack so IRIS can run as a browser-accessible Python web app plus separate scheduler workers without depending on Docker.
   - Introduced managed runtime bootstrap helpers for env-file loading and persistent path resolution, and wired the dashboard to honor no-Docker runtime path overrides.
@@ -439,7 +499,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Added no-Docker runtime env/path contract through `IRIS_ENV_FILE`, `IRIS_DATA_DIR`, `IRIS_DB_PATH`, `IRIS_STORES_ROOT`, `IRIS_EXPORT_DIR`, `IRIS_EMPLOYEE_ASSETS_DIR`, `IRIS_STREAMLIT_HOST`, and `IRIS_STREAMLIT_PORT`.
 
-### 2026-04-24 | Commit pending
+### 2026-04-24 | committed
 - Summary:
   - Added full browser-managed On-Fly Scheduler Settings inside `Operations > Manual data sync of IRIS`.
   - Scheduler settings now persist store/source/hourly/nightly/runtime knobs in app settings DB and surface active schedule, next run, next nightly, and last run directly in UI.
@@ -454,7 +514,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `iris-onfly-scheduler` now reads schedule configuration from DB-backed app settings instead of environment variables for store/source/hourly/nightly/runtime selection.
 
-### 2026-04-23 | Commit pending
+### 2026-04-23 | committed
 - Summary:
   - Fixed on-fly GPT gating so newly relevant images from the current YOLO pass no longer skip GPT because of stale stored relevance.
   - Split GPT work decision from relevance decision: version/state determines whether GPT work is needed, and current-run YOLO determines whether the image is relevant enough to run GPT.
@@ -925,7 +985,7 @@ Use this template for each new change:
   - New Docker volumes: redis_data, celery_beat_data
   - New ports: 8766 (iris-api + React UI)
 
-### 2026-04-03 | Commit pending
+### 2026-04-03 | committed
 - Summary:
   - Enabled downloadable empty template behavior for `GPT Consolidated Walk-in Table (Test Folder)` in Report Module.
   - Enforced exact column order for consolidated walk-in output in UI/CSV download, even when no rows are present.
@@ -956,7 +1016,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `PYTHONPATH=/app:/app/src` now set explicitly in iris-api, iris-celery-worker, iris-celery-beat environments.
 
-### 2026-04-03 | Commit pending
+### 2026-04-03 | committed
 
 - Summary:
   - Fixed `run-iris-normal.ps1` argument handling under `Set-StrictMode` by moving `param(...)` to top and giving `RunArgs` a safe default (`@()`).
@@ -969,7 +1029,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None.
 
-### 2026-04-03 | Commit pending
+### 2026-04-03 | committed
 - Summary:
   - Added production-safe local PowerShell launchers to avoid repeated API key copy-paste, with file-based secret loading, validation, and cleanup.
   - Introduced `run-iris-validation.ps1` (fixed GPT validation run) and `run-iris-normal.ps1` (default/arg pass-through normal runs).
@@ -988,7 +1048,7 @@ Use this template for each new change:
     - `C:\Users\Kushals.DESKTOP-D51MT8S\Downloads\IRIS\Key\Google Cloud Key.txt`
   - Optional path overrides via env vars: `IRIS_OPENAI_KEY_FILE`, `IRIS_GOOGLE_KEY_FILE`.
 
-### 2026-04-03 | Commit pending
+### 2026-04-03 | committed
 - Summary:
   - Extended GPT post-relevance pipeline with a second-pass consolidated sequence analyzer that applies the provided retail walk-in prompt logic and writes a deterministic consolidated walk-in table.
   - Added new walk-in outputs (`gpt_walkin_sequence_table.csv`, `gpt_walkin_sequence_table.md`) and run-summary fields for sequence generation status/errors.
@@ -1002,7 +1062,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - `run_iris.bat gpt-test-validation-now` now also attempts consolidated sequence-table generation using the same GPT model and API key.
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Fixed CI lint failure by importing `Any` used in GPT frame-index type annotations.
 - Changed Paths:
@@ -1013,7 +1073,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None.
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Updated high-traffic dashboard selectors to default to a blank placeholder so pages load only after explicit dropdown selection.
   - Applied explicit select-first behavior to `Config`, `Report Module`, `Store Drill-down`, `Frame Review`, and `Customer Journeys` to avoid auto-loading first option content.
@@ -1025,7 +1085,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None (UI selection behavior only).
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Separated TEST_STORE post-relevance intelligence into a dedicated GPT stage that consumes Stage-1 YOLO relevant images and preserves YOLO count as audit-only.
   - Added GPT validation exports with per-entity labels (`T1...Tn`), YOLO-vs-GPT comparison, GPT-vs-reviewer comparison, GPT-extra detections (YOLO missed), and annotated image artifacts.
@@ -1042,7 +1102,7 @@ Use this template for each new change:
   - New optional command: `run_iris.bat gpt-test-validation-now` (requires `OPENAI_API_KEY`).
   - New outputs under `data/exports/current/gpt_validation/<store_id>/`.
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Added a fully isolated CTO performance observer layer under `CTO/` to track run-by-run fix timing and page-load probe timing without coupling to core runtime.
   - Introduced a single main performance log (`CTO/logs/perf_events.jsonl`) plus lightweight analyzer reports for slow paths, repeated slow-path detection, and regressions.
@@ -1075,7 +1135,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None for core app runtime (CTO layer is optional and removable).
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Assessed the uploaded B2B SOP checklist against IRIS and added a concrete Done/Now/Future status matrix for operational clarity.
   - Added missing repository controls that can be completed purely in-code now: `.env.example` and a mandatory PR template.
@@ -1095,7 +1155,7 @@ Use this template for each new change:
   - Standardizes PR metadata collection via GitHub PR template.
 
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Hardened `run_iris.bat` on-fly commands to pass runtime keys into container exec (`GOOGLE_API_KEY`, `OPENAI_API_KEY`) so Drive on-fly runs work without full container recreation.
   - Added explicit warnings in on-fly run/benchmark/scheduler start commands when `GOOGLE_API_KEY` is empty.
@@ -1108,7 +1168,7 @@ Use this template for each new change:
   - None (runtime command behavior only).
 
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Fixed on-fly runtime parser/runtime issues in container by correcting local-source ID normalization and escaping, and validated end-to-end execution from Docker.
   - Added detector init timing (`detector_init_ms`) to run metrics and benchmark output so slowness attribution is explicit (download vs model-init vs inference).
@@ -1123,7 +1183,7 @@ Use this template for each new change:
   - New SQLite table used by on-fly runtime: `onfly_task_queue`.
 
 
-### 2026-04-01 | Commit pending
+### 2026-04-01 | committed
 - Summary:
   - Added a lightweight on-the-fly pipeline (`source URL -> YOLO relevance -> optional GPT for relevant-only`) with SQLite-backed idempotent state to skip already processed images.
   - Added dedicated hourly+nightly on-fly scheduler and compose profile (`iris-onfly-scheduler`) so URL-first evaluation flow runs independently from existing overnight analytics services.
@@ -1153,7 +1213,7 @@ Use this template for each new change:
   - New env controls: `ONFLY_ENABLED`, `ONFLY_STORE_ID`, `ONFLY_SOURCE_URL`, `ONFLY_OUT_DIR`, `ONFLY_HOURLY_MINUTES`, `ONFLY_NIGHTLY_RUN_AT`, `ONFLY_TZ`, `ONFLY_MAX_IMAGES`, `ONFLY_PIPELINE_VERSION`, `ONFLY_DETECTOR`, `ONFLY_CONF`, `IRIS_ONFLY_POLL_SECONDS`.
   - New outputs under `data/exports/current/onfly/` including run summaries and benchmark artifacts.
 
-### 2026-03-31 | Commit pending
+### 2026-03-31 | committed
 - Summary:
   - Implemented Stage-1 pipeline (`YOLO relevance scan`) to count local test images, classify each frame as relevant/irrelevant based on person presence, and export downstream-ready artifacts for Stage-2 ChatGPT ingestion.
   - Added daily Stage-1 scheduler worker (default `15:00` Asia/Kolkata) with isolated runtime/app-setting keys so relevance scan scheduling stays separate from GPT and overnight YOLO analytics cycles.
@@ -1171,7 +1231,7 @@ Use this template for each new change:
   - New compose profile/service: `iris-yolo-relevance-scheduler` (`--profile stage1`).
   - New env controls: `YOLO_RELEVANCE_ENABLED`, `YOLO_RELEVANCE_DAILY_RUN_AT`, `YOLO_RELEVANCE_TZ`, `YOLO_RELEVANCE_ROOT`, `YOLO_RELEVANCE_OUT_ROOT`, `YOLO_RELEVANCE_STORE_ID`, `YOLO_RELEVANCE_CONF`, `YOLO_RELEVANCE_MAX_IMAGES`, `YOLO_RELEVANCE_ALLOW_FALLBACK`, `YOLO_RELEVANCE_GZIP_EXPORTS`, `YOLO_RELEVANCE_DROP_PLAIN_CSV`.
 
-### 2026-03-31 | Commit pending
+### 2026-03-31 | committed
 - Summary:
   - Added Stage-1 store-level reporting layer (store+date aggregation) on top of relevance output with required flat schema:
     - `store_name`, `date`, `raw_image_count`, `relevant_image_count`.
@@ -1187,7 +1247,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New output artifact path default: `data/exports/current/vision_eval/store_report.csv` (+ `store_report.json`).
 
-### 2026-03-31 | Commit pending
+### 2026-03-31 | committed
 - Summary:
   - Added date-wise store summary export table with folder-derived `Date` bucket formatting:
     - valid folder dates (`YYYY-MM-DD` / `YYYYMMDD`) now display as `DD-MM-YYYY`
@@ -1204,7 +1264,7 @@ Use this template for each new change:
     - `all_stores_summary_datewise.csv` (+ optional gzip)
     - `store_<store_id>_summary_datewise.csv` (+ optional gzip)
 
-### 2026-03-27 | Commit pending
+### 2026-03-27 | committed
 - Summary:
   - Added a new CLI pipeline to evaluate retail images using ChatGPT vision calls (instead of YOLO) with strict structured JSON output per image/entity.
   - Implemented post-inference business-rule filtering for customer/staff/pedestrian/banner/product exclusions, red-bag purchased count, and best-effort per-camera sequential customer IDs.
@@ -1218,7 +1278,7 @@ Use this template for each new change:
   - Requires `OPENAI_API_KEY` at runtime.
   - Uses existing Google Drive sync path (`sync_store_from_source`) and optional `GOOGLE_API_KEY` for scalable Drive API sync.
 
-### 2026-03-27 | Commit pending
+### 2026-03-27 | committed
 - Summary:
   - Improved ChatGPT vision batch script error handling for missing ground-truth path by adding `--create-ground-truth-template`.
   - Script can now generate a fillable CSV template from selected images and exit cleanly, then rerun for full evaluation.
@@ -1230,7 +1290,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New optional CLI flag: `--create-ground-truth-template`.
 
-### 2026-03-30 | Commit pending
+### 2026-03-30 | committed
 - Summary:
   - Fixed ChatGPT vision response payload format to match Responses API JSON-schema contract (`text.format` now includes required `name`/`schema` keys directly).
   - Reduced unnecessary retry load for client-side request errors (`4xx` except `429`) to avoid repeated failed billing attempts.
@@ -1242,7 +1302,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-30 | Commit pending
+### 2026-03-30 | committed
 - Summary:
   - Added config-driven GPT-vs-YOLO separation controls:
     - `YOLO_ENABLED` gate in existing scheduler worker.
@@ -1921,7 +1981,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | committed
 - Summary:
   - Removed standalone filename hyperlink block, switched proof/gallery links to in-app validation links, and added customer-face validation grid with 80-person quick view.
 - Changed Paths:
@@ -1945,7 +2005,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - For accurate production counts, use YOLO runtime (`IRIS_ENABLE_YOLO=1` in Docker build).
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | committed
 - Summary:
   - Fixed YOLO Docker runtime import failure by adding required OpenCV system libraries (`libxcb`, `libgl`, related X/GLib libs) to the image build.
 - Changed Paths:
@@ -2004,7 +2064,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Database adds `qa_false_positive_signatures` table for learned suppression memory.
 
-### 2026-03-16 | Commit pending
+### 2026-03-16 | committed
 - Summary:
   - Tuned detection accuracy defaults: upgraded YOLO model default (`yolov8m`), relaxed red-shirt staff threshold, made static false-positive suppression stricter, and lowered default detection confidence to `0.18` across analysis/CLI/dashboard defaults.
 - Changed Paths:
@@ -2029,7 +2089,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional `YOLO_MODEL_PATH` env lets you steer between `yolov8s.pt` and larger weights; nothing else changed.
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Merged both local working change sets into canonical branch: added optional detection-cache/parallel analysis scaffolding, `person_confidences` propagation, HSV red-shirt fallback updates, and dependency additions (`pydantic`, `pyarrow`), then fixed merge regressions (`CameraConfig` reconstruction and static-banner suppression behavior) to keep tests passing.
 - Changed Paths:
@@ -2043,7 +2103,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Adds Python deps `pydantic>=2.0,<3.0` and `pyarrow>=15.0,<16.0`.
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Switched repository workflow source-of-truth path to `Desktop\\Github\\IRIS` in agent instructions so local working convention matches requested deployment flow.
 - Changed Paths:
@@ -2054,7 +2114,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Fixed Docker runtime crash (`ModuleNotFoundError: cv2`) by adding OpenCV headless dependency to app and Docker requirement sets.
 - Changed Paths:
@@ -2066,7 +2126,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Adds `opencv-python-headless>=4.10,<5.0` to runtime dependencies.
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Added optional filename-prefix filtering in analysis pipeline and CLI so targeted windows (for example `11-35`, `12-15`, `12-17`) can be analyzed without processing the full store set.
 - Changed Paths:
@@ -2078,7 +2138,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Implemented Drive delta-sync foundation: added `store_source_file_index` table and sync logic that compares indexed/local files against Drive listing, downloads only missing files, and never erases existing local snapshots.
 - Changed Paths:
@@ -2090,7 +2150,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - SQLite schema adds `store_source_file_index` and index `idx_source_file_index_store_provider_present`.
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Fixed broken hover verification links by sanitizing `nan` values and resolving preview images from local `path/relative_path/source_folder` fallback logic in customer journey views.
 - Changed Paths:
@@ -2101,7 +2161,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-18 | Commit pending
+### 2026-03-18 | committed
 - Summary:
   - Fixed Google Drive API sync reliability on restricted networks by adding download fallback (`drive.google.com/uc`) when `alt=media` is blocked, and skipping already-present files to speed repeated syncs.
 - Changed Paths:
@@ -2112,7 +2172,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Added autonomous daily Drive sync design: first full pull, then latest-date delta sync with multi-queue downloads, deletion tombstones, scheduler runner (6 AM), dockerized sync worker service, and benchmark tooling.
 - Changed Paths:
@@ -2132,7 +2192,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New optional docker service `iris-sync` and env vars `IRIS_SYNC_STORE_ID`, `IRIS_SYNC_RUN_AT`, `IRIS_SYNC_TZ`, `IRIS_SYNC_WORKERS` (requires `GOOGLE_API_KEY`).
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Implemented strict gate session engine support for entry/exit tracking (D07 fallback), prevented non-gate ID creation in strict mode, added session validity/staff flags, and switched business KPIs to valid CLOSED sessions when strict contract is active.
   - Added centroid-side crossing fallback when track IDs are unstable, plus regression tests for strict mode and session-based KPIs.
@@ -2146,7 +2206,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Fixed blank/zero-data dashboard regression caused by stale exports by adding empty-export detection and one-time auto-recovery analysis when source images exist; added explicit no-source message when root path has no images.
 - Changed Paths:
@@ -2157,7 +2217,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Added explicit dashboard notice when `Images Per Store` sampling is enabled to prevent confusion when totals appear capped (e.g., 200 images instead of full folder volume).
 - Changed Paths:
@@ -2168,7 +2228,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Fixed stale in-session dashboard data by auto-reloading exports when `all_stores_summary` on disk is newer than cached session output (supports terminal-triggered analysis runs without manual cache reset).
 - Changed Paths:
@@ -2179,7 +2239,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Fixed detection-cache poisoning across detector changes by adding detector signature (backend/model/conf/device) into cache key; prevents old `Detector unavailable` results from being reused after YOLO is enabled.
 - Changed Paths:
@@ -2190,7 +2250,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Fixed YOLO full-build dependency conflict by forcing `numpy<2` after YOLO install so `pandas/pyarrow` remain ABI-compatible in Docker runtime.
 - Changed Paths:
@@ -2201,7 +2261,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Full YOLO Docker builds now explicitly pin `numpy<2` with existing `pyarrow` constraint.
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Improved Pipeline Configuration date parsing to accept compact `YYYYMMDD` inputs (for example `20260317`) by normalizing to ISO before analysis.
 - Changed Paths:
@@ -2212,7 +2272,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Simplified Pipeline Configuration UX: added run mode presets (`Full Scan (Dev)`, `Test`, `Custom`), save-current-as-custom profile, store filter dropdown, date text + calendar controls, grouped toggles for on/off settings, confidence guidance text, and frozen gzip export behavior.
   - Updated defaults to full-scan dev behavior (`Images Per Store=0`, `Enable Age/Gender=True`) and wired preset page to persistent app settings.
@@ -2224,7 +2284,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Strengthened runtime robustness for people counting by adding OpenCV HOG detector fallback when YOLO/Torch is unavailable, and by improving gate-event fallback using D07/customer-count deltas when track crossings are sparse.
   - Pipeline mode selection now auto-applies immediately to prevent stale `Images Per Store` limits (e.g., stuck at 200), adds explicit `opencv_hog` detector option, and suppresses irrelevant TF_FRCNN warnings unless that detector is selected.
@@ -2238,7 +2298,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new required env vars. `opencv-python-headless` fallback is already part of runtime dependencies.
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Redesigned D07 session lifecycle to be entry/exit-track aware: exit events are counted only for tracks that previously entered, reducing outside-passer inflation.
   - Added session classification (CUSTOMER, STAFF, OUTSIDE_PASSER, INVALID) and persisted session proof fields (ntry_image, ntry_image_path, xit_image, xit_image_path).
@@ -2254,7 +2314,7 @@ Use this template for each new change:
   - None
 
 
-### 2026-03-19 | Commit pending
+### 2026-03-19 | committed
 - Summary:
   - Made sampling-mode disable one-click from dashboard banner: added Disable Sampling Now and Disable + Re-run actions so users can switch to full scan without navigating to Pipeline Configuration.
 - Changed Paths:
@@ -2292,7 +2352,7 @@ Use this template for each new change:
   - Added `cryptography` dependency to runtime and Docker requirements.
   - `iris-sync` now runs under compose profile `sync` (start with `docker compose --profile sync up -d iris-sync`).
 
-### 2026-03-20 | Commit pending
+### 2026-03-20 | committed
 - Summary:
   - Added a project sign-off security checklist covering key deletion, token rotation, and docker/cache cleanup.
 - Changed Paths:
@@ -2303,7 +2363,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-20 | Commit pending
+### 2026-03-20 | committed
 - Summary:
   - Added immediate progress logging (`flush=True`) to drive delta scheduler so long first-run syncs show visible start/completion state in log files and terminal output.
 - Changed Paths:
@@ -2314,7 +2374,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-20 | Commit pending
+### 2026-03-20 | committed
 - Summary:
   - Hardened Google Drive sync networking by adding retry/backoff for Drive list and file download requests to recover from transient `ChunkedEncodingError` and incomplete reads.
 - Changed Paths:
@@ -2326,7 +2386,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-23 | Commit pending
+### 2026-03-23 | committed
 - Summary:
   - Upgraded single-camera tracking to configurable `botsort`/`bytetrack`/`centroid` modes and added lightweight appearance embeddings for stronger D07 identity persistence.
   - Reworked strict gate-mode sessions into track-lifecycle state machine with explicit statuses (`ENTRY_CANDIDATE`, `ACTIVE_CUSTOMER`, `EXITED`, `STAFF`, `OUTSIDE_PASSER`, `INVALID_STATIC_OBJECT`) and richer session fields for dashboard validation.
@@ -2342,7 +2402,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional runtime tuning env vars supported: `IRIS_TRACKER_TYPE`, `IRIS_REID_WEIGHT`, `IRIS_REID_DISTANCE_THRESHOLD`, `IRIS_TRACK_MATCH_COST`, `IRIS_STAFF_SCORE_THRESHOLD`.
 
-### 2026-03-23 | Commit pending
+### 2026-03-23 | committed
 - Summary:
   - Added a validation-first D07 console in Store Drill-down with table-first workflow: top summary table, all-appearances table, unique-persons table, and rejected-cases tab.
   - Added manual verification filters (store/date/camera/role/person-id search), drive-link-first proof navigation, and preview selector for quick proof-image inspection.
@@ -2355,7 +2415,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-23 | Commit pending
+### 2026-03-23 | committed
 - Summary:
   - Fixed visit KPI denominator handling so conversion and bounce rates are based on validated entries, and both rates show `N/A` when there are no validated visits.
   - Updated strict D07 session validity so an entry-crossing customer session is treated as a validated visit even when it closes by timeout (not only exit crossing).
@@ -2371,7 +2431,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-26 | Commit pending
+### 2026-03-26 | committed
 - Summary:
   - Fixed QA feedback history prediction resolution to handle mixed `capture_date` formats (e.g., `YYYY-MM-DD` and `DD-MM-YYYY`) so per-track predicted labels are matched correctly instead of showing stale/`UNKNOWN`.
   - Normalized frame/track feedback key matching across pending table, save/update flow, retrain-queue lookup, and history rendering for stable feedback visibility.
@@ -2384,7 +2444,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-26 | Commit pending
+### 2026-03-26 | committed
 - Summary:
   - Removed the separate `Edit History Row` panel from Review History because it was confusing and not reliable for your workflow.
   - Kept Review History as a clean read-only audit view and directed all corrections through Pending Review (single-table correction path).
@@ -2396,7 +2456,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None
 
-### 2026-03-30 | Commit pending
+### 2026-03-30 | committed
 - Summary:
   - Added feedback-aware override memory for strict gate/session classification using confirmed QA feedback with hybrid keys:
     - exact frame-track key: `(capture_date, camera_id, filename, track_id)`
@@ -2415,7 +2475,7 @@ Use this template for each new change:
     - `IRIS_FEEDBACK_OVERRIDE_ENABLED` (default `1`)
     - `IRIS_STORE_REGISTRY_DB` (optional explicit DB path; defaults to inferred `data/store_registry.db`)
 
-### 2026-04-06 | Commit pending
+### 2026-04-06 | committed
 - Summary:
   - Added on-fly pipeline observability persistence (`onfly_pipeline_runs` + `onfly_pipeline_run_events`) with stage-level tracking for LIST, SKIP_CHECK, DOWNLOAD, YOLO, GPT, REPORT_WRITER, and DASHBOARD_INGEST.
   - Wired on-fly report indexing for dashboard/report discovery (`onfly_report_index`) and updated on-fly runtime to upsert report paths and ingestion markers per store/date.
@@ -2434,7 +2494,7 @@ Use this template for each new change:
   - No rebuild required.
   - New SQLite tables auto-created on startup: `onfly_pipeline_runs`, `onfly_pipeline_run_events`, `onfly_report_index`.
 
-### 2026-04-06 | Commit pending
+### 2026-04-06 | committed
 - Summary:
   - Updated `run_iris.bat` to auto-load `OPENAI_API_KEY` and `GOOGLE_API_KEY` from local key files when env vars are empty, so `onfly-run-now`, `onfly-benchmark`, `onfly-scheduler-start`, and `gpt-test-validation-now` run without manual key paste.
 - Changed Paths:
@@ -2445,7 +2505,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Optional local key-file env overrides supported: `OPENAI_KEY_FILE`, `GOOGLE_KEY_FILE`.
 
-### 2026-04-06 | Commit pending
+### 2026-04-06 | committed
 - Summary:
   - Reduced on-fly Drive slowness by making Google Drive listing stop early once `--max-images` is reached (instead of scanning full folder tree before slicing).
   - Added retry + shorter connect/read timeouts for Drive fetch operations and changed per-image download failures to continue gracefully (marking failed status/event) instead of aborting the entire run.
@@ -2459,7 +2519,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - New optional runtime env in launcher: `ONFLY_MAX_IMAGES` (default `100`).
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Fixed Pipeline Journey crash for store loading by using `StoreRecord.store_id` (instead of dict-style `.get`) in the store filter list.
   - Normalized on-fly walk-in export `date` to folder-derived pipeline date (`item.date_display`) to prevent GPT-hallucinated dates from breaking folder/image reconciliation.
@@ -2473,7 +2533,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars.
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Fixed on-fly session time assignment to use filename-derived timestamp (`HH:MM:SS`) as canonical event time instead of GPT-provided clock text.
   - Extended GPT prompt/schema for explicit event semantics (`Event Type`, `Direction Confidence`, `Match Fingerprint`) while keeping GPT responsible for entry/exit/inside semantics.
@@ -2493,7 +2553,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - SQLite migration auto-adds new columns to `onfly_walkin_sessions` on startup.
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Cleaned test-store on-fly export directory to keep only canonical files:
     - `onfly_image_results.csv`
@@ -2508,7 +2568,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - If CSV is open/locked, run now fails fast with a clear message instead of generating extra files.
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Added one-click **Restore Selected Run To Canonical Files** action in `Operations > Pipeline Journey`.
   - Restore action rebuilds and overwrites only:
@@ -2524,7 +2584,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars or services.
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Fixed Pipeline Journey runtime crash source by confirming `StoreRecord` access path in the page store filter logic (`s.store_id`), avoiding dict-style `.get` access.
   - Renamed Pipeline page label and header from `Pipeline Journey` to `Maual data sync of IRIS` in Operations navigation.
@@ -2537,7 +2597,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new runtime dependencies.
 
-### 2026-04-07 | Commit pending
+### 2026-04-07 | committed
 - Summary:
   - Updated GPT retail prompt for on-fly pipeline with explicit manager staff rule:
     - white shirt + black pant/trouser should be treated as Staff.
@@ -2552,7 +2612,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - No new env vars.
 
-### 2026-04-13 | Commit pending
+### 2026-04-13 | committed
 - Summary:
   - Updated `Operations > Maual data sync of IRIS` run form to support complete-folder processing from web UI.
   - Added `Max Images (0 = full folder)` control so users can run uncapped scans without PowerShell commands.
@@ -2566,7 +2626,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - None. UI-only behavior change; pipeline backend unchanged.
 
-### 2026-04-13 | Commit pending
+### 2026-04-13 | committed
 - Summary:
   - Added web-only go-live migration checklist for moving IRIS to a complete browser-operated system (no Docker on business-user machines).
   - Checklist covers runtime split, managed infra, auth, source connectors, pipeline idempotency/versioning, observability, reporting, security, and release gates.
@@ -2578,7 +2638,7 @@ Use this template for each new change:
 - Infra/Config Impact:
   - Documentation only.
 
-### 2026-04-24 | Commit pending
+### 2026-04-24 | committed
 - Summary:
   - Hardened no-Docker SQLite startup so repeated config reads do not rewrite schema state on every call, which was blocking local web/scheduler coexistence.
   - Added a core-schema fast path plus per-process init cache to reduce lock pressure during no-Docker startup.

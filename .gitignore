@@ -38,3 +38,14 @@ run-iris-normal.local.ps1
 # Local env files (secrets)
 .env
 .env.local
+
+# Frontend build artifacts and dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/build_err*.txt
+
+# Runtime logs and PID files
+deploy/no_docker/runtime_logs/
+
+# Claude internal settings
+.claude/settings.local.json
