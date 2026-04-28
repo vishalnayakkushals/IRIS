@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
-def _now() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
 
 async def insert_run_log(
@@ -112,6 +112,17 @@ async def get_recent_runs(limit: int = 50) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(stmt)
         return [dict(r) for r in result.mappings().all()]
+
+
+async def get_run_by_id(run_id: str) -> dict[str, Any] | None:
+    from backend.app.db.canonical_metadata import pipeline_run_log
+    from backend.app.db.session import AsyncSessionLocal
+
+    stmt = select(pipeline_run_log).where(pipeline_run_log.c.run_id == run_id).limit(1)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(stmt)
+        row = result.mappings().first()
+        return dict(row) if row else None
 
 
 async def upsert_track_sessions(sessions: list[dict[str, Any]]) -> None:

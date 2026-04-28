@@ -4,10 +4,9 @@
 
 - Current live local app at the time of this inventory:
   - `http://localhost:8767` = active FastAPI + React app
-  - `http://localhost:8765` = deprecated Streamlit fallback
 - Recommended end-state:
   - Keep only `http://localhost:8767` as the product app.
-  - Treat `http://localhost:8765` as legacy Streamlit and retire it after parity and migration.
+  - Retire legacy Streamlit paths after production handoff.
 - "Brain must not be touched" boundary:
   - Keep these logic engines intact and reuse them from the new platform:
     - `src/iris/iris_analysis.py`
@@ -140,7 +139,6 @@ If the goal is one platform only:
 - Move all management-critical reads/writes to Postgres-backed FastAPI routes.
 - Keep the brain modules under `src/iris/` as callable engines only.
 - Once parity is proven:
-  - stop daily use of `8765`
   - remove Streamlit-only platform code gradually
   - keep only export compatibility where the business still needs CSV downloads
 

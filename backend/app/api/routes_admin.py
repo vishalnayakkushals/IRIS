@@ -10,6 +10,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
@@ -66,6 +67,16 @@ async def _log_activity(actor_email: str, action_code: str, store_id: str = "", 
 _STORE_MASTER_HEADER_ALIASES = {
     "storeid": "store_id",
     "store_id": "store_id",
+    "storename": "store_name",
+    "store_name": "store_name",
+    "outletname": "store_name",
+    "outlet_name": "store_name",
+    "branch": "store_name",
+    "branchname": "store_name",
+    "branch_name": "store_name",
+    "locationname": "store_name",
+    "location_name": "store_name",
+    "name": "store_name",
     "shortcode": "short_code",
     "short_code": "short_code",
     "gofrugalname": "gofrugal_name",
@@ -94,14 +105,65 @@ def _normalize_store_master_header(value: str) -> str:
     return _STORE_MASTER_HEADER_ALIASES.get(compact, _STORE_MASTER_HEADER_ALIASES.get(compact.replace("_", ""), compact))
 
 
+def _clean_store_master_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalized_store_identity(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _clean_store_master_value(value).lower())
+
+
+def _looks_like_email(value: str) -> bool:
+    return "@" in value and "." in value.split("@", 1)[-1]
+
+
+def _make_store_id_seed(*values: Any) -> str:
+    for value in values:
+        cleaned = _clean_store_master_value(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _generate_store_id(*values: Any) -> str:
+    seed = _make_store_id_seed(*values)
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", seed).upper()
+    if not normalized:
+        return ""
+    return normalized[:24]
+
+
+def _placeholder_store_email(store_id: str) -> str:
+    local = re.sub(r"[^a-z0-9]+", "-", store_id.lower()).strip("-") or "store"
+    return f"{local}@iris.local"
+
+
+def _store_master_row_has_data(row: dict[str, str]) -> bool:
+    keys = ("store_id", "store_name", "short_code", "gofrugal_name", "outlet_id", "store_email")
+    return any(_clean_store_master_value(row.get(key, "")) for key in keys)
+
+
+def _register_store_identity(identity_map: dict[str, str], value: Any, store_id: str) -> None:
+    key = _normalized_store_identity(value)
+    if key and key not in identity_map:
+        identity_map[key] = store_id
+
+
 def _parse_store_master_upload(content: bytes, filename: str) -> list[dict[str, str]]:
     text = content.decode("utf-8-sig")
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         return []
 
-    delimiter = "\t" if filename.lower().endswith(".tsv") or "\t" in lines[0] else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+    sample = "\n".join(lines[:5])
+    if filename.lower().endswith(".tsv"):
+        dialect = csv.excel_tab
+    else:
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+        except csv.Error:
+            dialect = csv.excel_tab if "\t" in lines[0] else csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
     if not reader.fieldnames:
         return []
 
@@ -113,8 +175,8 @@ def _parse_store_master_upload(content: bytes, filename: str) -> list[dict[str, 
             if not key:
                 continue
             original_key = reader.fieldnames[index]
-            row[key] = str(raw_row.get(original_key, "") or "").strip()
-        if str(row.get("store_id", "")).strip():
+            row[key] = _clean_store_master_value(raw_row.get(original_key, ""))
+        if _store_master_row_has_data(row):
             rows.append(row)
     return rows
 
@@ -780,7 +842,8 @@ async def list_activity(
 # ---------------------------------------------------------------------------
 
 class StoreMasterRow(BaseModel):
-    store_id: str
+    store_id: str = ""
+    store_name: str = ""
     short_code: str = ""
     gofrugal_name: str = ""
     outlet_id: str = ""
@@ -807,11 +870,89 @@ async def list_store_master_endpoint(_: str = Depends(get_current_user)) -> list
 async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(get_current_user)) -> dict:
     now = _now()
     processed = 0
+    created_stores = 0
+    matched_existing = 0
+    generated_store_ids = 0
     async with AsyncSessionLocal() as session:
         try:
+            identity_map: dict[str, str] = {}
+
+            existing_stores = await session.execute(select(stores))
+            for store_row in existing_stores.mappings().all():
+                store_id = str(store_row["store_id"])
+                _register_store_identity(identity_map, store_id, store_id)
+                _register_store_identity(identity_map, store_row.get("store_name", ""), store_id)
+                _register_store_identity(identity_map, store_row.get("email", ""), store_id)
+
+            existing_master = await session.execute(select(store_master))
+            for master_row in existing_master.mappings().all():
+                store_id = str(master_row["store_id"])
+                _register_store_identity(identity_map, master_row.get("short_code", ""), store_id)
+                _register_store_identity(identity_map, master_row.get("gofrugal_name", ""), store_id)
+                _register_store_identity(identity_map, master_row.get("outlet_id", ""), store_id)
+
             for row in rows:
+                explicit_store_id = _clean_store_master_value(row.store_id)
+                inferred_store_id = explicit_store_id or identity_map.get(_normalized_store_identity(row.store_name), "")
+                if not inferred_store_id:
+                    for candidate in (row.short_code, row.gofrugal_name, row.outlet_id):
+                        inferred_store_id = identity_map.get(_normalized_store_identity(candidate), "")
+                        if inferred_store_id:
+                            matched_existing += 1
+                            break
+                if not inferred_store_id:
+                    inferred_store_id = _generate_store_id(row.short_code, row.outlet_id, row.store_name, row.gofrugal_name)
+                    if inferred_store_id:
+                        generated_store_ids += 1
+                if not inferred_store_id:
+                    raise HTTPException(status_code=422, detail="Could not infer a store ID from one or more rows.")
+
+                store_display_name = (
+                    _clean_store_master_value(row.store_name)
+                    or _clean_store_master_value(row.gofrugal_name)
+                    or inferred_store_id
+                )
+                store_contact_email = _clean_store_master_value(row.store_email)
+
+                existing_store = await session.execute(
+                    select(stores).where(stores.c.store_id == inferred_store_id)
+                )
+                existing_store_row = existing_store.mappings().first()
+                if existing_store_row:
+                    update_store_values: dict[str, Any] = {"updated_at": now}
+                    current_name = _clean_store_master_value(existing_store_row.get("store_name", ""))
+                    current_email = _clean_store_master_value(existing_store_row.get("email", ""))
+                    if store_display_name and (not current_name or current_name == inferred_store_id or current_name != store_display_name):
+                        update_store_values["store_name"] = store_display_name
+                    if store_contact_email and _looks_like_email(store_contact_email) and (not current_email or current_email.endswith("@iris.local")):
+                        update_store_values["email"] = store_contact_email
+                    if len(update_store_values) > 1:
+                        await session.execute(
+                            update(stores).where(stores.c.store_id == inferred_store_id).values(**update_store_values)
+                        )
+                else:
+                    await session.execute(
+                        insert(stores).values(
+                            store_id=inferred_store_id,
+                            store_name=store_display_name,
+                            email=store_contact_email if _looks_like_email(store_contact_email) else _placeholder_store_email(inferred_store_id),
+                            drive_folder_url="",
+                            sync_enabled=False,
+                            sync_interval_hours=1,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    created_stores += 1
+
+                _register_store_identity(identity_map, inferred_store_id, inferred_store_id)
+                _register_store_identity(identity_map, store_display_name, inferred_store_id)
+                _register_store_identity(identity_map, row.short_code, inferred_store_id)
+                _register_store_identity(identity_map, row.gofrugal_name, inferred_store_id)
+                _register_store_identity(identity_map, row.outlet_id, inferred_store_id)
+
                 existing = await session.execute(
-                    select(store_master.c.store_id).where(store_master.c.store_id == row.store_id)
+                    select(store_master.c.store_id).where(store_master.c.store_id == inferred_store_id)
                 )
                 vals = dict(
                     short_code=row.short_code,
@@ -829,11 +970,11 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
                 )
                 if existing.first():
                     await session.execute(
-                        update(store_master).where(store_master.c.store_id == row.store_id).values(**vals)
+                        update(store_master).where(store_master.c.store_id == inferred_store_id).values(**vals)
                     )
                 else:
                     await session.execute(
-                        insert(store_master).values(store_id=row.store_id, **vals)
+                        insert(store_master).values(store_id=inferred_store_id, **vals)
                     )
                 processed += 1
             await session.commit()
@@ -841,10 +982,20 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
             await session.rollback()
             raise HTTPException(
                 status_code=422,
-                detail="Store Master upload failed. Make sure every store_id already exists in Store Mapping first.",
+                detail="Store Master upload failed because one or more rows could not be normalized safely.",
             ) from exc
-    await _log_activity(actor, "store_master.upsert", "", {"count": processed})
-    return {"processed": processed}
+    await _log_activity(actor, "store_master.upsert", "", {
+        "count": processed,
+        "created_stores": created_stores,
+        "matched_existing": matched_existing,
+        "generated_store_ids": generated_store_ids,
+    })
+    return {
+        "processed": processed,
+        "created_stores": created_stores,
+        "matched_existing": matched_existing,
+        "generated_store_ids": generated_store_ids,
+    }
 
 
 @router.post("/store-master/upload", status_code=status.HTTP_201_CREATED)
@@ -860,7 +1011,7 @@ async def upload_store_master_file(file: UploadFile, actor: str = Depends(get_cu
         raise HTTPException(status_code=422, detail="File must be UTF-8 encoded") from exc
 
     if not parsed_rows:
-        raise HTTPException(status_code=422, detail="No valid rows found. Include a store_id column.")
+        raise HTTPException(status_code=422, detail="No recognizable store rows found. Include store name, short code, outlet ID, gofrugal name, or store ID columns.")
 
     rows = [StoreMasterRow(**row) for row in parsed_rows]
     return await upsert_store_master(rows, actor)

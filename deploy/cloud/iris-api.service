@@ -1,7 +1,7 @@
 [Unit]
 Description=IRIS FastAPI Server
 Documentation=https://github.com/your-org/iris
-After=network.target postgresql.service redis.service
+After=network.target postgresql.service
 Requires=postgresql.service
 
 [Service]

@@ -13,7 +13,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       "/api": {
-        target: "http://localhost:8766",
+        target: "http://localhost:8767",
         changeOrigin: true,
       },
     },
@@ -21,5 +21,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom", "axios"],
+          ui: ["@tremor/react", "lucide-react"],
+          charts: ["recharts"],
+        },
+      },
+    },
   },
 });

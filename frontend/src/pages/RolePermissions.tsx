@@ -66,7 +66,7 @@ function PermissionMatrix({
         </table>
       </div>
       <div className="flex justify-end">
-        <Button size="xs" icon={Save} loading={saving} onClick={save}>Save Permissions</Button>
+        <Button size="xs" color="blue" icon={Save} loading={saving} onClick={save}>Save Permissions</Button>
       </div>
     </div>
   );

@@ -1,73 +1,49 @@
 # IRIS No-Docker Deployment Pack
 
-> **Primary UI:** React + FastAPI at `http://localhost:8767` (port 8767).
-> Start with `python scripts/start_api_server.py`.
->
-> **Legacy UI:** Streamlit at port 8765 — kept only as a temporary fallback for operations not yet
-> migrated to React. Will be retired once full React parity is achieved.
+Single supported local runtime for IRIS:
 
-This folder prepares IRIS to run without Docker as:
+- FastAPI + React on `http://localhost:8767`
+- PostgreSQL as the primary database
+- browser-controlled sync and scheduler actions
 
-- FastAPI + React web app (primary, port 8767)
-- Streamlit web app (legacy, port 8765)
-- core scheduler worker
-- on-fly scheduler worker
-- browser-managed operations
+The official local startup path remains:
 
-## Runtime shape
+```text
+start_iris.bat
+```
 
-### Primary web app (React + FastAPI)
-- Startup script: `scripts/start_api_server.py`
-- Opens at `http://localhost:8767`
-- Features: Overview, Store Detail, Pipeline Scheduler, QA Review, Run Detail
+## Runtime Shape
 
-### Legacy web app (Streamlit — maintenance mode)
-- Startup script: `scripts/start_web_app.py`
-- Opens Streamlit on `IRIS_STREAMLIT_HOST:IRIS_STREAMLIT_PORT` (default 8765)
-- Used for admin operations not yet in React:
-  - Store configuration
-  - Employee management
-  - Model feedback / retraining
-  - Image viewer with annotations
+### Web app
+- Startup entry: `start_iris.bat`
+- Internal launcher: `start_iris.ps1`
+- Server command path: `scripts/start_api_server.py`
+- URL: `http://localhost:8767`
 
-### Core scheduler worker
-- Startup script: `scripts/start_scheduler_worker_service.py`
-- Runs the general queue/retrain/predict scheduler
-- Scheduler controls remain in browser under:
-  - `Access > Config > Scheduler`
+### Browser-controlled sync
+- Auto-sync stays controlled from the web app
+- Scheduler visibility stays in the React Scheduler page
+- Manual sync, run list, run detail, and stage timeline all stay inside the same app
 
-### On-fly scheduler worker
-- Startup script: `scripts/start_onfly_scheduler_service.py`
-- Reads store/source/hourly/nightly config from DB
-- Scheduler controls remain in browser under:
-  - `Operations > Manual data sync of IRIS`
-
-## Persistent paths
+## Persistent Paths
 
 Recommended VM layout:
 
 - App code: `/opt/iris/app`
 - Data: `/opt/iris/data`
-- DB: `/opt/iris/data/store_registry.db`
-- Exports: `/opt/iris/data/exports/current`
-- Stores: `/opt/iris/data/stores`
-- Employee assets: `/opt/iris/data/employee_assets`
 - Env file: `/opt/iris/shared/iris.env`
 
-The startup scripts will also work with repo-local defaults if no env file is provided.
+The startup scripts also work with repo-local defaults when needed.
 
-## Environment and secrets
+## Environment And Secrets
 
-1. Copy:
-   - `deploy/no_docker/.env.example`
-2. Save as:
-   - `/opt/iris/shared/iris.env`
-3. Set:
-   - `IRIS_ENV_FILE=/opt/iris/shared/iris.env`
+1. Copy `deploy/no_docker/.env.example`
+2. Save as `/opt/iris/shared/iris.env`
+3. Set `IRIS_ENV_FILE=/opt/iris/shared/iris.env`
 
-Secrets should live in the env file or in your VM secret manager.
+Secrets should remain in the env file or your VM secret manager.
 
-## Install dependencies
+## Install Dependencies
 
 From repo root:
 
@@ -76,6 +52,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
 Windows PowerShell:
@@ -85,72 +62,47 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
-## Direct startup commands
-
-### Web app
+## Direct Startup Command
 
 ```bash
 export IRIS_ENV_FILE=/opt/iris/shared/iris.env
-python scripts/start_web_app.py
+python scripts/start_api_server.py
 ```
 
-### Core scheduler
+## Required Files
 
-```bash
-export IRIS_ENV_FILE=/opt/iris/shared/iris.env
-python scripts/start_scheduler_worker_service.py
-```
-
-### On-fly scheduler
-
-```bash
-export IRIS_ENV_FILE=/opt/iris/shared/iris.env
-python scripts/start_onfly_scheduler_service.py
-```
-
-## Files and services for go-live
-
-### Required files
-- `scripts/start_web_app.py`
-- `scripts/start_scheduler_worker_service.py`
-- `scripts/start_onfly_scheduler_service.py`
+- `start_iris.bat`
+- `start_iris.ps1`
+- `scripts/start_api_server.py`
+- `scripts/prepare_production_db.py`
 - `src/iris/runtime_bootstrap.py`
 - `deploy/no_docker/.env.example`
-- `deploy/no_docker/linux/*.service`
-- `deploy/no_docker/windows/install_nssm_services.ps1`
 
-### Required services
-- `iris-web`
-- `iris-scheduler`
-- `iris-onfly-scheduler`
+## Browser Ops State
 
-## Browser-only ops state
+After startup:
 
-After services are running:
-
-- on-fly source/schedule is managed in browser
-- scheduler next run / last run / active schedule are visible in browser
+- on-fly source and schedule are managed in browser
+- scheduler next run, last run, and active schedule are visible in browser
 - manual data sync remains browser-triggerable
 
-## Recommended VM go-live checklist
+## Recommended Go-Live Checklist
 
-1. Python installed and venv created
+1. Python installed and runtime verified
 2. `requirements.txt` and `backend/requirements.txt` installed
-3. `IRIS_ENV_FILE` + `.env.local` created and secured (POSTGRES_URL, JWT_SECRET, CORS_ORIGINS)
-4. Postgres 17 running, `alembic upgrade head` applied
-5. writable persistent data directory created
-6. FastAPI + React service started (`python scripts/start_api_server.py`)
-7. core scheduler service installed
-8. on-fly scheduler service installed
-9. port `8767` (React/FastAPI) exposed behind reverse proxy — primary entry point
-10. port `8765` (Streamlit) exposed internally only — admin fallback
-11. Google/OpenAI keys validated
-12. first browser login at port 8767 + scheduler status verified
+3. `.env.local` or `IRIS_ENV_FILE` created and secured
+4. Postgres 17 running and `python scripts/prepare_production_db.py` applied
+5. Writable persistent data directory created
+6. FastAPI + React started through `start_iris.bat` or `python scripts/start_api_server.py`
+7. Port `8767` exposed behind reverse proxy
+8. Google/OpenAI keys validated
+9. First browser login at `8767` verified
 
 ## Notes
 
 - No Docker is required for this deployment path.
-- SQLite remains acceptable for small/single-host deployment, but Postgres is recommended for larger cloud production later.
-- Browser-only ops means scheduling and on-fly job control happen in UI; secrets still remain server-side.
+- The supported operator experience is now the single React + FastAPI app on `8767`.
+- Browser-only ops means scheduling and on-fly job control happen in UI while secrets stay server-side.

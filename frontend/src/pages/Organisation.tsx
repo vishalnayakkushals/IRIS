@@ -17,7 +17,7 @@ const FIELDS: { key: string; label: string; type?: string; placeholder?: string 
 ];
 
 const PASSWORD_FIELDS: { key: string; label: string }[] = [
-  { key: "streamlit_password", label: "Legacy Streamlit Password" },
+  { key: "streamlit_password", label: "Fallback Admin Password" },
   { key: "admin_password_hint", label: "Admin Password Hint (display only)" },
 ];
 
@@ -93,7 +93,7 @@ export default function Organisation() {
       </Card>
 
       <div className="flex justify-end">
-        <Button icon={Save} loading={saving} onClick={save}>Save All Settings</Button>
+        <Button color="blue" icon={Save} loading={saving} onClick={save}>Save All Settings</Button>
       </div>
     </div>
   );

@@ -27,10 +27,12 @@ def main() -> None:
     paths = [str(repo_root), str(src_dir)]
     env["PYTHONPATH"] = os.pathsep.join(paths) if not existing_pythonpath else f"{os.pathsep.join(paths)}{os.pathsep}{existing_pythonpath}"
     env.setdefault("API_HOST", "0.0.0.0")
-    env.setdefault("API_PORT", "8766")
+    env.setdefault("API_PORT", "8767")
+    env.setdefault("API_RELOAD", "0")
 
     host = env["API_HOST"]
     port = env["API_PORT"]
+    reload_enabled = str(env.get("API_RELOAD", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
     command = [
         sys.executable,
@@ -39,9 +41,10 @@ def main() -> None:
         "backend.app.main:app",
         "--host", host,
         "--port", port,
-        "--reload",
     ]
-    print(f"[iris-api] env={env_file or 'none'} db={runtime['db_path']} port={port}")
+    if reload_enabled:
+        command.append("--reload")
+    print(f"[iris-api] env={env_file or 'none'} db={runtime['db_path']} port={port} reload={reload_enabled}")
     raise SystemExit(subprocess.call(command, cwd=str(repo_root), env=env))
 
 

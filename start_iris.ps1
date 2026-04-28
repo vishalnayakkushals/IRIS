@@ -79,8 +79,11 @@ if ($env:API_PORT -and $env:API_PORT -ne "8767") {
 }
 
 $env:PYTHONPATH = "$PSScriptRoot;$PSScriptRoot\src"
+$env:API_HOST = "0.0.0.0"
+$env:API_PORT = "8767"
+$env:API_RELOAD = "0"
 
-# ── Start uvicorn ─────────────────────────────────────────────────────────────
+# ── Start supported API launcher ──────────────────────────────────────────────
 Write-Host ""
 Write-Host "Starting server..." -ForegroundColor Green
 Write-Host "  URL:  http://localhost:8767" -ForegroundColor White
@@ -90,4 +93,4 @@ Write-Host ""
 Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
-& $pythonExe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8767 --reload
+& $pythonExe "$PSScriptRoot\scripts\start_api_server.py"

@@ -5,6 +5,7 @@ import { Upload, RefreshCw } from "lucide-react";
 
 const COLUMNS = [
   { key: "store_id", label: "Store ID", required: true },
+  { key: "store_name", label: "Store Name" },
   { key: "short_code", label: "Short Code" },
   { key: "gofrugal_name", label: "Gofrugal Name" },
   { key: "outlet_id", label: "Outlet ID" },
@@ -21,6 +22,16 @@ const COLUMNS = [
 const HEADER_ALIASES: Record<string, string> = {
   storeid: "store_id",
   store_id: "store_id",
+  storename: "store_name",
+  store_name: "store_name",
+  outletname: "store_name",
+  outlet_name: "store_name",
+  branch: "store_name",
+  branchname: "store_name",
+  branch_name: "store_name",
+  locationname: "store_name",
+  location_name: "store_name",
+  name: "store_name",
   shortcode: "short_code",
   short_code: "short_code",
   gofrugalname: "gofrugal_name",
@@ -75,11 +86,22 @@ function splitDelimitedLine(line: string, delimiter: string): string[] {
   return cells;
 }
 
+function hasUsefulStoreMasterData(row: Record<string, string>): boolean {
+  return [
+    row.store_id,
+    row.store_name,
+    row.short_code,
+    row.gofrugal_name,
+    row.outlet_id,
+    row.store_email,
+  ].some((value) => String(value || "").trim());
+}
+
 function parseStoreMaster(text: string): any[] {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
   if (!lines.length) return [];
 
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
+  const delimiter = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
   const headers = splitDelimitedLine(lines[0], delimiter).map(normalizeHeader);
 
   return lines
@@ -92,7 +114,7 @@ function parseStoreMaster(text: string): any[] {
       });
       return row;
     })
-    .filter((row) => String(row.store_id || "").trim());
+    .filter((row) => hasUsefulStoreMasterData(row));
 }
 
 export default function StoreMaster() {
@@ -137,12 +159,18 @@ export default function StoreMaster() {
     if (!preview.length) return;
     setImporting(true);
     try {
+      let response;
       if (selectedFile) {
-        await adminUploadStoreMasterFile(selectedFile);
+        response = await adminUploadStoreMasterFile(selectedFile);
       } else {
-        await adminUpsertStoreMaster(preview);
+        response = await adminUpsertStoreMaster(preview);
       }
-      flash(`${preview.length} row(s) imported`);
+      const meta = response?.data || {};
+      const createdStores = Number(meta.created_stores || 0);
+      const matchedExisting = Number(meta.matched_existing || 0);
+      const generatedStoreIds = Number(meta.generated_store_ids || 0);
+      const processed = Number(meta.processed || preview.length);
+      flash(`${processed} row(s) imported${createdStores ? `, ${createdStores} store(s) created` : ""}${matchedExisting ? `, ${matchedExisting} mapped automatically` : ""}${generatedStoreIds ? `, ${generatedStoreIds} ID(s) generated` : ""}`);
       setRawInput(""); setPreview([]); setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
@@ -170,8 +198,8 @@ export default function StoreMaster() {
 
       {tab === "import" && (
         <Card className="p-5 space-y-4">
-          <p className="text-sm text-slate-600">Upload a `.csv` or `.tsv` file, or paste data below. First row must contain headers like: <span className="font-mono text-xs">{COLUMNS.map((c) => c.key).join(", ")}</span></p>
-          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">Every <span className="font-medium">store_id</span> in this file must already exist in <span className="font-medium">Store Mapping</span>.</p>
+          <p className="text-sm text-slate-600">Upload a `.csv` or `.tsv` file, or paste data below. The importer will try to recognise store rows from headers such as <span className="font-mono text-xs">store_id, store_name, outlet_id, short_code, gofrugal_name</span> and clean common variants automatically.</p>
+          <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">System-ready import is enabled. If a row does not exactly match Store Mapping, IRIS will try to map it using store name, short code, gofrugal name, and outlet ID. If needed, it will create the missing store shell automatically so import does not get blocked.</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={fileInputRef}
@@ -193,10 +221,10 @@ export default function StoreMaster() {
           )}
           <textarea
             className="w-full border rounded px-3 py-2 text-sm font-mono h-48 focus:outline-none focus:ring-2 focus:ring-blue-300"
-            placeholder={"store_id,short_code,gofrugal_name,...\nBLRRRN,RRN,Kushals Jewellery RR Nagar,..."}
-            value={rawInput}
-            onChange={(e) => {
-              setSelectedFile(null);
+              placeholder={"store_id,store_name,short_code,gofrugal_name,...\nBLRRRN,BLR - RR NAGAR,RRN,Kushals Jewellery RR Nagar,..."}
+              value={rawInput}
+              onChange={(e) => {
+                setSelectedFile(null);
               handleRawInputChange(e.target.value);
             }}
           />

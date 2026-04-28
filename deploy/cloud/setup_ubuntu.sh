@@ -31,7 +31,6 @@ apt-get install -y \
     python3.11-dev \
     build-essential \
     nginx \
-    redis-server \
     curl \
     git \
     ca-certificates \
@@ -175,7 +174,7 @@ fi
 # 9. Systemd services
 # =============================================================================
 info "Installing systemd service units..."
-for svc_file in iris-api.service iris-web.service iris-celery-worker.service; do
+for svc_file in iris-api.service; do
     if [[ -f "${SCRIPT_DIR}/${svc_file}" ]]; then
         cp "${SCRIPT_DIR}/${svc_file}" /etc/systemd/system/
         info "  Installed /etc/systemd/system/${svc_file}"
@@ -190,13 +189,10 @@ systemctl daemon-reload
 # =============================================================================
 info "Enabling and starting infrastructure services..."
 systemctl enable --now nginx
-systemctl enable --now redis-server
 systemctl enable --now postgresql
 
-# Enable IRIS services (don't start yet — env file must be populated first)
+# Enable IRIS service (don't start yet — env file must be populated first)
 systemctl enable iris-api.service  || true
-systemctl enable iris-web.service  || true
-systemctl enable iris-celery-worker.service || true
 
 # =============================================================================
 # 11. env file placeholder
@@ -233,21 +229,21 @@ echo "  3. Edit the env file:"
 echo "     nano ${IRIS_SHARED_DIR}/iris.env"
 echo "     (set POSTGRES_URL, JWT_SECRET, OPENAI_API_KEY, GOOGLE_API_KEY, etc.)"
 echo ""
-echo "  4. Run Alembic migrations:"
+echo "  4. Prepare the database schema:"
 echo "     cd ${IRIS_APP_DIR}"
 echo "     IRIS_ENV_FILE=${IRIS_SHARED_DIR}/iris.env \\"
-echo "       ${IRIS_VENV}/bin/python -m alembic upgrade head"
+echo "       ${IRIS_VENV}/bin/python scripts/prepare_production_db.py"
 echo ""
 echo "  5. Start IRIS services:"
-echo "     systemctl start iris-api iris-web iris-celery-worker"
+echo "     systemctl start iris-api"
 echo ""
 echo "  6. Verify:"
-echo "     systemctl status iris-api iris-web iris-celery-worker"
+echo "     systemctl status iris-api"
 echo "     journalctl -u iris-api -f"
 echo ""
 echo "  7. SSL (recommended):"
 echo "     apt install certbot python3-certbot-nginx"
 echo "     certbot --nginx -d your.domain.com"
 echo ""
-echo -e "${YELLOW}Port map:  8765 Streamlit | 8766 FastAPI+React | 5432 PG (internal) | 6379 Redis (internal)${NC}"
+echo -e "${YELLOW}Port map:  8767 FastAPI+React | 5432 PG (internal)${NC}"
 echo ""

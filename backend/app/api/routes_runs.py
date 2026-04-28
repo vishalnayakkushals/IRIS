@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.app.auth.dependencies import get_current_user
-from backend.app.db.pipeline_log import get_recent_runs
+from backend.app.db.pipeline_log import get_recent_runs, get_run_by_id
 from backend.app.models.runs import RunListResponse, RunRecord
 
 router = APIRouter()
@@ -38,8 +38,7 @@ async def get_run(
     run_id: str,
     _email: str = Depends(get_current_user),
 ) -> RunRecord:
-    rows = await get_recent_runs(limit=200)
-    for r in rows:
-        if r.get("run_id") == run_id:
-            return _to_run_record(r)
+    row = await get_run_by_id(run_id)
+    if row:
+        return _to_run_record(row)
     raise HTTPException(status_code=404, detail="Run not found")

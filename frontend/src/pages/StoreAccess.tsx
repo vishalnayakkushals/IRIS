@@ -108,7 +108,7 @@ export default function StoreAccess() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <Button icon={Save} loading={saving} onClick={save}>Save Access</Button>
+              <Button color="blue" icon={Save} loading={saving} onClick={save}>Save Access</Button>
               <span className="text-sm text-slate-400">{access.length} store(s) selected</span>
             </div>
           </>

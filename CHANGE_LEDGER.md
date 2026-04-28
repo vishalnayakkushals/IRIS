@@ -11,6 +11,65 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-04-29 - Production Hardening And Demo Readiness For 8767
+- Changed paths:
+  - `frontend/src/App.tsx`
+  - `frontend/src/pages/Organisation.tsx`
+  - `frontend/src/pages/StoreAccess.tsx`
+  - `frontend/src/pages/RolePermissions.tsx`
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `frontend/vite.config.ts`
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_runs.py`
+  - `backend/app/db/pipeline_log.py`
+  - `scripts/start_api_server.py`
+  - `scripts/prepare_production_db.py`
+  - `start_iris.ps1`
+  - `deploy/cloud/README.md`
+  - `deploy/cloud/iris-api.service`
+  - `deploy/cloud/iris-web.service`
+  - `deploy/cloud/iris-celery-worker.service`
+  - `deploy/cloud/nginx.conf`
+  - `deploy/cloud/setup_ubuntu.sh`
+  - `deploy/cloud/.env.production.example`
+  - `deploy/cloud/postgres_init.sql`
+  - `deploy/no_docker/README.md`
+  - `deploy/no_docker/.env.example`
+  - `docs/operations/deployment-runbook.md`
+  - `docs/operations/platform_data_cutover_inventory.md`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-BInep-HX.js`
+  - `backend/app/static/assets/CameraZones-BHf3kiXl.js`
+  - `backend/app/static/assets/charts-CbBUp6H1.js`
+  - `backend/app/static/assets/CustomerJourneys-B59PNl53.js`
+  - `backend/app/static/assets/EmployeeManagement-CI6ClsUV.js`
+  - `backend/app/static/assets/FrameReview-DK3x01Oy.js`
+  - `backend/app/static/assets/index-BndMtQ5X.js`
+  - `backend/app/static/assets/index-CM59RqJG.css`
+  - `backend/app/static/assets/Login-BSGiCzWu.js`
+  - `backend/app/static/assets/ModelAccuracy-CX4-bh90.js`
+  - `backend/app/static/assets/ModelFeedback-CT5zEsGp.js`
+  - `backend/app/static/assets/Organisation-DSi28KoC.js`
+  - `backend/app/static/assets/Overview-DAlodMlV.js`
+  - `backend/app/static/assets/QualityFeedback-CaKaFlMg.js`
+  - `backend/app/static/assets/ReportsPage-BfvlFl7U.js`
+  - `backend/app/static/assets/RolePermissions-N41hJeO4.js`
+  - `backend/app/static/assets/RunDetail-DpPTHYU1.js`
+  - `backend/app/static/assets/SchedulerDashboard-PnLIB7ZA.js`
+  - `backend/app/static/assets/StoreAccess-Dvm3q9UY.js`
+  - `backend/app/static/assets/StoreDetail-8NL5fH3S.js`
+  - `backend/app/static/assets/StoreMapping-CTK6aTSK.js`
+  - `backend/app/static/assets/StoreMaster-CJ6irXP5.js`
+  - `backend/app/static/assets/ui-_P2Jp0dg.js`
+  - `backend/app/static/assets/UsersPage-DtFQk7-t.js`
+  - `backend/app/static/assets/vendor-CKiCRchC.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Hardened the single supported `8767` runtime by removing stale `8766` defaults from the API launcher, making the standard `start_iris.bat` path call the supported API server script without hot reload, and tightening run-detail lookup to query exact run IDs.
+  - Made the React app more production-shaped by route-splitting the app, adding manual chunk output, and fixing the washed-out admin save buttons so management-facing forms remain clearly usable in the demo.
+  - Upgraded Store Master import to be business-friendly: CSV/TSV parsing now recognises messy headers, infers store matches from store name / short code / gofrugal name / outlet ID, and can create missing store shells automatically instead of blocking the operator.
+  - Rewrote deployment-facing docs and cloud artifacts around one supported production story: FastAPI + React on `8767`, PostgreSQL only, and schema bootstrap through `scripts/prepare_production_db.py` instead of Alembic.
+
 ### 2026-04-28 - Startup Hardening For Port 8767
 - Changed paths:
   - `start_iris.ps1`
@@ -130,6 +189,7 @@ It records what changed, where it changed, and why.
 | `backend/app/db/session.py` | SQLAlchemy async engine with production pool settings (pool_size=20, max_overflow=20, pool_pre_ping, READ COMMITTED). |
 | `backend/migrations/versions/001_initial_schema_with_indexes.py` | Alembic migration: full production schema for 150-store scale with partitioned tables and production indexes. |
 | `scripts/migrate_sqlite_to_postgres.py` | One-time SQLite → Postgres migration with datetime parsing, bool casting, and savepoint-per-row error isolation. |
+| `scripts/prepare_production_db.py` | Production-safe Postgres schema bootstrapper that creates canonical tables and the optional track-session table without relying on Alembic. |
 | `deploy/cloud/` | Ubuntu cloud deployment artifacts: setup script, postgres init, nginx config, systemd services, env template, README. |
 | `docs/operations/platform_data_cutover_inventory.md` | Inventory of live SQLite tables and CSV artifacts plus the recommended single-platform cutover path to FastAPI/React. |
 
@@ -162,7 +222,13 @@ cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
 powershell -ExecutionPolicy Bypass -File start_iris.ps1
 ```
 
-This kills any old process on port 8767, loads `.env.local`, sets `PYTHONPATH`, and starts uvicorn.
+This kills any old process on port 8767, loads `.env.local`, sets `PYTHONPATH`, and starts the supported API server script.
+
+For the supported API runtime, `start_iris.ps1` now calls:
+```powershell
+python scripts/start_api_server.py
+```
+with `API_RELOAD=0`, so the default local run behaves like the real app instead of a hot-reload-only dev session.
 
 ### Port Rules — Non-Negotiable
 
@@ -250,6 +316,13 @@ These columns ARE reflected in `backend/app/db/canonical_metadata.py` (the SQLAl
 
 If you need to add more columns: use `ALTER TABLE` directly via `psql`, then add the column to `canonical_metadata.py`. Do NOT use `alembic revision`.
 
+For fresh or production-style schema setup, use:
+```powershell
+python scripts/prepare_production_db.py
+```
+
+That script creates the canonical schema directly from `backend/app/db/canonical_metadata.py` and also ensures the optional `onfly_track_sessions` table exists.
+
 ### Login Credentials (Local Dev)
 
 ```
@@ -279,8 +352,9 @@ After ANY change to `frontend/src/**`:
 ```powershell
 cd frontend
 npm run build
-# Then copy build output:
-cp -r dist/. ../backend/app/static/
+Remove-Item ..\backend\app\static\assets\* -Force
+Copy-Item dist\index.html ..\backend\app\static\index.html -Force
+Copy-Item dist\assets\* ..\backend\app\static\assets\ -Force
 ```
 
 The built files in `backend/app/static/` ARE committed to git. The `frontend/dist/` folder is gitignored.
@@ -295,6 +369,7 @@ The built files in `backend/app/static/` ARE committed to git. The `frontend/dis
 | `backend/app/main.py` | FastAPI app entry point, registers all routers, starts auto-sync scheduler |
 | `backend/app/config.py` | All settings via env vars — reads from .env.local |
 | `backend/app/db/canonical_metadata.py` | SQLAlchemy table definitions — source of truth for DB schema |
+| `scripts/prepare_production_db.py` | Supported schema/bootstrap entry point for production-style Postgres setup |
 | `backend/app/api/routes_onfly.py` | Pipeline execution + background auto-sync loop |
 | `backend/app/api/routes_admin.py` | Admin CRUD, organisation settings, and Store Master CSV/TSV upload handling |
 | `frontend/src/api/client.ts` | All API calls from React — add new endpoints here |
@@ -308,6 +383,7 @@ The built files in `backend/app/static/` ARE committed to git. The `frontend/dis
 - Scheduler page must stay web-controlled; do not reintroduce fake Celery-only trigger buttons into the main demo path
 - Report tables should keep visible headers even when there is no data
 - Store Master uploads should use the backend upload endpoint for real CSV/TSV parsing, with paste import only as fallback
+- Store Master import is expected to recognise messy files and map rows by store name, short code, gofrugal name, or outlet ID before creating a safe missing-store shell if needed
 
 ### 2026-04-28 - Store Master Upload Fix
 - Changed paths:

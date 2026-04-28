@@ -64,5 +64,5 @@ GRANT  CONNECT ON DATABASE iris_db TO iris_user;
 \echo '-------------------------------------------------------------------'
 \echo 'IRIS Postgres init complete.'
 \echo 'Remember to update POSTGRES_URL in /opt/iris/shared/iris.env'
-\echo 'and run:  alembic upgrade head'
+\echo 'and run:  python scripts/prepare_production_db.py'
 \echo '-------------------------------------------------------------------'
