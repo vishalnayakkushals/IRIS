@@ -16,9 +16,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import insert, select, update
 
+from sqlalchemy import Integer, func, text
+
 from backend.app.auth.dependencies import get_current_user
 from backend.app.config import get_settings
-from backend.app.db.canonical_metadata import pipeline_run_log, store_sync_state, stores
+from backend.app.db.canonical_metadata import (
+    onfly_image_state,
+    onfly_pipeline_runs,
+    pipeline_run_log,
+    store_sync_state,
+    stores,
+)
 from backend.app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -286,6 +294,93 @@ async def trigger_onfly_sync(
         "status": "running",
         "message": f"Pipeline started for {store_id} — GPT: {'on' if body.gpt_enabled else 'off'}",
     }
+
+
+@router.get("/live-progress/{store_id}")
+async def get_live_progress(store_id: str, _: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Live pipeline progress — read from onfly_pipeline_runs (updated by pipeline in real-time)."""
+    async with AsyncSessionLocal() as session:
+        # Active or most recent run
+        run_result = await session.execute(
+            select(onfly_pipeline_runs)
+            .where(onfly_pipeline_runs.c.store_id == store_id)
+            .order_by(onfly_pipeline_runs.c.created_at.desc())
+            .limit(1)
+        )
+        run_row = run_result.mappings().first()
+
+        # Pending tasks (images queued but not yet processed)
+        from backend.app.db.canonical_metadata import onfly_task_queue
+        pending_result = await session.execute(
+            select(func.count()).where(
+                onfly_task_queue.c.store_id == store_id,
+                onfly_task_queue.c.status == "pending",
+            )
+        )
+        pending_count = pending_result.scalar() or 0
+
+    is_running = _active_runs.get(store_id) is not None
+    if run_row:
+        return {
+            "store_id": store_id,
+            "is_running": is_running,
+            "run_id": run_row["run_id"],
+            "status": run_row["status"],
+            "stage": run_row["current_stage"],
+            "images_discovered": run_row["images_discovered"],
+            "images_processed": run_row["images_processed"],
+            "images_relevant": run_row["images_relevant"],
+            "images_skipped": run_row["images_skipped"],
+            "gpt_success": run_row.get("gpt_success_count", 0),
+            "gpt_failed": run_row.get("gpt_failed_count", 0),
+            "pending_tasks": pending_count,
+            "started_at": str(run_row["started_at"] or ""),
+            "ended_at": str(run_row.get("ended_at") or ""),
+            "error": run_row.get("error_message", ""),
+        }
+    return {"store_id": store_id, "is_running": is_running, "stage": "", "status": "never"}
+
+
+@router.get("/date-report/{store_id}")
+async def get_date_report(store_id: str, _: str = Depends(get_current_user)) -> list[dict[str, Any]]:
+    """Date-wise image scan breakdown for a store from onfly_image_state."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(
+                onfly_image_state.c.date_display,
+                func.count().label("total_images"),
+                func.sum(
+                    func.cast(onfly_image_state.c.yolo_status != "pending", Integer)
+                ).label("yolo_done"),
+                func.sum(
+                    func.cast(onfly_image_state.c.yolo_relevant == True, Integer)  # noqa: E712
+                ).label("yolo_relevant"),
+                func.sum(
+                    func.cast(onfly_image_state.c.gpt_status == "done", Integer)
+                ).label("gpt_done"),
+                func.sum(onfly_image_state.c.gpt_customer_count).label("customers"),
+                func.sum(onfly_image_state.c.gpt_staff_count).label("staff"),
+            )
+            .where(onfly_image_state.c.store_id == store_id)
+            .where(onfly_image_state.c.date_display != "")
+            .group_by(onfly_image_state.c.date_display)
+            .order_by(onfly_image_state.c.date_display.desc())
+        )
+        rows = result.mappings().all()
+
+    return [
+        {
+            "date": r["date_display"],
+            "total_images": int(r["total_images"] or 0),
+            "yolo_done": int(r["yolo_done"] or 0),
+            "yolo_relevant": int(r["yolo_relevant"] or 0),
+            "gpt_done": int(r["gpt_done"] or 0),
+            "customers": int(r["customers"] or 0),
+            "staff": int(r["staff"] or 0),
+            "pending_yolo": int(r["total_images"] or 0) - int(r["yolo_done"] or 0),
+        }
+        for r in rows
+    ]
 
 
 @router.delete("/sync/{store_id}/cancel")

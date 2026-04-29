@@ -218,6 +218,8 @@ export const onFlyListStores = () => api.get<any[]>("/onfly/stores");
 export const onFlyStoreStatus = (storeId: string) => api.get<any>(`/onfly/status/${storeId}`);
 export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean }) =>
   api.post<any>(`/onfly/sync/${storeId}`, body);
+export const onFlyLiveProgress = (storeId: string) => api.get<any>(`/onfly/live-progress/${storeId}`);
+export const onFlyDateReport = (storeId: string) => api.get<any[]>(`/onfly/date-report/${storeId}`);
 
 // ── QA Feedback ───────────────────────────────────────────────────────────────
 export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 200) => {

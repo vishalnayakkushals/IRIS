@@ -1,11 +1,51 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { adminListStores, getRuns, onFlyListStores, onFlySync, onFlyStoreStatus } from "../api/client";
+import {
+  adminListStores, getRuns, onFlyListStores, onFlySync,
+  onFlyLiveProgress, onFlyDateReport,
+} from "../api/client";
 import type { RunRecord } from "../api/client";
-import { Play } from "lucide-react";
-import { Card, Title, Text, Badge, Button, Select, SelectItem, Metric } from "@tremor/react";
+import { Play, RefreshCw, AlertCircle } from "lucide-react";
+import { Card, Title, Text, Badge, Metric } from "@tremor/react";
 
-const POLL_MS = 5000;
+const POLL_MS = 3000;
+
+const STAGE_LABELS: Record<string, string> = {
+  DOWNLOAD: "Downloading images from Drive",
+  YOLO: "Running YOLO detection",
+  GPT: "Running GPT vision analysis",
+  DASHBOARD_INGEST: "Saving results to database",
+  REPORT: "Generating reports",
+  DONE: "Complete",
+  "": "Initialising…",
+};
+
+function ProgressBar({ value, max, color = "blue" }: { value: number; max: number; color?: string }) {
+  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  const colorClass = color === "emerald" ? "bg-emerald-500" : color === "amber" ? "bg-amber-500" : "bg-blue-500";
+  return (
+    <div className="w-full bg-slate-100 rounded-full h-2">
+      <div className={`${colorClass} h-2 rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function ElapsedTimer({ startedAt }: { startedAt: string }) {
+  const [elapsed, setElapsed] = useState("");
+  useEffect(() => {
+    if (!startedAt) return;
+    const update = () => {
+      const secs = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      setElapsed(`${m}m ${s}s`);
+    };
+    update();
+    const t = setInterval(update, 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
+  return <span>{elapsed}</span>;
+}
 
 export default function SchedulerDashboard() {
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -14,11 +54,11 @@ export default function SchedulerDashboard() {
   const [adminStores, setAdminStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState("");
   const [gptEnabled, setGptEnabled] = useState(false);
-  const [useTracker, setUseTracker] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<any>(null);
   const [syncing, setSyncing] = useState(false);
+  const [liveProgress, setLiveProgress] = useState<any>(null);
+  const [dateReport, setDateReport] = useState<any[]>([]);
+  const [loadingReport, setLoadingReport] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const statusRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadRuns = useCallback(async () => {
     try { const { data } = await getRuns(20); setRuns(data.runs); } catch {}
@@ -26,102 +66,98 @@ export default function SchedulerDashboard() {
 
   const loadStores = useCallback(async () => {
     try {
-      const [syncStoreResponse, adminStoreResponse] = await Promise.all([
-        onFlyListStores(),
-        adminListStores(),
-      ]);
-      setStores(syncStoreResponse.data);
-      setAdminStores(adminStoreResponse.data);
-      if (syncStoreResponse.data.length && !selectedStore) setSelectedStore(syncStoreResponse.data[0].store_id);
+      const [syncR, adminR] = await Promise.all([onFlyListStores(), adminListStores()]);
+      setStores(syncR.data);
+      setAdminStores(adminR.data);
+      if (syncR.data.length && !selectedStore) setSelectedStore(syncR.data[0].store_id);
     } catch {}
   }, [selectedStore]);
 
+  const loadProgress = useCallback(async (storeId: string) => {
+    if (!storeId) return;
+    try {
+      const { data } = await onFlyLiveProgress(storeId);
+      setLiveProgress(data);
+      if (data.is_running) setSyncing(true);
+      else if (data.status !== "running") setSyncing(false);
+    } catch {}
+  }, []);
+
+  const loadDateReport = useCallback(async (storeId: string) => {
+    if (!storeId) return;
+    setLoadingReport(true);
+    try {
+      const { data } = await onFlyDateReport(storeId);
+      setDateReport(data);
+    } catch {} finally { setLoadingReport(false); }
+  }, []);
+
   useEffect(() => {
-    loadRuns();
-    loadStores();
+    loadRuns(); loadStores();
   }, [loadRuns, loadStores]);
 
+  useEffect(() => {
+    if (!selectedStore) return;
+    loadProgress(selectedStore);
+    loadDateReport(selectedStore);
+  }, [selectedStore, loadProgress, loadDateReport]);
+
+  // Poll while running
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => { loadRuns(); loadStores(); }, POLL_MS);
+    timerRef.current = setInterval(() => {
+      loadRuns();
+      if (selectedStore) {
+        loadProgress(selectedStore);
+        if (syncing) loadDateReport(selectedStore);
+      }
+    }, POLL_MS);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [loadRuns, loadStores]);
+  }, [loadRuns, selectedStore, syncing, loadProgress, loadDateReport]);
 
-  // Poll sync status while running
-  useEffect(() => {
-    if (!selectedStore) return;
-    if (statusRef.current) clearInterval(statusRef.current);
-    statusRef.current = setInterval(async () => {
-      try {
-        const { data } = await onFlyStoreStatus(selectedStore);
-        setSyncStatus(data);
-        if (!data.is_running) setSyncing(false);
-      } catch {}
-    }, 3000);
-    return () => { if (statusRef.current) clearInterval(statusRef.current); };
-  }, [selectedStore]);
-
-  useEffect(() => {
-    if (!selectedStore) return;
-    onFlyStoreStatus(selectedStore).then((r) => setSyncStatus(r.data)).catch(() => {});
-  }, [selectedStore]);
-
-  function showToast(msg: string) {
-    setToast(msg);
-    setTimeout(() => setToast(""), 4000);
-  }
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(""), 4000); }
 
   async function handleSyncNow() {
     if (!selectedStore) { showToast("Select a store first"); return; }
     const store = stores.find((s) => s.store_id === selectedStore);
     if (!store?.drive_folder_url) {
-      showToast("Store has no Drive URL. Configure in Admin > Store Mapping first.");
+      showToast("Store has no Drive URL — configure in Admin > Store Mapping first");
       return;
     }
     setSyncing(true);
     try {
-      const { data } = await onFlySync(selectedStore, { gpt_enabled: gptEnabled, use_tracker: useTracker });
+      const { data } = await onFlySync(selectedStore, { gpt_enabled: gptEnabled });
       showToast(data.message || "Sync started");
+      setTimeout(() => { loadProgress(selectedStore); loadDateReport(selectedStore); }, 1500);
     } catch (e: any) {
       showToast(e?.response?.data?.detail || "Failed to start sync");
       setSyncing(false);
     }
   }
 
-  const selectedStoreObj = stores.find((s) => s.store_id === selectedStore);
   const selectedAdminStore = adminStores.find((s) => s.store_id === selectedStore);
-  const storeHasUrl = Boolean(selectedStoreObj?.drive_folder_url);
-  const runningCount = stores.filter((store) => store.is_running).length;
-  const driveReadyCount = stores.filter((store) => Boolean(store.drive_folder_url)).length;
-  const autoSyncCount = adminStores.filter((store) => Boolean(store.sync_enabled)).length;
-  const lastCompletedRun = runs.find((run) => run.status === "done");
-  const storeNameById = Object.fromEntries(stores.map((store) => [store.store_id, store.store_name || store.store_id]));
+  const selectedSyncStore = stores.find((s) => s.store_id === selectedStore);
+  const storeHasUrl = Boolean(selectedSyncStore?.drive_folder_url);
+  const runningCount = stores.filter((s) => s.is_running).length;
+  const driveReadyCount = stores.filter((s) => Boolean(s.drive_folder_url)).length;
+  const autoSyncCount = adminStores.filter((s) => Boolean(s.sync_enabled)).length;
+  const storeNameById = Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id]));
 
-  function syncStatusBadge() {
-    if (syncing || syncStatus?.is_running) return <Badge color="amber">Running</Badge>;
-    if (!syncStatus) return <Badge color="slate">Never synced</Badge>;
-    const s = syncStatus.last_status;
-    if (s === "ok") return <Badge color="emerald">OK</Badge>;
-    if (s === "error") return <Badge color="rose">Error</Badge>;
-    return <Badge color="slate">{s || "Never"}</Badge>;
-  }
+  const progressPct = liveProgress && liveProgress.images_discovered > 0
+    ? Math.round((liveProgress.images_processed / liveProgress.images_discovered) * 100)
+    : 0;
 
   return (
     <div className="space-y-6">
-      {toast && (
-        <div className="fixed top-20 right-8 z-50 bg-slate-800 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg opacity-90 transition-opacity">
-          {toast}
-        </div>
-      )}
+      {toast && <div className="iris-toast">{toast}</div>}
 
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-        <div>
-          <Title>IRIS Data Sync Console</Title>
-          <Text>Manage nightly automation, trigger manual store sync, and review recent execution behaviour in one guided view.</Text>
-        </div>
+      <div>
+        <Title>Scheduler / Pipeline</Title>
+        <Text>Trigger manual syncs, monitor live progress, and review date-wise scan results.</Text>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card decoration="top" decorationColor="blue">
           <Text>Stores Configured</Text>
           <Metric>{adminStores.length}</Metric>
@@ -131,197 +167,333 @@ export default function SchedulerDashboard() {
           <Metric>{driveReadyCount}</Metric>
         </Card>
         <Card decoration="top" decorationColor="amber">
-          <Text>Auto-Sync Enabled</Text>
+          <Text>Auto-Sync On</Text>
           <Metric>{autoSyncCount}</Metric>
         </Card>
-        <Card decoration="top" decorationColor="rose">
-          <Text>Running Right Now</Text>
+        <Card decoration="top" decorationColor={runningCount > 0 ? "rose" : "slate"}>
+          <Text>Running Now</Text>
           <Metric>{runningCount}</Metric>
         </Card>
       </div>
 
-      <Card className="p-5 space-y-3">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <Title>IRIS Data Sync Status</Title>
-            <Text>Use this section to understand whether the store is ready, when it last ran, and whether it is part of nightly automation.</Text>
-          </div>
-          {lastCompletedRun && (
-            <div className="rounded-lg border bg-slate-50 px-4 py-3 text-sm">
-              <p className="text-xs uppercase tracking-wide text-slate-400 mb-1">Latest successful run</p>
-              <p className="font-medium text-slate-700">{lastCompletedRun.job_name}</p>
-              <p className="text-xs text-slate-500">{new Date(lastCompletedRun.completed_at || lastCompletedRun.started_at).toLocaleString("en-IN", { hour12: true })}</p>
-            </div>
-          )}
-        </div>
-      </Card>
-
-      {/* Store Sync Panel */}
-      <Card className="p-5">
+      {/* Sync trigger panel */}
+      <Card className="p-5 space-y-4">
         <div className="flex flex-col md:flex-row md:items-end gap-4">
-          <div className="flex-1 space-y-1">
-            <p className="text-sm font-semibold text-slate-700">Run Data Sync Now</p>
-            <p className="text-xs text-slate-400">Choose one store, decide whether GPT and tracking are needed, then start the full web-controlled sync.</p>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-slate-700 mb-1">Run Sync Now</p>
+            <p className="text-xs text-slate-400">Select a store, optionally enable GPT, then click Sync Now. Progress updates every 3 seconds.</p>
           </div>
-
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-56">
-              <Select value={selectedStore} onValueChange={setSelectedStore} placeholder="Select store">
+              <label className="iris-label">Store</label>
+              <select
+                className="iris-select"
+                value={selectedStore}
+                onChange={(e) => { setSelectedStore(e.target.value); setLiveProgress(null); setDateReport([]); }}
+              >
+                <option value="">— select —</option>
                 {stores.map((s) => (
-                  <SelectItem key={s.store_id} value={s.store_id}>
-                    {s.store_name || s.store_id}
-                  </SelectItem>
+                  <option key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</option>
                 ))}
-              </Select>
+              </select>
             </div>
-
-            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-              <input type="checkbox" checked={gptEnabled} onChange={(e) => setGptEnabled(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
+              <input type="checkbox" checked={gptEnabled} onChange={(e) => setGptEnabled(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
               GPT analysis
             </label>
-
-            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-              <input type="checkbox" checked={useTracker} onChange={(e) => setUseTracker(e.target.checked)} />
-              BoT-SORT tracker
-            </label>
-
-            <Button
-              icon={Play}
-              size="sm"
-              color="blue"
+            <button
               onClick={handleSyncNow}
-              disabled={syncing || !storeHasUrl}
-              loading={syncing}
-              loadingText="Syncing..."
+              disabled={syncing || !storeHasUrl || !selectedStore}
+              className="iris-btn-primary"
             >
-              {syncing ? "Running..." : "Sync Now"}
-            </Button>
+              <Play size={14} />
+              {syncing ? "Running…" : "Sync Now"}
+            </button>
+            <button
+              onClick={() => { loadProgress(selectedStore); loadDateReport(selectedStore); loadRuns(); }}
+              className="iris-btn-secondary"
+              title="Refresh"
+            >
+              <RefreshCw size={14} />
+            </button>
           </div>
         </div>
 
-        {selectedStoreObj && (
-          <div className="mt-4 pt-4 border-t grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        {/* Store info strip */}
+        {selectedSyncStore && (
+          <div className="pt-3 border-t grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
             <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Store</p>
-              <p className="font-medium">{selectedStoreObj.store_name}</p>
-            </div>
-            <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Drive URL</p>
+              <p className="iris-label">Drive URL</p>
               <p className={storeHasUrl ? "text-slate-600 text-xs truncate max-w-[200px]" : "text-rose-500 text-xs"}>
-                {storeHasUrl ? selectedStoreObj.drive_folder_url : "Not configured — go to Admin > Store Mapping"}
+                {storeHasUrl ? "Configured ✓" : "Not set — go to Admin > Store Mapping"}
               </p>
             </div>
             <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Night Automation</p>
+              <p className="iris-label">Auto-Sync</p>
               <p className="text-xs text-slate-600">
-                {selectedAdminStore?.sync_enabled ? `Enabled every ${selectedAdminStore.sync_interval_hours || 1} hour(s)` : "Disabled"}
+                {selectedAdminStore?.sync_enabled ? `Every ${selectedAdminStore.sync_interval_hours || 1}h` : "Disabled"}
               </p>
             </div>
             <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Status</p>
-              {syncStatusBadge()}
-            </div>
-            <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Last Sync</p>
+              <p className="iris-label">Last Sync</p>
               <p className="text-xs text-slate-500">
-                {syncStatus?.last_sync_at
-                  ? new Date(syncStatus.last_sync_at).toLocaleString("en-IN", { hour12: true })
+                {selectedSyncStore.last_sync_at
+                  ? new Date(selectedSyncStore.last_sync_at).toLocaleString("en-IN", { hour12: true })
                   : "Never"}
               </p>
             </div>
-            {syncStatus?.last_message && (
-              <div className="col-span-full">
-                <p className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Last Message</p>
-                <p className="text-xs text-slate-500">{syncStatus.last_message}</p>
-              </div>
-            )}
+            <div>
+              <p className="iris-label">Status</p>
+              <Badge color={
+                syncing || selectedSyncStore.is_running ? "amber" :
+                selectedSyncStore.last_status === "ok" ? "emerald" :
+                selectedSyncStore.last_status === "error" ? "rose" : "slate"
+              }>
+                {syncing || selectedSyncStore.is_running ? "Running" : selectedSyncStore.last_status || "Never"}
+              </Badge>
+            </div>
           </div>
         )}
       </Card>
 
-      <Card className="p-0 border-0 shadow-sm ring-1 ring-slate-200 rounded-lg overflow-hidden">
+      {/* Live Progress Panel — shown when running OR recent run exists */}
+      {liveProgress && (liveProgress.status !== "never") && (
+        <Card className={`p-5 space-y-4 border-2 ${liveProgress.is_running ? "border-amber-300 bg-amber-50/30" : "border-slate-200"}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-700">
+                {liveProgress.is_running ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                    Pipeline Running — {STAGE_LABELS[liveProgress.stage] || liveProgress.stage}
+                  </span>
+                ) : (
+                  <span>Last Run — {liveProgress.status === "done" ? "Completed" : liveProgress.status}</span>
+                )}
+              </p>
+              {liveProgress.is_running && liveProgress.started_at && (
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Elapsed: <ElapsedTimer startedAt={liveProgress.started_at} />
+                </p>
+              )}
+            </div>
+            {liveProgress.error && (
+              <div className="flex items-center gap-1 text-rose-600 text-xs max-w-xs truncate">
+                <AlertCircle size={14} /> {liveProgress.error}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <p className="text-xs text-slate-400 uppercase tracking-wide">Images in Drive</p>
+              <p className="text-2xl font-bold text-slate-800">{(liveProgress.images_discovered || 0).toLocaleString()}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-slate-400 uppercase tracking-wide">Processed</p>
+              <p className="text-2xl font-bold text-slate-800">{(liveProgress.images_processed || 0).toLocaleString()}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-slate-400 uppercase tracking-wide">YOLO Relevant</p>
+              <p className="text-2xl font-bold text-emerald-700">{(liveProgress.images_relevant || 0).toLocaleString()}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-slate-400 uppercase tracking-wide">GPT Done</p>
+              <p className="text-2xl font-bold text-blue-700">{(liveProgress.gpt_success || 0).toLocaleString()}</p>
+            </div>
+          </div>
+
+          {liveProgress.images_discovered > 0 && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>Progress</span>
+                <span>{progressPct}% — {liveProgress.images_processed} / {liveProgress.images_discovered}</span>
+              </div>
+              <ProgressBar value={liveProgress.images_processed} max={liveProgress.images_discovered} color="blue" />
+            </div>
+          )}
+          {liveProgress.images_processed > 0 && liveProgress.images_relevant > 0 && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>YOLO relevance</span>
+                <span>{Math.round((liveProgress.images_relevant / liveProgress.images_processed) * 100)}% relevant</span>
+              </div>
+              <ProgressBar value={liveProgress.images_relevant} max={liveProgress.images_processed} color="emerald" />
+            </div>
+          )}
+
+          {liveProgress.pending_tasks > 0 && (
+            <p className="text-xs text-amber-600 font-medium">{liveProgress.pending_tasks} tasks pending in queue</p>
+          )}
+        </Card>
+      )}
+
+      {/* Date-wise Scan Report */}
+      {selectedStore && (
+        <Card className="p-0 overflow-hidden">
+          <div className="p-4 border-b flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-700">Date-wise Scan Report</p>
+              <p className="text-xs text-slate-400 mt-0.5">Images discovered, YOLO processed, relevant, and GPT results per date.</p>
+            </div>
+            <button onClick={() => loadDateReport(selectedStore)} className="iris-btn-secondary text-xs px-3 py-1.5">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider font-semibold">
+                  <th className="px-5 py-3">Date</th>
+                  <th className="px-5 py-3">Total Images</th>
+                  <th className="px-5 py-3">YOLO Done</th>
+                  <th className="px-5 py-3">YOLO Relevant</th>
+                  <th className="px-5 py-3">Pending</th>
+                  <th className="px-5 py-3">GPT Done</th>
+                  <th className="px-5 py-3">Customers</th>
+                  <th className="px-5 py-3">Staff</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loadingReport && (
+                  <tr><td colSpan={8} className="px-5 py-8 text-center text-slate-400 text-sm">Loading…</td></tr>
+                )}
+                {!loadingReport && dateReport.map((r) => (
+                  <tr key={r.date} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-3 font-medium font-mono text-xs text-slate-700">{r.date}</td>
+                    <td className="px-5 py-3 font-semibold">{r.total_images.toLocaleString()}</td>
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span>{r.yolo_done.toLocaleString()}</span>
+                        {r.total_images > 0 && (
+                          <div className="w-16 bg-slate-100 rounded-full h-1.5">
+                            <div className="bg-blue-400 h-1.5 rounded-full" style={{ width: `${Math.min(100, Math.round(r.yolo_done / r.total_images * 100))}%` }} />
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <Badge color={r.yolo_relevant > 0 ? "emerald" : "slate"}>{r.yolo_relevant}</Badge>
+                    </td>
+                    <td className="px-5 py-3">
+                      <Badge color={r.pending_yolo > 0 ? "amber" : "slate"}>{r.pending_yolo}</Badge>
+                    </td>
+                    <td className="px-5 py-3">
+                      <Badge color={r.gpt_done > 0 ? "blue" : "slate"}>{r.gpt_done}</Badge>
+                    </td>
+                    <td className="px-5 py-3 font-semibold text-emerald-700">{r.customers || "—"}</td>
+                    <td className="px-5 py-3 text-blue-700">{r.staff || "—"}</td>
+                  </tr>
+                ))}
+                {!loadingReport && dateReport.length === 0 && (
+                  <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 text-sm">
+                    No scan data for this store yet. Run a sync to populate.
+                  </td></tr>
+                )}
+              </tbody>
+              {dateReport.length > 0 && (
+                <tfoot>
+                  <tr className="bg-slate-50 border-t font-semibold text-xs text-slate-600">
+                    <td className="px-5 py-3">TOTAL</td>
+                    <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.total_images, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.yolo_done, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.yolo_relevant, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.pending_yolo, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.gpt_done, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3 text-emerald-700">{dateReport.reduce((s, r) => s + r.customers, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3 text-blue-700">{dateReport.reduce((s, r) => s + r.staff, 0).toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Store automation status table */}
+      <Card className="p-0 overflow-hidden">
         <div className="p-4 border-b">
-          <Title>Store Automation View</Title>
-          <Text className="text-xs text-slate-500 mt-1">This tells management which stores are ready for nightly sync and which stores still need Drive mapping.</Text>
+          <p className="text-sm font-semibold text-slate-700">All Stores — Automation Status</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead>
               <tr className="bg-slate-50 border-b text-slate-500 font-semibold text-xs tracking-wider uppercase">
-                <th className="px-6 py-3">Store</th>
-                <th className="px-6 py-3">Drive</th>
-                <th className="px-6 py-3">Auto-Sync</th>
-                <th className="px-6 py-3">Current Status</th>
-                <th className="px-6 py-3">Last Sync</th>
+                <th className="px-5 py-3">Store</th>
+                <th className="px-5 py-3">Drive</th>
+                <th className="px-5 py-3">Auto-Sync</th>
+                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Last Sync</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {adminStores.map((store) => {
-                const syncStore = stores.find((item) => item.store_id === store.store_id);
+                const syncStore = stores.find((s) => s.store_id === store.store_id);
                 return (
-                  <tr key={store.store_id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-slate-700">{store.store_name || store.store_id}</td>
-                    <td className="px-6 py-4">
-                      <Badge color={syncStore?.drive_folder_url ? "emerald" : "rose"}>{syncStore?.drive_folder_url ? "Ready" : "Missing"}</Badge>
+                  <tr key={store.store_id} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-3 font-medium">{store.store_name || store.store_id}</td>
+                    <td className="px-5 py-3">
+                      <Badge color={syncStore?.drive_folder_url ? "emerald" : "rose"}>
+                        {syncStore?.drive_folder_url ? "Ready" : "Missing"}
+                      </Badge>
                     </td>
-                    <td className="px-6 py-4 text-slate-500">{store.sync_enabled ? `Enabled every ${store.sync_interval_hours || 1} hour(s)` : "Disabled"}</td>
-                    <td className="px-6 py-4">
+                    <td className="px-5 py-3 text-slate-500 text-xs">
+                      {store.sync_enabled ? `Every ${store.sync_interval_hours || 1}h` : "Off"}
+                    </td>
+                    <td className="px-5 py-3">
                       <Badge color={syncStore?.is_running ? "amber" : syncStore?.last_status === "ok" ? "emerald" : syncStore?.last_status === "error" ? "rose" : "slate"}>
                         {syncStore?.is_running ? "Running" : syncStore?.last_status || "Never"}
                       </Badge>
                     </td>
-                    <td className="px-6 py-4 text-slate-400 text-xs">
+                    <td className="px-5 py-3 text-slate-400 text-xs">
                       {syncStore?.last_sync_at ? new Date(syncStore.last_sync_at).toLocaleString("en-IN", { hour12: true }) : "Never"}
                     </td>
                   </tr>
                 );
               })}
               {adminStores.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-6 py-10 text-center text-gray-400 text-sm">No stores are configured yet.</td>
-                </tr>
+                <tr><td colSpan={5} className="px-5 py-10 text-center text-slate-400 text-sm">No stores configured.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </Card>
 
-      <Card className="p-0 border-0 shadow-sm ring-1 ring-slate-200 rounded-lg overflow-hidden">
+      {/* Execution History */}
+      <Card className="p-0 overflow-hidden">
         <div className="p-4 border-b">
-          <Title>Scheduler Execution History</Title>
+          <p className="text-sm font-semibold text-slate-700">Recent Execution History</p>
         </div>
         {runs.length === 0 ? (
-          <div className="text-center py-12 text-gray-400 text-sm">No runs recorded.</div>
+          <div className="text-center py-12 text-slate-400 text-sm">No runs recorded yet.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead>
                 <tr className="bg-slate-50 border-b text-slate-500 font-semibold text-xs tracking-wider uppercase">
-                  <th className="px-6 py-3">Run</th>
-                  <th className="px-6 py-3">Store</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3">Remarks</th>
-                  <th className="px-6 py-3">Triggered By</th>
-                  <th className="px-6 py-3">Started</th>
+                  <th className="px-5 py-3">Job</th>
+                  <th className="px-5 py-3">Store</th>
+                  <th className="px-5 py-3">Status</th>
+                  <th className="px-5 py-3">Remarks</th>
+                  <th className="px-5 py-3">By</th>
+                  <th className="px-5 py-3">Started</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {runs.map((r) => (
-                  <tr key={r.run_id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-slate-700">
-                      <Link to={`/runs/${r.run_id}`} className="hover:text-blue-600 hover:underline">
-                        {r.job_name}
-                      </Link>
+                  <tr key={r.run_id} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-3 font-medium">
+                      <Link to={`/runs/${r.run_id}`} className="hover:text-blue-600 hover:underline">{r.job_name}</Link>
                     </td>
-                    <td className="px-6 py-4 text-slate-500">{storeNameById[r.store_id] || r.store_id}</td>
-                    <td className="px-6 py-4">
+                    <td className="px-5 py-3 text-slate-500">{storeNameById[r.store_id] || r.store_id}</td>
+                    <td className="px-5 py-3">
                       <Badge color={r.status === "done" ? "emerald" : r.status === "failed" ? "rose" : r.status === "running" ? "amber" : "slate"}>
                         {r.status}
                       </Badge>
                     </td>
-                    <td className="px-6 py-4 text-slate-500 max-w-xs truncate">{r.remarks || "—"}</td>
-                    <td className="px-6 py-4 text-slate-500">{r.triggered_by}</td>
-                    <td className="px-6 py-4 text-slate-400 text-xs">
+                    <td className="px-5 py-3 text-slate-500 max-w-xs truncate">{r.remarks || "—"}</td>
+                    <td className="px-5 py-3 text-slate-400 text-xs">{r.triggered_by}</td>
+                    <td className="px-5 py-3 text-slate-400 text-xs">
                       {r.started_at ? new Date(r.started_at).toLocaleString("en-IN", { hour12: true }) : "—"}
                     </td>
                   </tr>
