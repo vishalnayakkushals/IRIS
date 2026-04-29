@@ -9,20 +9,18 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import insert, select, update
-
-from sqlalchemy import Integer, func, text
+from sqlalchemy import select
 
 from backend.app.auth.dependencies import get_current_user
 from backend.app.config import get_settings
 from backend.app.db.canonical_metadata import (
-    onfly_image_state,
-    onfly_pipeline_runs,
     pipeline_run_log,
     store_sync_state,
     stores,
@@ -46,6 +44,119 @@ def _now_str() -> str:
 
 def _make_run_id(store_id: str) -> str:
     return f"onfly_{store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(str(value))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _sqlite_row_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+    cols = [str(col[0]) for col in (cursor.description or [])]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _load_live_progress_from_sqlite(db_path: Path, store_id: str) -> dict[str, Any] | None:
+    if not db_path.exists():
+        return None
+    conn = _sqlite_connect(db_path)
+    try:
+        run_row = conn.execute(
+            """
+            SELECT *
+            FROM onfly_pipeline_runs
+            WHERE store_id=?
+            ORDER BY started_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (store_id,),
+        ).fetchone()
+        if run_row is None:
+            return None
+        pending_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM onfly_task_queue
+            WHERE store_id=? AND status='pending'
+            """,
+            (store_id,),
+        ).fetchone()[0]
+        heartbeat_at = str(run_row["last_heartbeat_at"] or "")
+        heartbeat_dt = _parse_iso(heartbeat_at)
+        heartbeat_age = int((_now() - heartbeat_dt).total_seconds()) if heartbeat_dt else None
+        stale = bool(heartbeat_age is not None and heartbeat_age > 180 and str(run_row["status"] or "") == "running")
+        return {
+            "run_id": str(run_row["run_id"] or ""),
+            "status": str(run_row["status"] or ""),
+            "stage": str(run_row["current_stage"] or ""),
+            "images_discovered": int(run_row["images_discovered"] or 0),
+            "images_processed": int(run_row["images_processed"] or 0),
+            "images_relevant": int(run_row["images_relevant"] or 0),
+            "images_skipped": int(run_row["images_skipped"] or 0),
+            "gpt_success": int(run_row["gpt_success_count"] or 0),
+            "gpt_failed": int(run_row["gpt_failed_count"] or 0),
+            "pending_tasks": int(pending_count or 0),
+            "started_at": str(run_row["started_at"] or ""),
+            "ended_at": str(run_row["ended_at"] or ""),
+            "last_heartbeat_at": heartbeat_at,
+            "heartbeat_age_seconds": heartbeat_age,
+            "stale_heartbeat": stale,
+            "error": str(run_row["error_message"] or ""),
+        }
+    finally:
+        conn.close()
+
+
+def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            SELECT
+                date_display,
+                COUNT(*) AS total_images,
+                SUM(CASE WHEN yolo_status != 'pending' THEN 1 ELSE 0 END) AS yolo_done,
+                SUM(CASE WHEN yolo_relevant = 1 THEN 1 ELSE 0 END) AS yolo_relevant,
+                SUM(CASE WHEN gpt_status = 'done' THEN 1 ELSE 0 END) AS gpt_done,
+                SUM(COALESCE(gpt_customer_count, 0)) AS customers,
+                SUM(COALESCE(gpt_staff_count, 0)) AS staff
+            FROM onfly_image_state
+            WHERE store_id=? AND date_display != ''
+            GROUP BY date_display
+            ORDER BY date_display DESC
+            """,
+            (store_id,),
+        )
+        rows = _sqlite_row_dicts(cur)
+    finally:
+        conn.close()
+
+    return [
+        {
+            "date": str(row.get("date_display") or ""),
+            "total_images": int(row.get("total_images") or 0),
+            "yolo_done": int(row.get("yolo_done") or 0),
+            "yolo_relevant": int(row.get("yolo_relevant") or 0),
+            "gpt_done": int(row.get("gpt_done") or 0),
+            "customers": int(row.get("customers") or 0),
+            "staff": int(row.get("staff") or 0),
+            "pending_yolo": max(0, int(row.get("total_images") or 0) - int(row.get("yolo_done") or 0)),
+        }
+        for row in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -298,89 +409,22 @@ async def trigger_onfly_sync(
 
 @router.get("/live-progress/{store_id}")
 async def get_live_progress(store_id: str, _: str = Depends(get_current_user)) -> dict[str, Any]:
-    """Live pipeline progress — read from onfly_pipeline_runs (updated by pipeline in real-time)."""
-    async with AsyncSessionLocal() as session:
-        # Active or most recent run
-        run_result = await session.execute(
-            select(onfly_pipeline_runs)
-            .where(onfly_pipeline_runs.c.store_id == store_id)
-            .order_by(onfly_pipeline_runs.c.created_at.desc())
-            .limit(1)
-        )
-        run_row = run_result.mappings().first()
-
-        # Pending tasks (images queued but not yet processed)
-        from backend.app.db.canonical_metadata import onfly_task_queue
-        pending_result = await session.execute(
-            select(func.count()).where(
-                onfly_task_queue.c.store_id == store_id,
-                onfly_task_queue.c.status == "pending",
-            )
-        )
-        pending_count = pending_result.scalar() or 0
-
+    """Live pipeline progress from the on-fly runtime DB (sqlite source-of-truth)."""
     is_running = _active_runs.get(store_id) is not None
-    if run_row:
+    runtime_progress = _load_live_progress_from_sqlite(get_settings().db_path_obj, store_id)
+    if runtime_progress:
         return {
             "store_id": store_id,
             "is_running": is_running,
-            "run_id": run_row["run_id"],
-            "status": run_row["status"],
-            "stage": run_row["current_stage"],
-            "images_discovered": run_row["images_discovered"],
-            "images_processed": run_row["images_processed"],
-            "images_relevant": run_row["images_relevant"],
-            "images_skipped": run_row["images_skipped"],
-            "gpt_success": run_row.get("gpt_success_count", 0),
-            "gpt_failed": run_row.get("gpt_failed_count", 0),
-            "pending_tasks": pending_count,
-            "started_at": str(run_row["started_at"] or ""),
-            "ended_at": str(run_row.get("ended_at") or ""),
-            "error": run_row.get("error_message", ""),
+            **runtime_progress,
         }
     return {"store_id": store_id, "is_running": is_running, "stage": "", "status": "never"}
 
 
 @router.get("/date-report/{store_id}")
 async def get_date_report(store_id: str, _: str = Depends(get_current_user)) -> list[dict[str, Any]]:
-    """Date-wise image scan breakdown for a store from onfly_image_state."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                onfly_image_state.c.date_display,
-                func.count().label("total_images"),
-                func.sum(
-                    func.cast(onfly_image_state.c.yolo_status != "pending", Integer)
-                ).label("yolo_done"),
-                func.sum(
-                    func.cast(onfly_image_state.c.yolo_relevant == True, Integer)  # noqa: E712
-                ).label("yolo_relevant"),
-                func.sum(
-                    func.cast(onfly_image_state.c.gpt_status == "done", Integer)
-                ).label("gpt_done"),
-                func.sum(onfly_image_state.c.gpt_customer_count).label("customers"),
-                func.sum(onfly_image_state.c.gpt_staff_count).label("staff"),
-            )
-            .where(onfly_image_state.c.store_id == store_id)
-            .where(onfly_image_state.c.date_display != "")
-            .group_by(onfly_image_state.c.date_display)
-            .order_by(onfly_image_state.c.date_display.desc())
-        )
-        rows = result.mappings().all()
-
-    return [
-        {
-            "date": r["date_display"],
-            "total_images": int(r["total_images"] or 0),
-            "yolo_done": int(r["yolo_done"] or 0),
-            "yolo_relevant": int(r["yolo_relevant"] or 0),
-            "gpt_done": int(r["gpt_done"] or 0),
-            "customers": int(r["customers"] or 0),
-            "staff": int(r["staff"] or 0),
-            "pending_yolo": int(r["total_images"] or 0) - int(r["yolo_done"] or 0),
-        }
-        for r in rows
-    ]
+    """Date-wise image scan breakdown from the on-fly runtime DB (sqlite source-of-truth)."""
+    return _load_date_report_from_sqlite(get_settings().db_path_obj, store_id)
 
 
 @router.delete("/sync/{store_id}/cancel")

@@ -7,6 +7,7 @@ import {
 import type { RunRecord } from "../api/client";
 import { Play, RefreshCw, AlertCircle } from "lucide-react";
 import { Card, Title, Text, Badge, Metric } from "@tremor/react";
+import StoreSelect from "../components/StoreSelect";
 
 const POLL_MS = 3000;
 
@@ -184,18 +185,15 @@ export default function SchedulerDashboard() {
             <p className="text-xs text-slate-400">Select a store, optionally enable GPT, then click Sync Now. Progress updates every 3 seconds.</p>
           </div>
           <div className="flex flex-wrap items-end gap-3">
-            <div className="w-56">
+            <div className="w-80">
               <label className="iris-label">Store</label>
-              <select
-                className="iris-select"
+              <StoreSelect
+                stores={stores}
                 value={selectedStore}
-                onChange={(e) => { setSelectedStore(e.target.value); setLiveProgress(null); setDateReport([]); }}
-              >
-                <option value="">— select —</option>
-                {stores.map((s) => (
-                  <option key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</option>
-                ))}
-              </select>
+                onChange={(next) => { setSelectedStore(next); setLiveProgress(null); setDateReport([]); }}
+                placeholder="Select store"
+                includeAll={false}
+              />
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
               <input type="checkbox" checked={gptEnabled} onChange={(e) => setGptEnabled(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
@@ -274,6 +272,11 @@ export default function SchedulerDashboard() {
               {liveProgress.is_running && liveProgress.started_at && (
                 <p className="text-xs text-slate-400 mt-0.5">
                   Elapsed: <ElapsedTimer startedAt={liveProgress.started_at} />
+                </p>
+              )}
+              {liveProgress.stale_heartbeat && (
+                <p className="text-xs text-rose-500 mt-1">
+                  No heartbeat for {liveProgress.heartbeat_age_seconds}s — possible stall in current stage.
                 </p>
               )}
             </div>

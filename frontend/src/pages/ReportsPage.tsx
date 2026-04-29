@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
-import { reportsSummary, reportsWalkins, reportsImageScans, adminListStores } from "../api/client";
+import { useCallback, useEffect, useState } from "react";
+import { reportsSummary, reportsWalkins, reportsImageScans, adminListStores, onFlyLiveProgress } from "../api/client";
 import { Card, Title, Text, Badge, TabGroup, TabList, Tab, TabPanels, TabPanel, Metric } from "@tremor/react";
+import StoreSelect from "../components/StoreSelect";
 
 function DaySummaryTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string, string> }) {
   return (
@@ -139,24 +140,55 @@ export default function ReportsPage() {
   const [walkinRows, setWalkinRows] = useState<any[]>([]);
   const [scanRows, setScanRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [liveProgress, setLiveProgress] = useState<any>(null);
   const storeMap = Object.fromEntries(stores.map((store) => [store.store_id, store.store_name || store.store_id]));
   const totalWalkins = summaryRows.reduce((sum, row) => sum + Number(row.walkins || 0), 0);
   const totalConversions = summaryRows.reduce((sum, row) => sum + Number(row.conversions || 0), 0);
   const averageRate = summaryRows.length ? (summaryRows.reduce((sum, row) => sum + Number(row.conversion_rate || 0), 0) / summaryRows.length) : 0;
+
+  const loadReports = useCallback(() => {
+    setLoading(true);
+    const sid = selectedStore || undefined;
+    return Promise.all([
+      reportsSummary(sid).then((r) => setSummaryRows(r.data)),
+      reportsWalkins(sid, undefined, 300).then((r) => setWalkinRows(r.data)),
+      reportsImageScans(sid, undefined, 300).then((r) => setScanRows(r.data)),
+    ]).finally(() => setLoading(false));
+  }, [selectedStore]);
 
   useEffect(() => {
     adminListStores().then((r) => setStores(r.data));
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    const sid = selectedStore || undefined;
-    Promise.all([
-      reportsSummary(sid).then((r) => setSummaryRows(r.data)),
-      reportsWalkins(sid).then((r) => setWalkinRows(r.data)),
-      reportsImageScans(sid).then((r) => setScanRows(r.data)),
-    ]).finally(() => setLoading(false));
-  }, [selectedStore]);
+    void loadReports();
+  }, [loadReports]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    async function refreshLive() {
+      if (!selectedStore) {
+        setLiveProgress(null);
+        return;
+      }
+      try {
+        const { data } = await onFlyLiveProgress(selectedStore);
+        setLiveProgress(data);
+        if (data?.is_running || data?.status === "running") {
+          void loadReports();
+        }
+      } catch {
+        setLiveProgress(null);
+      }
+    }
+    void refreshLive();
+    timer = window.setInterval(() => {
+      void refreshLive();
+    }, 5000);
+    return () => {
+      if (timer) window.clearInterval(timer);
+    };
+  }, [loadReports, selectedStore]);
 
   return (
     <div className="space-y-6">
@@ -164,18 +196,32 @@ export default function ReportsPage() {
         <div>
           <Title>Management Reports</Title>
           <Text>Management-ready daily summary, footfall detail, and image scanning output from the live pipeline.</Text>
+          {selectedStore && liveProgress && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <Badge color={liveProgress.is_running ? "amber" : liveProgress.status === "failed" ? "rose" : "emerald"}>
+                {liveProgress.is_running ? `Live Sync: ${liveProgress.stage || "running"}` : liveProgress.status || "idle"}
+              </Badge>
+              <span className="text-slate-500">
+                Auto-refresh every 5s
+              </span>
+              {liveProgress.images_discovered ? (
+                <span className="text-slate-400">
+                  {liveProgress.images_processed || 0} / {liveProgress.images_discovered} processed
+                </span>
+              ) : null}
+              {liveProgress.error ? <span className="text-rose-500 truncate max-w-[18rem]">{liveProgress.error}</span> : null}
+            </div>
+          )}
         </div>
-        <div className="w-56">
-          <select
-            className="iris-select"
+        <div className="w-full sm:w-80">
+          <StoreSelect
+            stores={stores}
             value={selectedStore}
-            onChange={(e) => setSelectedStore(e.target.value)}
-          >
-            <option value="">All Stores</option>
-            {stores.map((s) => (
-              <option key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</option>
-            ))}
-          </select>
+            onChange={setSelectedStore}
+            includeAll
+            allLabel="All Stores"
+            placeholder="Filter reports by store"
+          />
         </div>
       </div>
 
