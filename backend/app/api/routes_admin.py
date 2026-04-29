@@ -962,17 +962,32 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
                         if store_display_name and (not current_name or current_name == inferred_store_id):
                             update_store_values["store_name"] = store_display_name
                         if store_contact_email and _looks_like_email(store_contact_email) and (not current_email or current_email.endswith("@iris.local")):
-                            update_store_values["email"] = store_contact_email
+                            conflict = await session.execute(
+                                select(stores.c.store_id).where(
+                                    stores.c.email == store_contact_email,
+                                    stores.c.store_id != inferred_store_id,
+                                )
+                            )
+                            if conflict.first() is None:
+                                update_store_values["email"] = store_contact_email
                         if len(update_store_values) > 1:
                             await session.execute(
                                 update(stores).where(stores.c.store_id == inferred_store_id).values(**update_store_values)
                             )
                     else:
+                        # Check if the email is already claimed by a different store
+                        insert_email = _placeholder_store_email(inferred_store_id)
+                        if _looks_like_email(store_contact_email):
+                            conflict = await session.execute(
+                                select(stores.c.store_id).where(stores.c.email == store_contact_email)
+                            )
+                            if conflict.first() is None:
+                                insert_email = store_contact_email
                         await session.execute(
                             insert(stores).values(
                                 store_id=inferred_store_id,
                                 store_name=store_display_name,
-                                email=store_contact_email if _looks_like_email(store_contact_email) else _placeholder_store_email(inferred_store_id),
+                                email=insert_email,
                                 drive_folder_url="",
                                 sync_enabled=False,
                                 sync_interval_hours=1,
