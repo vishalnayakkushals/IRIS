@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { reportsSummary, reportsWalkins, reportsImageScans, adminListStores } from "../api/client";
-import { Card, Title, Text, Badge, TabGroup, TabList, Tab, TabPanels, TabPanel, Select, SelectItem, Metric } from "@tremor/react";
+import { Card, Title, Text, Badge, TabGroup, TabList, Tab, TabPanels, TabPanel, Metric } from "@tremor/react";
 
 function DaySummaryTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string, string> }) {
   return (
@@ -166,12 +166,16 @@ export default function ReportsPage() {
           <Text>Management-ready daily summary, footfall detail, and image scanning output from the live pipeline.</Text>
         </div>
         <div className="w-56">
-          <Select value={selectedStore} onValueChange={setSelectedStore} placeholder="All Stores">
-            <SelectItem value="">All Stores</SelectItem>
+          <select
+            className="iris-select"
+            value={selectedStore}
+            onChange={(e) => setSelectedStore(e.target.value)}
+          >
+            <option value="">All Stores</option>
             {stores.map((s) => (
-              <SelectItem key={s.store_id} value={s.store_id}>{s.store_name}</SelectItem>
+              <option key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</option>
             ))}
-          </Select>
+          </select>
         </div>
       </div>
 

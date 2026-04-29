@@ -895,128 +895,149 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
     created_stores = 0
     matched_existing = 0
     generated_store_ids = 0
+    row_errors: list[dict] = []
+
     async with AsyncSessionLocal() as session:
-        try:
-            identity_map: dict[str, str] = {}
+        identity_map: dict[str, str] = {}
 
-            existing_stores = await session.execute(select(stores))
-            for store_row in existing_stores.mappings().all():
-                store_id = str(store_row["store_id"])
-                _register_store_identity(identity_map, store_id, store_id)
-                _register_store_identity(identity_map, store_row.get("store_name", ""), store_id)
-                _register_store_identity(identity_map, store_row.get("email", ""), store_id)
+        existing_stores_result = await session.execute(select(stores))
+        for store_row in existing_stores_result.mappings().all():
+            store_id = str(store_row["store_id"])
+            _register_store_identity(identity_map, store_id, store_id)
+            _register_store_identity(identity_map, store_row.get("store_name", ""), store_id)
+            _register_store_identity(identity_map, store_row.get("email", ""), store_id)
 
-            existing_master = await session.execute(select(store_master))
-            for master_row in existing_master.mappings().all():
-                store_id = str(master_row["store_id"])
-                _register_store_identity(identity_map, master_row.get("short_code", ""), store_id)
-                _register_store_identity(identity_map, master_row.get("gofrugal_name", ""), store_id)
-                _register_store_identity(identity_map, master_row.get("outlet_id", ""), store_id)
+        existing_master_result = await session.execute(select(store_master))
+        for master_row in existing_master_result.mappings().all():
+            store_id = str(master_row["store_id"])
+            _register_store_identity(identity_map, master_row.get("short_code", ""), store_id)
+            _register_store_identity(identity_map, master_row.get("gofrugal_name", ""), store_id)
+            _register_store_identity(identity_map, master_row.get("outlet_id", ""), store_id)
 
-            for row in rows:
-                explicit_store_id = _clean_store_master_value(row.store_id)
-                inferred_store_id = explicit_store_id or identity_map.get(_normalized_store_identity(row.store_name), "")
-                if not inferred_store_id:
-                    for candidate in (row.short_code, row.gofrugal_name, row.outlet_id):
-                        inferred_store_id = identity_map.get(_normalized_store_identity(candidate), "")
-                        if inferred_store_id:
-                            matched_existing += 1
-                            break
-                if not inferred_store_id:
-                    inferred_store_id = _generate_store_id(row.short_code, row.outlet_id, row.store_name, row.gofrugal_name)
+        for row_idx, row in enumerate(rows):
+            row_label = (
+                row.short_code or row.gofrugal_name or row.outlet_id or row.store_id
+                or f"row #{row_idx + 1}"
+            )
+
+            # Resolve store ID before touching the DB (pure logic, no exception expected)
+            explicit_store_id = _clean_store_master_value(row.store_id)
+            inferred_store_id = explicit_store_id or identity_map.get(_normalized_store_identity(row.store_name), "")
+            if not inferred_store_id:
+                for candidate in (row.short_code, row.gofrugal_name, row.outlet_id):
+                    inferred_store_id = identity_map.get(_normalized_store_identity(candidate), "")
                     if inferred_store_id:
-                        generated_store_ids += 1
-                if not inferred_store_id:
-                    raise HTTPException(status_code=422, detail="Could not infer a store ID from one or more rows.")
+                        matched_existing += 1
+                        break
+            if not inferred_store_id:
+                inferred_store_id = _generate_store_id(row.short_code, row.outlet_id, row.store_name, row.gofrugal_name)
+                if inferred_store_id:
+                    generated_store_ids += 1
+            if not inferred_store_id:
+                row_errors.append({
+                    "row": row_label,
+                    "index": row_idx + 1,
+                    "error": "Could not determine store ID — no short_code, outlet_id, or gofrugal_name found",
+                })
+                continue
 
-                store_display_name = (
-                    _clean_store_master_value(row.store_name)
-                    or _clean_store_master_value(row.gofrugal_name)
-                    or inferred_store_id
-                )
-                store_contact_email = _clean_store_master_value(row.store_email)
+            # store_name is NEVER required from the CSV — derive from gofrugal_name or fall back to store_id
+            store_display_name = (
+                _clean_store_master_value(row.gofrugal_name)
+                or inferred_store_id
+            )
+            store_contact_email = _clean_store_master_value(row.store_email)
 
-                existing_store = await session.execute(
-                    select(stores).where(stores.c.store_id == inferred_store_id)
-                )
-                existing_store_row = existing_store.mappings().first()
-                if existing_store_row:
-                    update_store_values: dict[str, Any] = {"updated_at": now}
-                    current_name = _clean_store_master_value(existing_store_row.get("store_name", ""))
-                    current_email = _clean_store_master_value(existing_store_row.get("email", ""))
-                    if store_display_name and (not current_name or current_name == inferred_store_id or current_name != store_display_name):
-                        update_store_values["store_name"] = store_display_name
-                    if store_contact_email and _looks_like_email(store_contact_email) and (not current_email or current_email.endswith("@iris.local")):
-                        update_store_values["email"] = store_contact_email
-                    if len(update_store_values) > 1:
-                        await session.execute(
-                            update(stores).where(stores.c.store_id == inferred_store_id).values(**update_store_values)
-                        )
-                else:
-                    await session.execute(
-                        insert(stores).values(
-                            store_id=inferred_store_id,
-                            store_name=store_display_name,
-                            email=store_contact_email if _looks_like_email(store_contact_email) else _placeholder_store_email(inferred_store_id),
-                            drive_folder_url="",
-                            sync_enabled=False,
-                            sync_interval_hours=1,
-                            created_at=now,
-                            updated_at=now,
-                        )
+            # Use a savepoint so a DB error on one row doesn't invalidate the whole transaction
+            try:
+                async with session.begin_nested():
+                    existing_store = await session.execute(
+                        select(stores).where(stores.c.store_id == inferred_store_id)
                     )
-                    created_stores += 1
+                    existing_store_row = existing_store.mappings().first()
+                    if existing_store_row:
+                        update_store_values: dict[str, Any] = {"updated_at": now}
+                        current_name = _clean_store_master_value(existing_store_row.get("store_name", ""))
+                        current_email = _clean_store_master_value(existing_store_row.get("email", ""))
+                        if store_display_name and (not current_name or current_name == inferred_store_id):
+                            update_store_values["store_name"] = store_display_name
+                        if store_contact_email and _looks_like_email(store_contact_email) and (not current_email or current_email.endswith("@iris.local")):
+                            update_store_values["email"] = store_contact_email
+                        if len(update_store_values) > 1:
+                            await session.execute(
+                                update(stores).where(stores.c.store_id == inferred_store_id).values(**update_store_values)
+                            )
+                    else:
+                        await session.execute(
+                            insert(stores).values(
+                                store_id=inferred_store_id,
+                                store_name=store_display_name,
+                                email=store_contact_email if _looks_like_email(store_contact_email) else _placeholder_store_email(inferred_store_id),
+                                drive_folder_url="",
+                                sync_enabled=False,
+                                sync_interval_hours=1,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+                        created_stores += 1
 
+                    existing_master_check = await session.execute(
+                        select(store_master.c.store_id).where(store_master.c.store_id == inferred_store_id)
+                    )
+                    vals = dict(
+                        short_code=row.short_code,
+                        gofrugal_name=row.gofrugal_name,
+                        outlet_id=row.outlet_id,
+                        city=row.city,
+                        state=row.state,
+                        zone=row.zone,
+                        country=row.country,
+                        mobile_no=row.mobile_no,
+                        store_email=row.store_email,
+                        cluster_manager=row.cluster_manager,
+                        area_manager=row.area_manager,
+                        updated_at=now,
+                    )
+                    if existing_master_check.first():
+                        await session.execute(
+                            update(store_master).where(store_master.c.store_id == inferred_store_id).values(**vals)
+                        )
+                    else:
+                        await session.execute(
+                            insert(store_master).values(store_id=inferred_store_id, **vals)
+                        )
+
+                # savepoint committed — update identity map so later rows can match against this store
                 _register_store_identity(identity_map, inferred_store_id, inferred_store_id)
                 _register_store_identity(identity_map, store_display_name, inferred_store_id)
                 _register_store_identity(identity_map, row.short_code, inferred_store_id)
                 _register_store_identity(identity_map, row.gofrugal_name, inferred_store_id)
                 _register_store_identity(identity_map, row.outlet_id, inferred_store_id)
-
-                existing = await session.execute(
-                    select(store_master.c.store_id).where(store_master.c.store_id == inferred_store_id)
-                )
-                vals = dict(
-                    short_code=row.short_code,
-                    gofrugal_name=row.gofrugal_name,
-                    outlet_id=row.outlet_id,
-                    city=row.city,
-                    state=row.state,
-                    zone=row.zone,
-                    country=row.country,
-                    mobile_no=row.mobile_no,
-                    store_email=row.store_email,
-                    cluster_manager=row.cluster_manager,
-                    area_manager=row.area_manager,
-                    updated_at=now,
-                )
-                if existing.first():
-                    await session.execute(
-                        update(store_master).where(store_master.c.store_id == inferred_store_id).values(**vals)
-                    )
-                else:
-                    await session.execute(
-                        insert(store_master).values(store_id=inferred_store_id, **vals)
-                    )
                 processed += 1
-            await session.commit()
-        except IntegrityError as exc:
-            await session.rollback()
-            raise HTTPException(
-                status_code=422,
-                detail="Store Master upload failed because one or more rows could not be normalized safely.",
-            ) from exc
+
+            except Exception as exc:  # noqa: BLE001
+                row_errors.append({
+                    "row": row_label,
+                    "index": row_idx + 1,
+                    "error": str(exc).split("\n")[0],
+                })
+
+        await session.commit()
+
     await _log_activity(actor, "store_master.upsert", "", {
         "count": processed,
         "created_stores": created_stores,
         "matched_existing": matched_existing,
         "generated_store_ids": generated_store_ids,
+        "row_errors": len(row_errors),
     })
     return {
         "processed": processed,
         "created_stores": created_stores,
         "matched_existing": matched_existing,
         "generated_store_ids": generated_store_ids,
+        "errors": row_errors,
     }
 
 

@@ -35,7 +35,7 @@ const menu: NavItem[] = [
       { name: "Model Feedback", path: "/qa/model-feedback" },
     ],
   },
-  { name: "Pipeline Jobs", path: "/scheduler", icon: <Clock size={18} /> },
+  { name: "Scheduler / Pipeline", path: "/scheduler", icon: <Clock size={18} /> },
   {
     name: "Admin",
     icon: <Settings size={18} />,

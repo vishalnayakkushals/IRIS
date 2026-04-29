@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { adminListStoreMaster, adminUploadStoreMasterFile, adminUpsertStoreMaster } from "../api/client";
-import { Card, Title, Text, Button } from "@tremor/react";
+import { Card, Title, Text } from "@tremor/react";
 import { Upload, RefreshCw } from "lucide-react";
 
 const COLUMNS = [
@@ -124,6 +124,7 @@ export default function StoreMaster() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState("");
+  const [importErrors, setImportErrors] = useState<{ row: string; index: number; error: string }[]>([]);
   const [tab, setTab] = useState<"table" | "import">("table");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -158,6 +159,7 @@ export default function StoreMaster() {
   async function doImport() {
     if (!preview.length) return;
     setImporting(true);
+    setImportErrors([]);
     try {
       let response;
       if (selectedFile) {
@@ -170,11 +172,17 @@ export default function StoreMaster() {
       const matchedExisting = Number(meta.matched_existing || 0);
       const generatedStoreIds = Number(meta.generated_store_ids || 0);
       const processed = Number(meta.processed || preview.length);
-      flash(`${processed} row(s) imported${createdStores ? `, ${createdStores} store(s) created` : ""}${matchedExisting ? `, ${matchedExisting} mapped automatically` : ""}${generatedStoreIds ? `, ${generatedStoreIds} ID(s) generated` : ""}`);
-      setRawInput(""); setPreview([]); setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      const rowErrors: { row: string; index: number; error: string }[] = meta.errors || [];
+      if (rowErrors.length) {
+        setImportErrors(rowErrors);
+        flash(`${processed} imported, ${rowErrors.length} row(s) had issues — see below`);
+      } else {
+        flash(`${processed} row(s) imported${createdStores ? `, ${createdStores} store(s) created` : ""}${matchedExisting ? `, ${matchedExisting} mapped automatically` : ""}${generatedStoreIds ? `, ${generatedStoreIds} ID(s) generated` : ""}`);
+        setRawInput(""); setPreview([]); setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setTab("table");
+      }
       load();
-      setTab("table");
     } catch (e: any) {
       flash(e?.response?.data?.detail || "Import failed");
     } finally { setImporting(false); }
@@ -190,8 +198,10 @@ export default function StoreMaster() {
           <Text>Central reference table for all stores — Gofrugal names, zones, managers.</Text>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant={tab === "table" ? "primary" : "secondary"} onClick={() => setTab("table")}>Table</Button>
-          <Button size="sm" variant={tab === "import" ? "primary" : "secondary"} icon={Upload} onClick={() => setTab("import")}>Import CSV / TSV</Button>
+          <button onClick={() => setTab("table")} className={tab === "table" ? "iris-btn-primary" : "iris-btn-secondary"}>Table</button>
+          <button onClick={() => setTab("import")} className={tab === "import" ? "iris-btn-primary" : "iris-btn-secondary"}>
+            <Upload size={14} /> Import CSV / TSV
+          </button>
           <button onClick={load} className="p-2 rounded border text-slate-500 hover:text-blue-600 hover:border-blue-400"><RefreshCw size={14} /></button>
         </div>
       </div>
@@ -211,9 +221,9 @@ export default function StoreMaster() {
                 if (file) void handleFileUpload(file);
               }}
             />
-            <Button variant="secondary" icon={Upload} onClick={() => fileInputRef.current?.click()}>
-              Choose CSV / TSV File
-            </Button>
+            <button className="iris-btn-secondary" onClick={() => fileInputRef.current?.click()}>
+              <Upload size={14} /> Choose CSV / TSV File
+            </button>
             <Text className="text-xs text-slate-500">Supported: comma-separated or tab-separated files.</Text>
           </div>
           {selectedFile && (
@@ -231,9 +241,23 @@ export default function StoreMaster() {
           {preview.length > 0 && (
             <p className="text-sm text-slate-500">Preview: <span className="font-medium">{preview.length}</span> rows detected.</p>
           )}
+          {importErrors.length > 0 && (
+            <div className="border border-rose-200 bg-rose-50 rounded-lg p-4 space-y-2">
+              <p className="text-sm font-semibold text-rose-700">{importErrors.length} row(s) had issues — other rows were saved successfully:</p>
+              <ul className="space-y-1">
+                {importErrors.map((e) => (
+                  <li key={e.index} className="text-xs text-rose-600 font-mono">
+                    <span className="font-semibold">Row {e.index} ({e.row}):</span> {e.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="flex gap-2">
-            <Button icon={Upload} loading={importing} disabled={!preview.length} onClick={doImport}>Import {preview.length} Rows</Button>
-            <Button variant="secondary" onClick={() => { setRawInput(""); setPreview([]); setSelectedFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}>Clear</Button>
+            <button className="iris-btn-primary" disabled={!preview.length || importing} onClick={doImport}>
+              <Upload size={14} /> {importing ? "Importing…" : `Import ${preview.length} Rows`}
+            </button>
+            <button className="iris-btn-secondary" onClick={() => { setRawInput(""); setPreview([]); setSelectedFile(null); setImportErrors([]); if (fileInputRef.current) fileInputRef.current.value = ""; }}>Clear</button>
           </div>
         </Card>
       )}
