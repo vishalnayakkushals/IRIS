@@ -138,15 +138,37 @@ def _sqlite_runtime_walkins(
             where.append("store_id = ?")
             params.append(store_id)
         if business_date:
-            where.append("business_date = ?")
-            params.append(business_date)
+            where.append("(business_date = ? OR date = ?)")
+            params.extend([business_date, business_date])
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         cur = conn.execute(
             f"""
-            SELECT *
+            SELECT
+                store_id,
+                COALESCE(business_date, date, '') AS "Date",
+                COALESCE(walkin_id, '') AS "Walk-in ID",
+                COALESCE(group_id, '') AS "Group ID",
+                COALESCE(role, '') AS "Role",
+                COALESCE(entry_time, '') AS "Entry Time",
+                COALESCE(exit_time, '') AS "Exit Time",
+                COALESCE(time_spent_mins, '') AS "Time Spent (mins)",
+                COALESCE(session_status, '') AS "Session Status",
+                COALESCE(entry_type, '') AS "Entry Type",
+                COALESCE(gender, '') AS "Gender",
+                COALESCE(age_band, '') AS "Age Band",
+                COALESCE(attire_visual_marker, '') AS "Attire / Visual Marker",
+                COALESCE(primary_clothing, '') AS "Primary Clothing",
+                COALESCE(jewellery_load, '') AS "Jewellery Load",
+                COALESCE(bag_type, '') AS "Bag Type",
+                COALESCE(clothing_style_archetype, '') AS "Primary Clothing Style Archetype",
+                COALESCE(engagement_type, '') AS "Engagement Type",
+                COALESCE(engagement_depth, '') AS "Engagement Depth",
+                COALESCE(purchase_signal_bag, '') AS "Purchase Signal (Bag)",
+                COALESCE(included_in_analytics, '') AS "Included in Analytics",
+                id
             FROM onfly_walkin_sessions
             {where_sql}
-            ORDER BY created_at DESC, id DESC
+            ORDER BY business_date DESC, entry_time ASC, id ASC
             LIMIT ?
             """,
             tuple(params + [max(1, int(limit))]),

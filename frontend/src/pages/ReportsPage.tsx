@@ -41,42 +41,94 @@ function DaySummaryTable({ rows, storeMap }: { rows: any[]; storeMap: Record<str
   );
 }
 
+const WALKIN_COLS = [
+  { key: "Date", label: "Date" },
+  { key: "Walk-in ID", label: "Walk-in ID" },
+  { key: "Group ID", label: "Group ID" },
+  { key: "Role", label: "Role" },
+  { key: "Entry Time", label: "Entry Time" },
+  { key: "Exit Time", label: "Exit Time" },
+  { key: "Time Spent (mins)", label: "Time Spent (mins)" },
+  { key: "Session Status", label: "Session Status" },
+  { key: "Entry Type", label: "Entry Type" },
+  { key: "Gender", label: "Gender" },
+  { key: "Age Band", label: "Age Band" },
+  { key: "Attire / Visual Marker", label: "Attire / Visual Marker" },
+  { key: "Primary Clothing", label: "Primary Clothing" },
+  { key: "Jewellery Load", label: "Jewellery Load" },
+  { key: "Bag Type", label: "Bag Type" },
+  { key: "Primary Clothing Style Archetype", label: "Style Archetype" },
+  { key: "Engagement Type", label: "Engagement Type" },
+  { key: "Engagement Depth", label: "Depth" },
+  { key: "Purchase Signal (Bag)", label: "Purchase Signal" },
+  { key: "Included in Analytics", label: "In Analytics" },
+];
+
+function roleBadgeColor(role: string) {
+  const r = (role || "").toUpperCase();
+  if (r === "STAFF") return "blue";
+  if (r === "CUSTOMER") return "emerald";
+  return "slate";
+}
+
 function WalkinTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string, string> }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm text-left whitespace-nowrap">
         <thead>
           <tr className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider font-semibold">
-            <th className="px-5 py-3">Store</th>
-            <th className="px-5 py-3">Date</th>
-            <th className="px-5 py-3">Role</th>
-            <th className="px-5 py-3">Entry Type</th>
-            <th className="px-5 py-3">Time Spent</th>
-            <th className="px-5 py-3">Gender</th>
-            <th className="px-5 py-3">Age Band</th>
-            <th className="px-5 py-3">Style</th>
-            <th className="px-5 py-3">Engagement</th>
+            <th className="px-4 py-3 sticky left-0 bg-slate-50 z-10">Store</th>
+            {WALKIN_COLS.map((c) => (
+              <th key={c.key} className="px-4 py-3">{c.label}</th>
+            ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {rows.map((r) => (
-            <tr key={r.id} className="hover:bg-slate-50/50">
-              <td className="px-5 py-3 font-medium">{storeMap[r.store_id] || r.store_id}</td>
-              <td className="px-5 py-3">{r.business_date || r.date}</td>
-              <td className="px-5 py-3">
-                <Badge color={r.role?.toUpperCase() === "STAFF" ? "blue" : "emerald"}>{r.role || "—"}</Badge>
+          {rows.map((r, i) => (
+            <tr key={r.id ?? i} className="hover:bg-slate-50/50">
+              <td className="px-4 py-2.5 font-medium text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-100">
+                {storeMap[r.store_id] || r.store_id || "—"}
               </td>
-              <td className="px-5 py-3">{r.entry_type || "—"}</td>
-              <td className="px-5 py-3">{r.time_spent_mins || "—"} min</td>
-              <td className="px-5 py-3">{r.gender || "—"}</td>
-              <td className="px-5 py-3">{r.age_band || "—"}</td>
-              <td className="px-5 py-3 max-w-[150px] truncate">{r.clothing_style_archetype || "—"}</td>
-              <td className="px-5 py-3">{r.engagement_depth || "—"}</td>
+              {WALKIN_COLS.map((c) => {
+                const val = r[c.key] ?? r[c.key.toLowerCase().replace(/ /g, "_").replace(/[^a-z0-9_]/g, "")] ?? "";
+                if (c.key === "Role") return (
+                  <td key={c.key} className="px-4 py-2.5">
+                    <Badge color={roleBadgeColor(String(val))}>{String(val) || "—"}</Badge>
+                  </td>
+                );
+                if (c.key === "Session Status") return (
+                  <td key={c.key} className="px-4 py-2.5">
+                    <Badge color={String(val).toUpperCase() === "CLOSED" ? "slate" : "amber"}>{String(val) || "—"}</Badge>
+                  </td>
+                );
+                if (c.key === "Included in Analytics") return (
+                  <td key={c.key} className="px-4 py-2.5">
+                    <Badge color={String(val).toLowerCase() === "yes" ? "emerald" : "rose"}>{String(val) || "—"}</Badge>
+                  </td>
+                );
+                if (c.key === "Purchase Signal (Bag)") return (
+                  <td key={c.key} className="px-4 py-2.5">
+                    <Badge color={String(val).toLowerCase() === "yes" ? "emerald" : "slate"}>{String(val) || "—"}</Badge>
+                  </td>
+                );
+                if (c.key === "Attire / Visual Marker") return (
+                  <td key={c.key} className="px-4 py-2.5 max-w-[180px] truncate text-slate-600 text-xs" title={String(val)}>
+                    {String(val) || "—"}
+                  </td>
+                );
+                return (
+                  <td key={c.key} className="px-4 py-2.5 text-slate-700">
+                    {String(val) || "—"}
+                  </td>
+                );
+              })}
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={9} className="px-5 py-10 text-center text-gray-400 text-sm">No walk-in sessions found for the current filter.</td>
+              <td colSpan={WALKIN_COLS.length + 1} className="px-5 py-10 text-center text-gray-400 text-sm">
+                No walk-in sessions found for the current filter.
+              </td>
             </tr>
           )}
         </tbody>
@@ -243,7 +295,7 @@ export default function ReportsPage() {
       <TabGroup>
         <TabList>
           <Tab>Store Summary</Tab>
-          <Tab>Datewise Footfall Detail</Tab>
+          <Tab>Datewise Footfall Detail Analysis</Tab>
           <Tab>Image Scanning Result Details</Tab>
         </TabList>
         <TabPanels>
