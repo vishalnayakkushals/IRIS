@@ -58,13 +58,23 @@ if (Test-Path $envFile) {
 }
 
 $approvedPostgres = "postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db"
+$localhostPostgres = "postgresql+asyncpg://iris_user:iris_password@localhost/iris_db"
 if (-not $env:POSTGRES_URL) {
     Write-Host "ERROR: POSTGRES_URL is missing from .env.local" -ForegroundColor Red
     exit 1
 }
+if ($env:POSTGRES_URL -eq $localhostPostgres) {
+    $env:POSTGRES_URL = $approvedPostgres
+    Write-Host "Normalized POSTGRES_URL from localhost to 127.0.0.1 for runtime consistency." -ForegroundColor Green
+}
+if ($env:POSTGRES_SYNC_URL -eq "postgresql+psycopg2://iris_user:iris_password@localhost/iris_db") {
+    $env:POSTGRES_SYNC_URL = "postgresql+psycopg2://iris_user:iris_password@127.0.0.1/iris_db"
+}
 if ($env:POSTGRES_URL -ne $approvedPostgres) {
     Write-Host "ERROR: POSTGRES_URL must be exactly:" -ForegroundColor Red
     Write-Host "  $approvedPostgres" -ForegroundColor Yellow
+    Write-Host "Allowed local alias also supported:" -ForegroundColor Red
+    Write-Host "  $localhostPostgres" -ForegroundColor Yellow
     Write-Host "Current value:" -ForegroundColor Red
     Write-Host "  $($env:POSTGRES_URL)" -ForegroundColor Yellow
     exit 1

@@ -11,6 +11,15 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-04-29 - Startup Fix For Localhost Postgres Alias
+- Changed paths:
+  - `start_iris.ps1`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed the `start_iris.bat` startup blocker where `.env.local` using `POSTGRES_URL=...@localhost/iris_db` was being rejected even though it points to the same local Postgres instance as `127.0.0.1`.
+  - The launcher now normalizes the localhost alias to the canonical `127.0.0.1` runtime value and also normalizes `POSTGRES_SYNC_URL` if present.
+  - This keeps the approved local runtime strict while avoiding false startup failures on equivalent local Postgres hostnames.
+
 ### 2026-04-29 - Production Hardening And Demo Readiness For 8767
 - Changed paths:
   - `frontend/src/App.tsx`
@@ -277,6 +286,11 @@ Password: iris_password
 Connection string (required in `.env.local`):
 ```
 POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@127.0.0.1/iris_db
+```
+
+Local alias also accepted by the launcher and normalized automatically:
+```
+POSTGRES_URL=postgresql+asyncpg://iris_user:iris_password@localhost/iris_db
 ```
 
 If `.env.local` is missing, if `POSTGRES_URL` is wrong, if `JWT_SECRET` is blank, or if `API_PORT` is changed away from `8767`, `start_iris.bat` will stop instead of starting a wrong app.
