@@ -13,7 +13,7 @@ from typing import Any
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -176,8 +176,21 @@ def _parse_store_master_upload(content: bytes, filename: str) -> list[dict[str, 
                 continue
             original_key = reader.fieldnames[index]
             row[key] = _clean_store_master_value(raw_row.get(original_key, ""))
-        if _store_master_row_has_data(row):
-            rows.append(row)
+        if not _store_master_row_has_data(row):
+            continue
+        # When CSV has no store_id column (e.g. only Short code / GoFrugal Name),
+        # promote short_code → store_id and gofrugal_name → store_name so the
+        # upsert logic has something to work with.
+        if not row.get("store_id") and row.get("short_code"):
+            row["store_id"] = row["short_code"]
+        if not row.get("store_name") and row.get("gofrugal_name"):
+            row["store_name"] = row["gofrugal_name"]
+        # Sanitise any placeholder "–" / "-" / "N/A" manager values
+        for mgr_key in ("cluster_manager", "area_manager"):
+            val = row.get(mgr_key, "")
+            if val in ("-", "–", "N/A", "n/a", "NA"):
+                row[mgr_key] = ""
+        rows.append(row)
     return rows
 
 
@@ -841,7 +854,16 @@ async def list_activity(
 # Store master
 # ---------------------------------------------------------------------------
 
+_STORE_MASTER_KNOWN_FIELDS = frozenset({
+    "store_id", "store_name", "short_code", "gofrugal_name", "outlet_id",
+    "city", "state", "zone", "country", "mobile_no", "store_email",
+    "cluster_manager", "area_manager",
+})
+
+
 class StoreMasterRow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     store_id: str = ""
     store_name: str = ""
     short_code: str = ""

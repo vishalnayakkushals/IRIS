@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore, adminToggleStoreSync, onFlyListStores, onFlySync } from "../api/client";
-import { Card, Title, Text, Button, Badge } from "@tremor/react";
+import { Card, Title, Text, Badge } from "@tremor/react";
 import { Plus, Pencil, Trash2, X, Check, Play } from "lucide-react";
 
 const EMPTY = { store_id: "", store_name: "", email: "", drive_folder_url: "" };
@@ -26,49 +26,70 @@ function StoreForm({
   }
 
   return (
-    <form onSubmit={submit} className="bg-slate-50 border rounded-lg p-5 space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <form onSubmit={submit} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+        {isNew ? "New Store" : `Editing ${v.store_id}`}
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Store ID *</label>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Store ID *</label>
           <input
-            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
             required
             disabled={!isNew}
+            placeholder="e.g. BLRJAY"
             value={v.store_id}
             onChange={(e) => setV({ ...v, store_id: e.target.value })}
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Store Name *</label>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Store Name *</label>
           <input
-            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             required
+            placeholder="e.g. BLR - Jayanagar"
             value={v.store_name}
             onChange={(e) => setV({ ...v, store_name: e.target.value })}
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Email *</label>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Email *</label>
           <input
             type="email"
-            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             required
+            placeholder="store@example.com"
             value={v.email}
             onChange={(e) => setV({ ...v, email: e.target.value })}
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Drive Folder URL</label>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Drive Folder URL</label>
           <input
-            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            placeholder="https://drive.google.com/drive/folders/..."
             value={v.drive_folder_url}
             onChange={(e) => setV({ ...v, drive_folder_url: e.target.value })}
           />
         </div>
       </div>
-      <div className="flex gap-2 pt-1">
-        <Button type="submit" size="xs" color="blue" loading={saving} icon={Check}>Save</Button>
-        <Button type="button" size="xs" color="slate" variant="secondary" onClick={onCancel} icon={X}>Cancel</Button>
+      <div className="flex gap-2 pt-1 border-t border-slate-100">
+        <button
+          type="submit"
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          <Check size={14} />
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg transition-colors"
+        >
+          <X size={14} />
+          Cancel
+        </button>
       </div>
     </form>
   );
@@ -155,7 +176,12 @@ export default function StoreMapping() {
           <Title>Store Mapping</Title>
           <Text>Manage store registry, contact emails, and Drive folder links.</Text>
         </div>
-        <Button size="sm" icon={Plus} onClick={() => setShowNew(true)}>Add Store</Button>
+        <button
+          onClick={() => setShowNew(true)}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+        >
+          <Plus size={15} /> Add Store
+        </button>
       </div>
 
       {showNew && (

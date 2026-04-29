@@ -77,20 +77,22 @@ export function TopNav() {
           </button>
 
           {open && (
-            <div className="absolute right-0 mt-1 w-56 bg-background border rounded-lg shadow-lg py-1 z-50">
+            <div className="absolute right-0 mt-2 w-60 bg-white border border-slate-200 rounded-xl shadow-2xl py-1.5 z-[200]" style={{filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.15))"}}>
               {user && (
-                <div className="px-4 py-2.5 border-b">
-                  <p className="text-sm font-medium text-foreground truncate">{user.full_name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 rounded-t-xl">
+                  <p className="text-sm font-semibold text-slate-800 truncate">{user.full_name}</p>
+                  <p className="text-xs text-slate-500 truncate mt-0.5">{user.email}</p>
                 </div>
               )}
-              <button
-                onClick={logout}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-rose-600 hover:bg-rose-50 transition-colors"
-              >
-                <LogOut size={15} />
-                Sign out
-              </button>
+              <div className="py-1">
+                <button
+                  onClick={logout}
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-medium text-rose-600 hover:bg-rose-50 active:bg-rose-100 transition-colors rounded-b-xl"
+                >
+                  <LogOut size={15} />
+                  Sign out
+                </button>
+              </div>
             </div>
           )}
         </div>

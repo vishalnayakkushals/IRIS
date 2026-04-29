@@ -8,7 +8,7 @@ import {
   adminListRoles,
   adminListStores,
 } from "../api/client";
-import { Card, Title, Text, Button, Badge } from "@tremor/react";
+import { Card, Title, Text, Badge } from "@tremor/react";
 import { Plus, Pencil, Trash2, Key, X, Check } from "lucide-react";
 
 function UserForm({
@@ -52,52 +52,62 @@ function UserForm({
   }
 
   return (
-    <form onSubmit={submit} className="bg-slate-50 border rounded-lg p-5 space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+    <form onSubmit={submit} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+        {isNew ? "New User" : `Editing ${v.email}`}
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Email *</label>
-          <input type="email" required disabled={!isNew} className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
+          <label className="iris-label">Email *</label>
+          <input type="email" required disabled={!isNew} className="iris-input" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
         </div>
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Full Name *</label>
-          <input required className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" value={v.full_name} onChange={(e) => setV({ ...v, full_name: e.target.value })} />
+          <label className="iris-label">Full Name *</label>
+          <input required className="iris-input" value={v.full_name} onChange={(e) => setV({ ...v, full_name: e.target.value })} />
         </div>
         {isNew && (
           <div>
-            <label className="block text-xs text-slate-500 mb-1">Password *</label>
-            <input type="password" required className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" value={v.password} onChange={(e) => setV({ ...v, password: e.target.value })} />
+            <label className="iris-label">Password *</label>
+            <input type="password" required className="iris-input" value={v.password} onChange={(e) => setV({ ...v, password: e.target.value })} />
           </div>
         )}
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Default Store</label>
-          <select className="w-full border rounded px-3 py-2 text-sm" value={v.store_id} onChange={(e) => setV({ ...v, store_id: e.target.value })}>
+          <label className="iris-label">Default Store</label>
+          <select className="iris-select" value={v.store_id} onChange={(e) => setV({ ...v, store_id: e.target.value })}>
             <option value="">— none —</option>
             {stores.map((s) => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2 pt-5">
-          <input type="checkbox" id="active" checked={v.is_active} onChange={(e) => setV({ ...v, is_active: e.target.checked })} />
+          <input type="checkbox" id="active" checked={v.is_active} onChange={(e) => setV({ ...v, is_active: e.target.checked })} className="rounded border-slate-300 text-blue-600" />
           <label htmlFor="active" className="text-sm text-slate-600">Active</label>
         </div>
       </div>
       <div>
-        <label className="block text-xs text-slate-500 mb-2">Roles</label>
-        <div className="flex flex-wrap gap-2">
+        <label className="iris-label">Roles</label>
+        <div className="flex flex-wrap gap-2 mt-1">
           {roles.map((r) => (
             <button
               key={r.role_name}
               type="button"
               onClick={() => toggleRole(r.role_name)}
-              className={`px-3 py-1 rounded-full text-xs border transition-colors ${v.role_names.includes(r.role_name) ? "bg-blue-600 text-white border-blue-600" : "text-slate-600 border-slate-300 hover:border-blue-400"}`}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${v.role_names.includes(r.role_name) ? "bg-blue-600 text-white border-blue-600" : "text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600"}`}
             >
               {r.role_name}
             </button>
           ))}
+          {roles.length === 0 && <span className="text-xs text-slate-400">No roles defined yet</span>}
         </div>
       </div>
-      <div className="flex gap-2">
-        <Button type="submit" size="xs" color="blue" loading={saving} icon={Check}>Save</Button>
-        <Button type="button" size="xs" color="slate" variant="secondary" onClick={onCancel} icon={X}>Cancel</Button>
+      <div className="flex gap-2 pt-1 border-t border-slate-100">
+        <button type="submit" disabled={saving} className="iris-btn-primary">
+          <Check size={14} />
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button type="button" onClick={onCancel} className="iris-btn-secondary">
+          <X size={14} />
+          Cancel
+        </button>
       </div>
     </form>
   );
@@ -119,18 +129,23 @@ function PasswordResetModal({ email, onClose }: { email: string; onClose: () => 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm space-y-4">
+    <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm space-y-4">
         <h3 className="font-semibold text-slate-800">Reset Password</h3>
         <p className="text-sm text-slate-500">{email}</p>
         {done ? (
           <p className="text-emerald-600 text-sm font-medium">Password updated!</p>
         ) : (
-          <form onSubmit={submit} className="space-y-3">
-            <input type="password" required placeholder="New password" className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" value={pw} onChange={(e) => setPw(e.target.value)} />
+          <form onSubmit={submit} className="space-y-4">
+            <div>
+              <label className="iris-label">New Password</label>
+              <input type="password" required placeholder="Enter new password" className="iris-input" value={pw} onChange={(e) => setPw(e.target.value)} />
+            </div>
             <div className="flex gap-2">
-              <Button type="submit" size="xs" color="blue" loading={saving}>Set Password</Button>
-              <Button type="button" size="xs" color="slate" variant="secondary" onClick={onClose}>Cancel</Button>
+              <button type="submit" disabled={saving} className="iris-btn-primary">
+                {saving ? "Saving…" : "Set Password"}
+              </button>
+              <button type="button" onClick={onClose} className="iris-btn-secondary">Cancel</button>
             </div>
           </form>
         )}
@@ -182,12 +197,14 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
-      {toast && <div className="fixed top-20 right-8 z-50 bg-slate-800 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg">{toast}</div>}
+      {toast && <div className="iris-toast">{toast}</div>}
       {resetting && <PasswordResetModal email={resetting} onClose={() => setResetting(null)} />}
 
       <div className="flex items-center justify-between">
         <div><Title>Users</Title><Text>Manage user accounts, roles, and store assignments.</Text></div>
-        <Button size="sm" icon={Plus} onClick={() => setShowNew(true)}>Add User</Button>
+        <button onClick={() => setShowNew(true)} className="iris-btn-primary">
+          <Plus size={15} /> Add User
+        </button>
       </div>
 
       {showNew && (
@@ -212,7 +229,7 @@ export default function UsersPage() {
                 <tr key={u.email} className="hover:bg-slate-50/50">
                   <td className="px-5 py-3 text-slate-700 font-medium">{u.email}</td>
                   <td className="px-5 py-3">{u.full_name}</td>
-                  <td className="px-5 py-3 text-slate-500 text-xs">{u.store_id || "—"}</td>
+                  <td className="px-5 py-3 text-slate-500 text-xs font-mono">{u.store_id || "—"}</td>
                   <td className="px-5 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(u.roles || []).map((r: string) => <Badge key={r} color="blue">{r}</Badge>)}
@@ -224,9 +241,9 @@ export default function UsersPage() {
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex gap-2">
-                      <button onClick={() => setEditing(editing === u.email ? null : u.email)} className="text-slate-400 hover:text-blue-600" title="Edit"><Pencil size={14} /></button>
-                      <button onClick={() => setResetting(u.email)} className="text-slate-400 hover:text-amber-600" title="Reset Password"><Key size={14} /></button>
-                      <button onClick={() => handleDelete(u.email)} className="text-slate-400 hover:text-rose-600" title="Delete"><Trash2 size={14} /></button>
+                      <button onClick={() => setEditing(editing === u.email ? null : u.email)} className="text-slate-400 hover:text-blue-600 transition-colors" title="Edit"><Pencil size={14} /></button>
+                      <button onClick={() => setResetting(u.email)} className="text-slate-400 hover:text-amber-600 transition-colors" title="Reset Password"><Key size={14} /></button>
+                      <button onClick={() => handleDelete(u.email)} className="text-slate-400 hover:text-rose-600 transition-colors" title="Delete"><Trash2 size={14} /></button>
                     </div>
                   </td>
                 </tr>

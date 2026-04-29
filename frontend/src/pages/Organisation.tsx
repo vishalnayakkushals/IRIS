@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { adminGetSettings, adminUpdateSettings } from "../api/client";
-import { Card, Title, Text, Button } from "@tremor/react";
+import { Card, Title, Text } from "@tremor/react";
 import { Save } from "lucide-react";
 
 const FIELDS: { key: string; label: string; type?: string; placeholder?: string }[] = [
@@ -62,13 +62,13 @@ export default function Organisation() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {FIELDS.map(({ key, label, type, placeholder }) => (
             <div key={key}>
-              <label className="block text-xs text-slate-500 mb-1">{label}</label>
+              <label className="iris-label">{label}</label>
               <input
                 type={type || "text"}
                 placeholder={placeholder}
                 value={settings[key] || ""}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="iris-input"
               />
             </div>
           ))}
@@ -80,12 +80,12 @@ export default function Organisation() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {PASSWORD_FIELDS.map(({ key, label }) => (
             <div key={key}>
-              <label className="block text-xs text-slate-500 mb-1">{label}</label>
+              <label className="iris-label">{label}</label>
               <input
                 type="text"
                 value={settings[key] || ""}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="iris-input"
               />
             </div>
           ))}
@@ -93,7 +93,10 @@ export default function Organisation() {
       </Card>
 
       <div className="flex justify-end">
-        <Button color="blue" icon={Save} loading={saving} onClick={save}>Save All Settings</Button>
+        <button onClick={save} disabled={saving} className="iris-btn-primary">
+          <Save size={14} />
+          {saving ? "Saving…" : "Save All Settings"}
+        </button>
       </div>
     </div>
   );
