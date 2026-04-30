@@ -2,12 +2,17 @@
 model version history, and pipeline run quality stats."""
 from __future__ import annotations
 
+import csv
+import io
+import re
 import sqlite3
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from backend.app.auth.dependencies import get_current_user
 from backend.app.config import get_settings
@@ -22,6 +27,22 @@ from backend.app.db.canonical_metadata import (
 from backend.app.db.session import AsyncSessionLocal
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+_IMAGE_TIME_RE = re.compile(r"(?P<h>\d{2})-(?P<m>\d{2})-(?P<s>\d{2})")
+_NEAREST_IMAGE_MATCH_SECONDS = 300
+
+
+def _rows_to_csv_response(rows: list[dict[str, Any]], filename: str) -> StreamingResponse:
+    cols = list(rows[0].keys()) if rows else []
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=cols)
+    if cols:
+        writer.writeheader()
+        writer.writerows(rows)
+    else:
+        buf.write("")
+    payload = io.BytesIO(buf.getvalue().encode("utf-8"))
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(payload, media_type="text/csv; charset=utf-8", headers=headers)
 
 
 def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
@@ -33,6 +54,212 @@ def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
 def _row_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
     cols = [str(col[0]) for col in (cursor.description or [])]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _parse_clock(value: Any) -> time | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_image_clock(image_name: Any, timestamp_hint: Any) -> time | None:
+    name = str(image_name or "").strip()
+    match = _IMAGE_TIME_RE.search(name)
+    if match:
+        return time(int(match.group("h")), int(match.group("m")), int(match.group("s")))
+    return _parse_clock(timestamp_hint)
+
+
+def _clock_seconds(value: time | None) -> int | None:
+    if value is None:
+        return None
+    return value.hour * 3600 + value.minute * 60 + value.second
+
+
+def _is_seeded_run(run_id: Any) -> bool:
+    return "seeded" in str(run_id or "").lower()
+
+
+def _load_image_contexts(
+    conn: sqlite3.Connection,
+    store_id: str,
+    business_date: str,
+) -> list[dict[str, Any]]:
+    # Match on date_source (YYYY-MM-DD) OR date_display (DD-MM-YYYY or YYYY-MM-DD).
+    # Convert DD-MM-YYYY display dates to ISO for comparison.
+    cur = conn.execute(
+        """
+        SELECT
+            image_id,
+            image_name,
+            relative_path,
+            source_url,
+            camera_id,
+            timestamp_hint,
+            yolo_relevant,
+            person_count,
+            gpt_customer_count,
+            gpt_staff_count,
+            gpt_status
+        FROM onfly_image_state
+        WHERE store_id = ?
+          AND (
+            date_source = ?
+            OR date_display = ?
+            OR (
+              date_display GLOB '??-??-????' AND
+              SUBSTR(date_display,7,4)||'-'||SUBSTR(date_display,4,2)||'-'||SUBSTR(date_display,1,2) = ?
+            )
+          )
+        ORDER BY image_name ASC
+        """,
+        (store_id, business_date, business_date, business_date),
+    )
+    rows = _row_dicts(cur)
+    contexts: list[dict[str, Any]] = []
+    for row in rows:
+        img_time = _parse_image_clock(row.get("image_name"), row.get("timestamp_hint"))
+        seconds = _clock_seconds(img_time)
+        rel_path = str(row.get("relative_path") or "")
+        folder_name = rel_path.split("/", 1)[0] if "/" in rel_path else ""
+        contexts.append(
+            {
+                **row,
+                "drive_folder_name": folder_name,
+                "drive_actual_image_name": str(row.get("image_name") or ""),
+                "drive_image_link": str(row.get("source_url") or ""),
+                "drive_relative_path": rel_path,
+                "image_time": img_time.strftime("%H:%M:%S") if img_time else "",
+                "_seconds": seconds,
+            }
+        )
+    return contexts
+
+
+def _resolve_session_images(
+    session_row: dict[str, Any],
+    image_contexts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    source_image_name = str(session_row.get("source_image_name") or "").strip()
+    source_image_id = str(session_row.get("image_id") or "").strip()
+    session_camera = str(session_row.get("camera_id") or "").strip()
+
+    start_clock = (
+        _parse_clock(session_row.get("entry_time"))
+        or _parse_clock(session_row.get("first_seen_time"))
+        or _parse_clock(session_row.get("event_time"))
+    )
+    end_clock = (
+        _parse_clock(session_row.get("exit_time"))
+        or _parse_clock(session_row.get("last_seen_time"))
+        or start_clock
+    )
+    start_sec = _clock_seconds(start_clock)
+    end_sec = _clock_seconds(end_clock)
+
+    # Pre-partition: images from the same camera vs all others
+    same_cam_imgs = [
+        img for img in image_contexts
+        if session_camera and str(img.get("camera_id") or "") == session_camera
+    ]
+    # Use same-camera pool when available, fall back to all images
+    preferred_pool = same_cam_imgs if same_cam_imgs else image_contexts
+
+    # Step 1: Direct match by image name or ID (camera-agnostic, most precise)
+    direct_matches = [
+        img for img in image_contexts
+        if (source_image_name and img["drive_actual_image_name"] == source_image_name)
+        or (source_image_id and str(img.get("image_id") or "") == source_image_id)
+    ]
+    if direct_matches:
+        return direct_matches
+
+    def _in_window(img: dict[str, Any]) -> bool:
+        s = img.get("_seconds")
+        return (
+            s is not None
+            and start_sec is not None
+            and end_sec is not None
+            and start_sec <= int(s) <= end_sec
+        )
+
+    # Step 2: Time-window overlap — same camera only
+    same_cam_window = [img for img in preferred_pool if _in_window(img)]
+    if same_cam_window:
+        return same_cam_window
+
+    # Step 3: Time-window overlap — cross-camera fallback (clearly marked)
+    if preferred_pool is not image_contexts:
+        cross_cam_window = [img for img in image_contexts if _in_window(img)]
+        if cross_cam_window:
+            return [{**img, "_cross_camera": True} for img in cross_cam_window]
+
+    # Step 4: Nearest-neighbour — prefer same camera, 5-minute tolerance
+    if start_sec is not None:
+        timed = [img for img in preferred_pool if img.get("_seconds") is not None]
+        if timed:
+            timed_sorted = sorted(timed, key=lambda img: abs(int(img["_seconds"]) - start_sec))
+            if abs(int(timed_sorted[0]["_seconds"]) - start_sec) <= _NEAREST_IMAGE_MATCH_SECONDS:
+                picked = [timed_sorted[0]]
+                if end_sec is not None and end_sec != start_sec:
+                    exit_sorted = sorted(timed, key=lambda img: abs(int(img["_seconds"]) - end_sec))
+                    if (
+                        exit_sorted
+                        and abs(int(exit_sorted[0]["_seconds"]) - end_sec) <= _NEAREST_IMAGE_MATCH_SECONDS
+                        and exit_sorted[0].get("image_id") != picked[0].get("image_id")
+                    ):
+                        picked.append(exit_sorted[0])
+                return picked
+
+    return []
+
+
+def _enrich_walkin_rows(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    image_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        store_id = str(row.get("store_id") or "")
+        business_date = str(row.get("business_date") or row.get("Date") or row.get("date") or "")
+        cache_key = (store_id, business_date)
+        if cache_key not in image_cache:
+            image_cache[cache_key] = _load_image_contexts(conn, store_id, business_date)
+        matches = _resolve_session_images(row, image_cache[cache_key])
+        primary = matches[0] if matches else {}
+        base = {
+            key: value
+            for key, value in row.items()
+            if key not in {
+                "run_id",
+                "image_id",
+                "business_date",
+                "source_image_name",
+                "source_folder_name",
+                "first_seen_time",
+                "last_seen_time",
+                "event_time",
+            }
+        }
+        enriched.append(
+            {
+                **base,
+                "Source Image": str(row.get("source_image_name") or ""),
+                "Drive Actual Image Name": str(primary.get("drive_actual_image_name") or row.get("source_image_name") or ""),
+                "Drive Folder Name": str(primary.get("drive_folder_name") or row.get("source_folder_name") or ""),
+                "Drive Image Link": str(primary.get("drive_image_link") or ""),
+                "Drive Relative Path": str(primary.get("drive_relative_path") or ""),
+                "Seeded Data": "Yes" if _is_seeded_run(row.get("run_id")) else "No",
+            }
+        )
+    return enriched
 
 
 def _sqlite_runtime_summary(store_id: str | None = None, limit: int = 90) -> list[dict[str, Any]]:
@@ -145,7 +372,10 @@ def _sqlite_runtime_walkins(
             f"""
             SELECT
                 store_id,
+                run_id,
+                image_id,
                 COALESCE(business_date, date, '') AS "Date",
+                COALESCE(business_date, date, '') AS business_date,
                 COALESCE(walkin_id, '') AS "Walk-in ID",
                 COALESCE(group_id, '') AS "Group ID",
                 COALESCE(role, '') AS "Role",
@@ -165,6 +395,11 @@ def _sqlite_runtime_walkins(
                 COALESCE(engagement_depth, '') AS "Engagement Depth",
                 COALESCE(purchase_signal_bag, '') AS "Purchase Signal (Bag)",
                 COALESCE(included_in_analytics, '') AS "Included in Analytics",
+                COALESCE(source_image_name, '') AS source_image_name,
+                COALESCE(source_folder_name, '') AS source_folder_name,
+                COALESCE(first_seen_time, '') AS first_seen_time,
+                COALESCE(last_seen_time, '') AS last_seen_time,
+                COALESCE(event_time, '') AS event_time,
                 id
             FROM onfly_walkin_sessions
             {where_sql}
@@ -173,7 +408,8 @@ def _sqlite_runtime_walkins(
             """,
             tuple(params + [max(1, int(limit))]),
         )
-        return _row_dicts(cur)
+        rows = _row_dicts(cur)
+        return _enrich_walkin_rows(conn, rows)
     finally:
         conn.close()
 
@@ -353,3 +589,192 @@ async def get_pipeline_quality(
             stmt = stmt.where(pipeline_run_log.c.store_id == store_id)
         result = await session.execute(stmt)
         return [dict(r) for r in result.mappings().all()]
+
+
+@router.get("/download/summary")
+async def download_store_day_summary(
+    store_id: str | None = None,
+    limit: int = 100000,
+    _: str = Depends(get_current_user),
+) -> StreamingResponse:
+    rows = await get_store_day_summary(store_id=store_id, limit=limit, _="download")
+    tag = store_id or "all"
+    return _rows_to_csv_response(rows, f"summary_{tag}.csv")
+
+
+@router.get("/download/walkins")
+async def download_walkins(
+    store_id: str | None = None,
+    business_date: str | None = None,
+    limit: int = 100000,
+    _: str = Depends(get_current_user),
+) -> StreamingResponse:
+    rows = await get_walkins(store_id=store_id, business_date=business_date, limit=limit, _="download")
+    tag = store_id or "all"
+    date_tag = business_date or "all_dates"
+    return _rows_to_csv_response(rows, f"walkins_{tag}_{date_tag}.csv")
+
+
+@router.get("/download/image-scans")
+async def download_image_scans(
+    store_id: str | None = None,
+    business_date: str | None = None,
+    limit: int = 100000,
+    _: str = Depends(get_current_user),
+) -> StreamingResponse:
+    rows = await get_image_scans(store_id=store_id, business_date=business_date, limit=limit, _="download")
+    tag = store_id or "all"
+    date_tag = business_date or "all_dates"
+    return _rows_to_csv_response(rows, f"image_scans_{tag}_{date_tag}.csv")
+
+
+# ---------------------------------------------------------------------------
+# Validation — Walk-in ID ↔ Source Image cross-reference
+# ---------------------------------------------------------------------------
+
+def _sqlite_walkin_image_map(
+    store_id: str | None = None,
+    business_date: str | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        params: list[Any] = []
+        where: list[str] = ["COALESCE(business_date, '') != ''"]
+        if store_id:
+            where.append("store_id = ?")
+            params.append(store_id)
+        if business_date:
+            where.append("business_date = ?")
+            params.append(business_date)
+        where_sql = f"WHERE {' AND '.join(where)}"
+        cur = conn.execute(
+            f"""
+            SELECT
+                store_id,
+                run_id,
+                image_id,
+                business_date,
+                walkin_id,
+                group_id,
+                role,
+                gender,
+                age_band,
+                entry_time,
+                exit_time,
+                time_spent_mins,
+                included_in_analytics,
+                purchase_signal_bag,
+                camera_id,
+                source_image_name,
+                source_folder_name,
+                first_seen_time,
+                last_seen_time,
+                event_time
+            FROM onfly_walkin_sessions
+            {where_sql}
+            ORDER BY business_date DESC, walkin_id ASC, id ASC
+            LIMIT ?
+            """,
+            tuple(params + [max(1, int(limit))]),
+        )
+        session_rows = _row_dicts(cur)
+        image_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        mapped_rows: list[dict[str, Any]] = []
+        for session_row in session_rows:
+            session_store = str(session_row.get("store_id") or "")
+            session_date = str(session_row.get("business_date") or "")
+            cache_key = (session_store, session_date)
+            if cache_key not in image_cache:
+                image_cache[cache_key] = _load_image_contexts(conn, session_store, session_date)
+            matches = _resolve_session_images(session_row, image_cache[cache_key])
+            base = {
+                "store_id": session_store,
+                "Date": session_date,
+                "Walk-in ID": str(session_row.get("walkin_id") or ""),
+                "Group ID": str(session_row.get("group_id") or ""),
+                "Role": str(session_row.get("role") or ""),
+                "Gender": str(session_row.get("gender") or ""),
+                "Age Band": str(session_row.get("age_band") or ""),
+                "Entry Time": str(session_row.get("entry_time") or ""),
+                "Exit Time": str(session_row.get("exit_time") or ""),
+                "Dwell (mins)": str(session_row.get("time_spent_mins") or ""),
+                "In Analytics": str(session_row.get("included_in_analytics") or ""),
+                "Purchase Signal": str(session_row.get("purchase_signal_bag") or ""),
+                "Session Camera": str(session_row.get("camera_id") or ""),
+                "Session Source Image": str(session_row.get("source_image_name") or ""),
+                "Session Drive Folder": str(session_row.get("source_folder_name") or ""),
+                "Seeded Data": "Yes" if _is_seeded_run(session_row.get("run_id")) else "No",
+            }
+            session_cam = str(session_row.get("camera_id") or "")
+            if not matches:
+                mapped_rows.append(
+                    {
+                        **base,
+                        "Image Filename": "—",
+                        "Drive Folder": "—",
+                        "Drive Link": "",
+                        "Image Camera": "—",
+                        "Camera Match": "No images found",
+                        "Image Time": "—",
+                        "YOLO Relevant": "No",
+                        "YOLO People": 0,
+                        "GPT Customers": 0,
+                        "GPT Staff": 0,
+                        "GPT Status": "",
+                    }
+                )
+                continue
+            for match in matches:
+                img_cam = str(match.get("camera_id") or "")
+                if match.get("_cross_camera"):
+                    cam_match = f"Cross-camera (session={session_cam}, image={img_cam})"
+                elif img_cam and session_cam and img_cam == session_cam:
+                    cam_match = "Exact"
+                else:
+                    cam_match = "Direct name match"
+                mapped_rows.append(
+                    {
+                        **base,
+                        "Image Filename": str(match.get("drive_actual_image_name") or "—"),
+                        "Drive Folder": str(match.get("drive_folder_name") or "—"),
+                        "Drive Link": str(match.get("drive_image_link") or ""),
+                        "Image Camera": img_cam or "—",
+                        "Camera Match": cam_match,
+                        "Image Time": str(match.get("image_time") or "—"),
+                        "YOLO Relevant": "Yes" if match.get("yolo_relevant") else "No",
+                        "YOLO People": int(match.get("person_count") or 0),
+                        "GPT Customers": int(match.get("gpt_customer_count") or 0),
+                        "GPT Staff": int(match.get("gpt_staff_count") or 0),
+                        "GPT Status": str(match.get("gpt_status") or ""),
+                    }
+                )
+        return mapped_rows
+    finally:
+        conn.close()
+
+
+@router.get("/validation/walkin-image-map")
+async def get_walkin_image_map(
+    store_id: str | None = None,
+    business_date: str | None = None,
+    limit: int = 5000,
+    _: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    return _sqlite_walkin_image_map(store_id=store_id, business_date=business_date, limit=limit)
+
+
+@router.get("/download/walkin-image-map")
+async def download_walkin_image_map(
+    store_id: str | None = None,
+    business_date: str | None = None,
+    limit: int = 100000,
+    _: str = Depends(get_current_user),
+) -> StreamingResponse:
+    rows = _sqlite_walkin_image_map(store_id=store_id, business_date=business_date, limit=limit)
+    tag = store_id or "all"
+    date_tag = business_date or "all_dates"
+    return _rows_to_csv_response(rows, f"validation_{tag}_{date_tag}.csv")

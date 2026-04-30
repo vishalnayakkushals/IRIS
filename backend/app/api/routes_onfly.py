@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/onfly", tags=["onfly"])
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="iris-pipeline")
-_active_runs: dict[str, str] = {}  # store_id → run_id
+_active_runs: dict[str, dict[str, str]] = {}  # store_id → {run_id, started_at}
+_MANUAL_SYNC_MAX_IMAGES = 10000
+_ACTIVE_RUN_GRACE_SECONDS = 30
+_STALE_HEARTBEAT_SECONDS = 180
 
 
 def _now() -> datetime:
@@ -56,6 +59,33 @@ def _parse_iso(value: str) -> datetime | None:
         return None
 
 
+def _is_terminal_run_status(value: str) -> bool:
+    return str(value or "").strip().lower() in {"success", "done", "failed", "partial", "cancelled", "canceled"}
+
+
+def _active_run_meta(store_id: str) -> dict[str, str]:
+    raw = _active_runs.get(store_id)
+    if isinstance(raw, dict):
+        return {
+            "run_id": str(raw.get("run_id") or "").strip(),
+            "started_at": str(raw.get("started_at") or "").strip(),
+        }
+    text = str(raw or "").strip()
+    return {"run_id": text, "started_at": ""}
+
+
+def _set_active_run(store_id: str, run_id: str) -> None:
+    _active_runs[store_id] = {"run_id": str(run_id or "").strip(), "started_at": _now_str()}
+
+
+def _active_run_within_grace(store_id: str) -> bool:
+    started_at = _active_run_meta(store_id).get("started_at", "")
+    started_dt = _parse_iso(started_at)
+    if started_dt is None:
+        return False
+    return (_now() - started_dt).total_seconds() <= _ACTIVE_RUN_GRACE_SECONDS
+
+
 def _sqlite_row_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
     cols = [str(col[0]) for col in (cursor.description or [])]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
@@ -67,21 +97,60 @@ def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _load_live_progress_from_sqlite(db_path: Path, store_id: str) -> dict[str, Any] | None:
+def _detect_source_provider(source_url: str) -> str:
+    value = str(source_url or "").strip().lower()
+    if "drive.google.com" in value:
+        return "google_drive"
+    if value.startswith("s3://"):
+        return "s3"
+    if value.startswith("http://") or value.startswith("https://"):
+        return "remote"
+    return "local"
+
+
+def _normalize_manual_source(source_text: str) -> str:
+    text = str(source_text or "").strip()
+    if not text:
+        return ""
+    if text.startswith("http://") or text.startswith("https://") or text.lower().startswith("file://"):
+        return text
+    from iris.store_registry import parse_drive_folder_id, parse_s3_location
+
+    if parse_s3_location(text) is not None:
+        return text
+    if parse_drive_folder_id(text) or text.replace("-", "").replace("_", "").isalnum():
+        return f"https://drive.google.com/drive/folders/{text}"
+    return text
+
+
+def _load_live_progress_from_sqlite(db_path: Path, store_id: str, run_id: str = "") -> dict[str, Any] | None:
     if not db_path.exists():
         return None
     conn = _sqlite_connect(db_path)
     try:
-        run_row = conn.execute(
-            """
-            SELECT *
-            FROM onfly_pipeline_runs
-            WHERE store_id=?
-            ORDER BY started_at DESC, created_at DESC
-            LIMIT 1
-            """,
-            (store_id,),
-        ).fetchone()
+        run_row = None
+        run_id = str(run_id or "").strip()
+        if run_id:
+            run_row = conn.execute(
+                """
+                SELECT *
+                FROM onfly_pipeline_runs
+                WHERE run_id=? AND store_id=?
+                LIMIT 1
+                """,
+                (run_id, store_id),
+            ).fetchone()
+        if run_row is None:
+            run_row = conn.execute(
+                """
+                SELECT *
+                FROM onfly_pipeline_runs
+                WHERE store_id=?
+                ORDER BY started_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (store_id,),
+            ).fetchone()
         if run_row is None:
             return None
         pending_count = conn.execute(
@@ -92,6 +161,18 @@ def _load_live_progress_from_sqlite(db_path: Path, store_id: str) -> dict[str, A
             """,
             (store_id,),
         ).fetchone()[0]
+        latest_success = None
+        if not any(str(run_row[col] or "").strip() for col in ("report_image_results_csv", "report_walkin_sessions_csv", "report_store_date_csv")):
+            latest_success = conn.execute(
+                """
+                SELECT report_image_results_csv, report_walkin_sessions_csv, report_store_date_csv
+                FROM onfly_pipeline_runs
+                WHERE store_id=? AND status='success'
+                ORDER BY started_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (store_id,),
+            ).fetchone()
         heartbeat_at = str(run_row["last_heartbeat_at"] or "")
         heartbeat_dt = _parse_iso(heartbeat_at)
         heartbeat_age = int((_now() - heartbeat_dt).total_seconds()) if heartbeat_dt else None
@@ -113,9 +194,62 @@ def _load_live_progress_from_sqlite(db_path: Path, store_id: str) -> dict[str, A
             "heartbeat_age_seconds": heartbeat_age,
             "stale_heartbeat": stale,
             "error": str(run_row["error_message"] or ""),
+            "report_image_results_csv": str(run_row["report_image_results_csv"] or (latest_success["report_image_results_csv"] if latest_success else "") or ""),
+            "report_walkin_sessions_csv": str(run_row["report_walkin_sessions_csv"] or (latest_success["report_walkin_sessions_csv"] if latest_success else "") or ""),
+            "report_store_date_csv": str(run_row["report_store_date_csv"] or (latest_success["report_store_date_csv"] if latest_success else "") or ""),
         }
     finally:
         conn.close()
+
+
+def _mark_stale_run_if_needed(db_path: Path, store_id: str, run_id: str = "") -> dict[str, Any] | None:
+    progress = _load_live_progress_from_sqlite(db_path, store_id, run_id)
+    if not progress or not progress.get("stale_heartbeat") or str(progress.get("status") or "") != "running":
+        return progress
+    now = _now_str()
+    stale_msg = progress.get("error") or (
+        f"Marked stale after {int(progress.get('heartbeat_age_seconds') or 0)}s without heartbeat "
+        f"while in stage {progress.get('stage') or 'UNKNOWN'}."
+    )
+    conn = _sqlite_connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE onfly_pipeline_runs
+            SET status='failed',
+                error_message=?,
+                ended_at=?,
+                updated_at=?
+            WHERE run_id=?
+            """,
+            (stale_msg, now, now, progress["run_id"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO onfly_pipeline_run_events(
+                run_id, stage, event_type, message, error_message, created_at
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                progress["run_id"],
+                progress.get("stage") or "UNKNOWN",
+                "failure",
+                "Run watchdog marked pipeline stale",
+                stale_msg,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _active_runs.pop(store_id, None)
+    _sync_update_store_sync_state(
+        store_id=store_id,
+        status="error",
+        message=stale_msg,
+        file_count=int(progress.get("images_processed") or 0),
+    )
+    return _load_live_progress_from_sqlite(db_path, store_id, "")
 
 
 def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str, Any]]:
@@ -202,7 +336,15 @@ def _sync_update_run_log(run_id: str, status: str, remarks: str, result: dict) -
         )
 
 
-def _sync_update_store_sync_state(store_id: str, status: str, message: str, file_count: int) -> None:
+def _sync_update_store_sync_state(
+    store_id: str,
+    status: str,
+    message: str,
+    file_count: int,
+    *,
+    source_uri: str = "",
+    source_provider: str = "",
+) -> None:
     import sqlalchemy as sa
     from backend.app.db.session import engine_sync
 
@@ -219,11 +361,18 @@ def _sync_update_store_sync_state(store_id: str, status: str, message: str, file
             sa.select(store_sync_state.c.store_id).where(store_sync_state.c.store_id == store_id)
         ).first()
         if existing:
+            if source_provider:
+                vals["source_provider"] = source_provider
+            if source_uri:
+                vals["source_uri"] = source_uri
             conn.execute(sa.update(store_sync_state).where(store_sync_state.c.store_id == store_id).values(**vals))
         else:
             conn.execute(
                 sa.insert(store_sync_state).values(
-                    store_id=store_id, source_provider="google_drive", source_uri="", **vals
+                    store_id=store_id,
+                    source_provider=source_provider or "google_drive",
+                    source_uri=source_uri,
+                    **vals,
                 )
             )
 
@@ -239,6 +388,8 @@ def _run_pipeline_sync(
     triggered_by: str,
     gpt_enabled: bool,
     use_tracker: bool,
+    max_images: int,
+    force_reprocess: bool,
 ) -> None:
     """Run OnFlyPipeline synchronously — called in thread pool worker."""
     import sys
@@ -257,23 +408,33 @@ def _run_pipeline_sync(
     settings = get_settings()
     out_dir = settings.data_root_obj / "exports" / "current" / "onfly"
     out_dir.mkdir(parents=True, exist_ok=True)
+    _sync_update_store_sync_state(
+        store_id=store_id,
+        status="running",
+        message="Pipeline started",
+        file_count=0,
+        source_uri=source_url,
+        source_provider=_detect_source_provider(source_url),
+    )
 
     try:
         from iris.onfly_pipeline import OnFlyConfig, run_onfly_pipeline
 
         cfg = OnFlyConfig(
+            run_id=run_id,
             store_id=store_id,
             source_uri=source_url,
             db_path=settings.db_path_obj,
             out_dir=out_dir,
             detector_type="yolo",
             conf_threshold=settings.yolo_conf,
-            max_images=settings.max_images,
+            max_images=max_images,
             gpt_enabled=gpt_enabled,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             pipeline_version="onfly_v2",
             use_tracker=use_tracker,
+            force_reprocess=force_reprocess,
         )
         summary = run_onfly_pipeline(cfg)
 
@@ -289,6 +450,8 @@ def _run_pipeline_sync(
             status="ok",
             message=remarks,
             file_count=int(summary.get("new_images", 0)),
+            source_uri=source_url,
+            source_provider=_detect_source_provider(source_url),
         )
 
     except Exception as exc:
@@ -296,7 +459,12 @@ def _run_pipeline_sync(
         logger.exception("Pipeline failed for %s run %s", store_id, run_id)
         _sync_update_run_log(run_id=run_id, status="failed", remarks=f"Error: {err_msg}", result={})
         _sync_update_store_sync_state(
-            store_id=store_id, status="error", message=err_msg, file_count=0
+            store_id=store_id,
+            status="error",
+            message=err_msg,
+            file_count=0,
+            source_uri=source_url,
+            source_provider=_detect_source_provider(source_url),
         )
     finally:
         _active_runs.pop(store_id, None)
@@ -310,6 +478,9 @@ class SyncRequest(BaseModel):
     gpt_enabled: bool = False
     use_tracker: bool = False
     triggered_by: str = "manual"
+    source_url: str = ""
+    max_images: int | None = None
+    force_reprocess: bool = False
 
 
 @router.get("/stores")
@@ -330,11 +501,31 @@ async def list_onfly_stores(_: str = Depends(get_current_user)) -> list[dict[str
 
     for row in store_rows:
         sync = sync_by_id.get(row["store_id"], {})
+        runtime_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, row["store_id"], _active_run_meta(row["store_id"]).get("run_id", ""))
         row["last_status"] = sync.get("last_status", "never")
         row["last_sync_at"] = str(sync.get("last_sync_at") or "")
         row["last_message"] = sync.get("last_message", "")
         row["synced_files"] = sync.get("synced_files", 0)
-        row["is_running"] = _active_runs.get(row["store_id"]) is not None
+        row["source_uri"] = sync.get("source_uri", "") or row.get("drive_folder_url", "")
+        row["source_provider"] = sync.get("source_provider", "") or _detect_source_provider(row.get("drive_folder_url", ""))
+        row["is_running"] = bool(_active_run_meta(row["store_id"]).get("run_id"))
+        if runtime_progress:
+            row["current_run_id"] = runtime_progress.get("run_id", "")
+            row["current_stage"] = runtime_progress.get("stage", "")
+            row["stale_heartbeat"] = bool(runtime_progress.get("stale_heartbeat"))
+            row["heartbeat_age_seconds"] = runtime_progress.get("heartbeat_age_seconds")
+            row["report_store_date_csv"] = runtime_progress.get("report_store_date_csv", "")
+            row["report_walkin_sessions_csv"] = runtime_progress.get("report_walkin_sessions_csv", "")
+            row["report_image_results_csv"] = runtime_progress.get("report_image_results_csv", "")
+            if str(runtime_progress.get("status") or "") == "running":
+                row["last_status"] = "running"
+                row["last_sync_at"] = str(runtime_progress.get("started_at") or row["last_sync_at"])
+                row["last_message"] = f"Current stage: {runtime_progress.get('stage') or 'LIST'}"
+                row["is_running"] = True
+            elif str(runtime_progress.get("status") or "") == "failed":
+                row["last_status"] = "error"
+                row["last_sync_at"] = str(runtime_progress.get("ended_at") or runtime_progress.get("last_heartbeat_at") or row["last_sync_at"])
+                row["last_message"] = str(runtime_progress.get("error") or row["last_message"])
 
     return store_rows
 
@@ -347,12 +538,25 @@ async def get_store_sync_status(store_id: str, _: str = Depends(get_current_user
         )
         row = result.mappings().first()
 
-    return {
+    runtime_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, store_id, _active_run_meta(store_id).get("run_id", ""))
+    payload = {
         "store_id": store_id,
-        "is_running": _active_runs.get(store_id) is not None,
-        "run_id": _active_runs.get(store_id),
+        "is_running": bool(_active_run_meta(store_id).get("run_id")),
+        "run_id": _active_run_meta(store_id).get("run_id", ""),
         **(dict(row) if row else {"last_status": "never", "last_sync_at": None, "last_message": ""}),
     }
+    payload["source_uri"] = payload.get("source_uri") or ""
+    payload["source_provider"] = payload.get("source_provider") or _detect_source_provider(payload.get("source_uri", ""))
+    if runtime_progress:
+        payload["current_run"] = runtime_progress
+        if str(runtime_progress.get("status") or "") == "running":
+            payload["is_running"] = True
+            payload["last_status"] = "running"
+            payload["last_message"] = f"Current stage: {runtime_progress.get('stage') or 'LIST'}"
+        elif str(runtime_progress.get("status") or "") == "failed":
+            payload["last_status"] = "error"
+            payload["last_message"] = str(runtime_progress.get("error") or payload.get("last_message") or "")
+    return payload
 
 
 @router.post("/sync/{store_id}")
@@ -362,12 +566,30 @@ async def trigger_onfly_sync(
     actor: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Trigger on-fly pipeline for a store. Runs in background thread — no Celery needed."""
-    if store_id in _active_runs:
+    orphan_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, store_id, "")
+    if orphan_progress and str(orphan_progress.get("status") or "") == "running" and not _active_run_meta(store_id).get("run_id"):
         return {
-            "run_id": _active_runs[store_id],
+            "run_id": orphan_progress.get("run_id", ""),
             "status": "already_running",
             "message": f"Sync already running for {store_id}",
         }
+    if store_id in _active_runs:
+        active_run_id = _active_run_meta(store_id).get("run_id", "")
+        active_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, store_id, active_run_id)
+        if active_progress is None and _active_run_within_grace(store_id):
+            return {
+                "run_id": active_run_id,
+                "status": "already_running",
+                "message": f"Sync already running for {store_id}",
+            }
+        if active_progress is None or _is_terminal_run_status(active_progress.get("status", "")):
+            _active_runs.pop(store_id, None)
+        else:
+            return {
+                "run_id": active_run_id,
+                "status": "already_running",
+                "message": f"Sync already running for {store_id}",
+            }
 
     # Fetch store source URL
     async with AsyncSessionLocal() as session:
@@ -377,15 +599,26 @@ async def trigger_onfly_sync(
         )
         row = result.first()
 
-    if not row or not row[0]:
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Store {store_id} was not found.")
+
+    requested_source = _normalize_manual_source(body.source_url)
+    if not row[0] and not requested_source:
         raise HTTPException(
             status_code=422,
-            detail=f"Store {store_id} has no Drive URL configured. Go to Admin > Store Mapping first.",
+            detail=f"Store {store_id} has no Drive URL configured. Go to Admin > Store Mapping first or provide a manual folder URL/ID.",
         )
 
-    source_url = row[0]
+    settings = get_settings()
+    configured_source_url = str(row[0] or "").strip()
+    source_url = requested_source or configured_source_url
+    requested_cap = settings.max_images if body.max_images is None else int(body.max_images)
+    max_images = 0 if requested_cap <= 0 else min(requested_cap, _MANUAL_SYNC_MAX_IMAGES)
     run_id = _make_run_id(store_id)
-    _active_runs[store_id] = run_id
+    _set_active_run(store_id, run_id)
+
+    if source_url != configured_source_url:
+        logger.info("Manual on-fly source override for %s -> %s", store_id, source_url)
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(
@@ -397,28 +630,88 @@ async def trigger_onfly_sync(
         body.triggered_by,
         body.gpt_enabled,
         body.use_tracker,
+        max_images,
+        body.force_reprocess,
     )
 
     return {
         "run_id": run_id,
         "store_id": store_id,
+        "source_url": source_url,
+        "max_images": max_images,
+        "force_reprocess": bool(body.force_reprocess),
         "status": "running",
-        "message": f"Pipeline started for {store_id} — GPT: {'on' if body.gpt_enabled else 'off'}",
+        "message": (
+            f"Pipeline started for {store_id} — GPT: {'on' if body.gpt_enabled else 'off'} | "
+            f"Source: {'override' if source_url != configured_source_url else 'configured'} | "
+            f"Max images: {'full folder' if max_images == 0 else max_images}"
+        ),
     }
 
 
 @router.get("/live-progress/{store_id}")
 async def get_live_progress(store_id: str, _: str = Depends(get_current_user)) -> dict[str, Any]:
     """Live pipeline progress from the on-fly runtime DB (sqlite source-of-truth)."""
-    is_running = _active_runs.get(store_id) is not None
-    runtime_progress = _load_live_progress_from_sqlite(get_settings().db_path_obj, store_id)
+    active_run_id = _active_run_meta(store_id).get("run_id", "")
+    is_running = bool(active_run_id)
+    runtime_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, store_id, active_run_id)
+    if is_running and runtime_progress is None and _active_run_within_grace(store_id):
+        return {
+            "store_id": store_id,
+            "is_running": True,
+            "active_run_id": active_run_id,
+            "run_id": active_run_id,
+            "stage": "LIST",
+            "status": "running",
+            "images_discovered": 0,
+            "images_processed": 0,
+            "images_relevant": 0,
+            "images_skipped": 0,
+            "gpt_success": 0,
+            "gpt_failed": 0,
+            "pending_tasks": 0,
+            "started_at": _active_run_meta(store_id).get("started_at", ""),
+            "ended_at": "",
+            "last_heartbeat_at": "",
+            "heartbeat_age_seconds": 0,
+            "stale_heartbeat": False,
+            "error": "",
+        }
+    if is_running and (runtime_progress is None or _is_terminal_run_status(runtime_progress.get("status", ""))):
+        _active_runs.pop(store_id, None)
+        active_run_id = ""
+        is_running = False
+        runtime_progress = _load_live_progress_from_sqlite(get_settings().db_path_obj, store_id, "")
     if runtime_progress:
         return {
             "store_id": store_id,
             "is_running": is_running,
+            "active_run_id": active_run_id,
             **runtime_progress,
         }
-    return {"store_id": store_id, "is_running": is_running, "stage": "", "status": "never"}
+    if is_running:
+        return {
+            "store_id": store_id,
+            "is_running": True,
+            "active_run_id": active_run_id,
+            "run_id": active_run_id,
+            "stage": "LIST",
+            "status": "running",
+            "images_discovered": 0,
+            "images_processed": 0,
+            "images_relevant": 0,
+            "images_skipped": 0,
+            "gpt_success": 0,
+            "gpt_failed": 0,
+            "pending_tasks": 0,
+            "started_at": "",
+            "ended_at": "",
+            "last_heartbeat_at": "",
+            "heartbeat_age_seconds": None,
+            "stale_heartbeat": False,
+            "error": "",
+        }
+    return {"store_id": store_id, "is_running": False, "active_run_id": "", "stage": "", "status": "never"}
 
 
 @router.get("/date-report/{store_id}")
@@ -481,7 +774,7 @@ async def _check_and_trigger_auto_syncs() -> None:
                 continue
 
         run_id = _make_run_id(store_id)
-        _active_runs[store_id] = run_id
+        _set_active_run(store_id, run_id)
         loop = asyncio.get_event_loop()
         loop.run_in_executor(
             _executor,
@@ -491,6 +784,8 @@ async def _check_and_trigger_auto_syncs() -> None:
             s["drive_folder_url"],
             "scheduler",
             False,
+            False,
+            get_settings().max_images,
             False,
         )
         logger.info("Auto-sync triggered for %s (run_id=%s)", store_id, run_id)

@@ -250,6 +250,7 @@ class OnFlyConfig:
     source_uri: str
     db_path: Path
     out_dir: Path
+    run_id: str = ""
     detector_type: str = "yolo"
     conf_threshold: float = 0.18
     max_images: int = 100
@@ -390,7 +391,7 @@ class LocalClient:
 
     def list_images(self, limit: int) -> list[SourceImage]:
         paths = [p for p in self.root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-        paths.sort(key=lambda p: str(p.relative_to(self.root)).lower())
+        paths.sort(key=lambda p: str(p.relative_to(self.root)).lower(), reverse=True)
         if limit > 0:
             paths = paths[:limit]
         out: list[SourceImage] = []
@@ -417,49 +418,62 @@ class GDriveClient:
         self.folder_id = folder_id
         self.api_key = str(api_key).strip()
 
-    def list_images(self, limit: int) -> list[SourceImage]:
-        files: list[dict[str, str]] = []
-        stack: list[tuple[str, list[str]]] = [(self.folder_id, [])]
-        stop_scan = False
-        while stack:
-            if stop_scan:
+    def _list_folder(self, folder_id: str) -> tuple[list[dict], list[dict]]:
+        """Return (subfolders, images) for a single Drive folder — all pages."""
+        subfolders: list[dict] = []
+        images: list[dict] = []
+        token = None
+        while True:
+            params = {
+                "q": f"'{folder_id}' in parents and trashed = false",
+                "fields": "nextPageToken,files(id,name,mimeType)",
+                "pageSize": 1000,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+                "key": self.api_key,
+            }
+            if token:
+                params["pageToken"] = token
+            resp = requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
+            resp.raise_for_status()
+            payload = resp.json()
+            for item in payload.get("files", []):
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                if str(item.get("mimeType", "")) == "application/vnd.google-apps.folder":
+                    subfolders.append({"id": str(item.get("id", "")), "name": name})
+                elif Path(name).suffix.lower() in IMAGE_EXTS:
+                    images.append({"id": str(item.get("id", "")), "name": name})
+            token = payload.get("nextPageToken")
+            if not token:
                 break
-            cur, rel_parts = stack.pop()
-            token = None
-            while True:
-                if stop_scan:
-                    break
-                params = {
-                    "q": f"'{cur}' in parents and trashed = false",
-                    "fields": "nextPageToken,files(id,name,mimeType)",
-                    "pageSize": 1000,
-                    "supportsAllDrives": "true",
-                    "includeItemsFromAllDrives": "true",
-                    "key": self.api_key,
-                }
-                if token:
-                    params["pageToken"] = token
-                resp = requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
-                resp.raise_for_status()
-                payload = resp.json()
-                for item in payload.get("files", []):
-                    name = str(item.get("name", "")).strip()
-                    if not name:
-                        continue
-                    if str(item.get("mimeType", "")) == "application/vnd.google-apps.folder":
-                        stack.append((str(item.get("id", "")).strip(), rel_parts + [name]))
-                        continue
-                    if Path(name).suffix.lower() not in IMAGE_EXTS:
-                        continue
-                    rel = (Path(*rel_parts) / name) if rel_parts else Path(name)
-                    files.append({"id": str(item.get("id", "")), "name": name, "rel": str(rel).replace("\\", "/")})
-                    if limit > 0 and len(files) >= limit:
-                        stop_scan = True
-                        break
-                token = payload.get("nextPageToken")
-                if not token:
-                    break
-        files.sort(key=lambda r: str(r["rel"]).lower())
+        return subfolders, images
+
+    def list_images(self, limit: int) -> list[SourceImage]:
+        # Use a two-phase approach: first collect all date-level subfolders (fast),
+        # sort them newest-first, then enumerate images folder-by-folder until limit is reached.
+        files: list[dict[str, str]] = []
+
+        def _collect(folder_id: str, rel_parts: list[str], depth: int = 0) -> bool:
+            """DFS with newest-first subfolder ordering. Returns True if limit reached."""
+            subfolders, images = self._list_folder(folder_id)
+            # Add images found directly in this folder
+            for img in images:
+                rel = (Path(*rel_parts) / img["name"]) if rel_parts else Path(img["name"])
+                files.append({"id": img["id"], "name": img["name"], "rel": str(rel).replace("\\", "/")})
+                if limit > 0 and len(files) >= limit:
+                    return True
+            # Sort subfolders newest-first (YYYY-MM-DD names sort lexicographically)
+            subfolders.sort(key=lambda s: s["name"], reverse=True)
+            for sf in subfolders:
+                if _collect(sf["id"], rel_parts + [sf["name"]], depth + 1):
+                    return True
+            return False
+
+        _collect(self.folder_id, [])
+        # Final sort: newest date path first
+        files.sort(key=lambda r: str(r["rel"]).lower(), reverse=True)
         if limit > 0:
             files = files[:limit]
         out: list[SourceImage] = []
@@ -929,7 +943,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     yolo_version = str(cfg.yolo_version or cfg.pipeline_version or "onfly_v1").strip()
     gpt_version = str(cfg.gpt_version or cfg.pipeline_version or "onfly_v1").strip()
     started_at = _now()
-    run_id = f"{cfg.store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    run_id = str(cfg.run_id or "").strip() or f"{cfg.store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     perf0 = time.perf_counter()
     client = build_source_client(cfg.source_uri)
     detector = None
@@ -1033,6 +1047,14 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         "done_gpt": done_gpt,
                     },
                 )
+                _update_pipeline_run(
+                    conn,
+                    run_id,
+                    images_skipped=skipped,
+                    images_processed=skipped + new_images,
+                    current_stage=PIPELINE_STAGES[1],
+                )
+                conn.commit()
                 continue
             new_images += 1
             stage = PIPELINE_STAGES[2]
@@ -1040,7 +1062,6 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 conn,
                 run_id,
                 images_skipped=skipped,
-                images_processed=new_images,
                 current_stage=stage,
             )
             _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="pending")
@@ -1465,6 +1486,16 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="GPT skipped",
                     payload={"reason": status},
                 )
+            _update_pipeline_run(
+                conn,
+                run_id,
+                images_skipped=skipped,
+                images_processed=skipped + new_images,
+                images_relevant=yolo_relevant,
+                images_irrelevant=max(0, yolo_done - yolo_relevant),
+                gpt_success_count=gpt_done,
+                gpt_failed_count=gpt_failed,
+            )
             conn.commit()
         # End-of-day closeout: deterministically close remaining open sessions.
         conn.execute(
@@ -1756,7 +1787,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             ended_at=ended_at,
             images_discovered=len(images),
             images_skipped=skipped,
-            images_processed=new_images,
+            images_processed=skipped + new_images,
             images_relevant=yolo_relevant,
             images_irrelevant=max(0, yolo_done - yolo_relevant),
             gpt_success_count=gpt_done,

@@ -11,6 +11,225 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-04-30 - Fix Validation Camera Matching, Update Developer Docs, Deployment Prep
+- Changed paths:
+  - `backend/app/api/routes_reports.py`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/routes_qa.py`
+  - `backend/app/config.py`
+  - `backend/app/main.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/index.css`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/CustomerJourneys.tsx`
+  - `frontend/src/pages/EmployeeManagement.tsx`
+  - `frontend/src/pages/ModelFeedback.tsx`
+  - `src/iris/onfly_pipeline.py`
+  - `docs/developer/developer-doc.md`
+  - `docs/developer/data-flow-architecture.md`
+  - `docs/deployment/deployment-readiness-report-2026-04-30.md` (new)
+  - `docs/deployment/deployment-email-drafts-2026-04-30.md` (new)
+  - `scripts/install_service.ps1` (new)
+  - `scripts/iris_server.bat` (new)
+  - `tests/test_routes_onfly.py` (new)
+  - `backend/app/static/` (rebuilt frontend bundle)
+- Summary:
+  - Fixed validation report returning images from wrong cameras: `_resolve_session_images()` now uses camera-first priority (same-camera time-window → cross-camera fallback) so a session on D13 only matches D13 images. Added "Camera Match" column (green=Exact, red=Cross-camera) to validation table in `ReportsPage.tsx`.
+  - Improved `_load_image_contexts()` date matching to handle DD-MM-YYYY display format.
+  - Added CORS `expose_headers: Content-Disposition` to fix CSV downloads. Added DOM attachment fix for download anchor click.
+  - Fully rewrote `docs/developer/developer-doc.md` and `docs/developer/data-flow-architecture.md` — both were referencing Streamlit-only architecture with no mention of FastAPI, React, Celery, or the on-fly pipeline.
+  - Added deployment readiness report and email drafts under `docs/deployment/`.
+  - Added NSSM Windows service installer script and iris_server.bat helper.
+
+### 2026-04-30 - Stable Reports And Smoother Scheduler UX
+- Changed paths:
+  - `frontend/src/index.css`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-BC5gurHU.js`
+  - `backend/app/static/assets/CameraZones-ZLIf7Z8q.js`
+  - `backend/app/static/assets/charts-Cok2OCqZ.js`
+  - `backend/app/static/assets/CustomerJourneys-C8St7UGW.js`
+  - `backend/app/static/assets/EmployeeManagement-Wo1zhi17.js`
+  - `backend/app/static/assets/FrameReview-BQsK46zh.js`
+  - `backend/app/static/assets/index-6FNKlkDq.css`
+  - `backend/app/static/assets/index-D6u4CCYI.js`
+  - `backend/app/static/assets/Login-DUVoiNOO.js`
+  - `backend/app/static/assets/ModelAccuracy-BcHbcbR_.js`
+  - `backend/app/static/assets/ModelFeedback-DdvlkNSw.js`
+  - `backend/app/static/assets/Organisation-26qK7Vp0.js`
+  - `backend/app/static/assets/Overview-BsseP1Pl.js`
+  - `backend/app/static/assets/QualityFeedback-CaMBElGn.js`
+  - `backend/app/static/assets/ReportsPage-B2svDvfo.js`
+  - `backend/app/static/assets/RolePermissions-CBW_gax0.js`
+  - `backend/app/static/assets/RunDetail-B5xm6s0E.js`
+  - `backend/app/static/assets/SchedulerDashboard-CT8z9QKO.js`
+  - `backend/app/static/assets/StoreAccess-D0RP0ejg.js`
+  - `backend/app/static/assets/StoreDetail-BGuYDM2g.js`
+  - `backend/app/static/assets/StoreMapping-DzxMdyPz.js`
+  - `backend/app/static/assets/StoreMaster-BtxT335H.js`
+  - `backend/app/static/assets/StoreSelect-BRGRKxB9.js`
+  - `backend/app/static/assets/ui-CBosKoRr.js`
+  - `backend/app/static/assets/UsersPage-MMvC_tKu.js`
+  - `backend/app/static/assets/vendor-lQptqJEI.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Removed auto-refresh churn from the Report page so tables stay stable for review/download, then replaced the old tab layout with dropdown-based report stack + report view selectors and a shared `10 / 100 / 500` visible-row control while keeping downloads full-size.
+  - Smoothed the Scheduler / Pipeline page by making date-wise report polling silent during background refresh, slowing store-status refresh cadence, and adding an auto-sync filter so the long automation table defaults to enabled stores only.
+  - Added global Recharts tooltip styling so engagement hover content stays readable instead of rendering black-on-black.
+
+### 2026-04-30 - Dynamic Scheduler Progress And Manual Child-Folder Sync
+- Changed paths:
+  - `backend/app/config.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-Bqzo8vwJ.js`
+  - `backend/app/static/assets/CameraZones-CZD-ICns.js`
+  - `backend/app/static/assets/charts-Dcp-uvrr.js`
+  - `backend/app/static/assets/CustomerJourneys-Ca9vRkKt.js`
+  - `backend/app/static/assets/EmployeeManagement-1tJ7BrS5.js`
+  - `backend/app/static/assets/FrameReview-BNVt3LTu.js`
+  - `backend/app/static/assets/index-BPTDWKPW.js`
+  - `backend/app/static/assets/index-DYrNM1ER.css`
+  - `backend/app/static/assets/Login-CaNjuLd3.js`
+  - `backend/app/static/assets/ModelAccuracy-nwTITG7i.js`
+  - `backend/app/static/assets/ModelFeedback-DJGYYEFp.js`
+  - `backend/app/static/assets/Organisation-CnBdH0MA.js`
+  - `backend/app/static/assets/Overview-BwBU8YUX.js`
+  - `backend/app/static/assets/QualityFeedback-DLDcAytE.js`
+  - `backend/app/static/assets/ReportsPage-B4v4wOiN.js`
+  - `backend/app/static/assets/RolePermissions-DceR9C-W.js`
+  - `backend/app/static/assets/RunDetail-Ihv4TGUi.js`
+  - `backend/app/static/assets/SchedulerDashboard-gQN0QB6B.js`
+  - `backend/app/static/assets/StoreAccess-DN0SeUMz.js`
+  - `backend/app/static/assets/StoreDetail-DcxZNGdf.js`
+  - `backend/app/static/assets/StoreMapping-CWqOB_vN.js`
+  - `backend/app/static/assets/StoreMaster-D2TWPZoh.js`
+  - `backend/app/static/assets/StoreSelect-BnbDSAKm.js`
+  - `backend/app/static/assets/ui-tzRwGSCQ.js`
+  - `backend/app/static/assets/UsersPage-Ds_QVIF9.js`
+  - `backend/app/static/assets/vendor-lQptqJEI.js`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `src/iris/onfly_pipeline.py`
+  - `tests/test_routes_onfly.py`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed the Scheduler / Pipeline page so a new run no longer looks stuck on an older 100/100 snapshot: the API now keeps track of the active run id, tolerates the short pre-listing grace window, and stops stale in-memory “running” flags from blocking fresh manual syncs.
+  - Added manual sync controls for optional child-folder URL / raw Drive folder ID override, force rerun / overwrite, and a 10,000-image manual cap (with `0 = full folder`) so date-folder backfills can be kicked off from the UI without changing the mapped parent source.
+  - Wired the React scheduler page to poll live progress and date-report data continuously, refreshed the store/status panel during active syncs, and rebuilt the FastAPI static bundle so the browser shows dynamic run state, override source selection, and the new force-rerun workflow.
+
+### 2026-04-29 - Scheduler Progress Reads Runtime DB Correctly
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/routes_reports.py`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed the Scheduler / Pipeline refresh issue by making the live progress and date-wise sync report read from the on-fly runtime SQLite DB, which is the current source-of-truth that `run_onfly_pipeline()` updates in real time.
+  - Fixed the deeper skip-path bug where cached images advanced no UI counters because `images_processed` and commits were not being flushed for skipped items, which made refresh look frozen during delta-heavy runs.
+  - Report routes now expose live interim data from the runtime DB, and the Reports page auto-refreshes every 5 seconds for the selected store while a sync is active so management views update mid-run instead of only after final ingest.
+
+### 2026-04-30 - Report Downloads And Thumbnail Frame Review In FastAPI UI
+- Changed paths:
+  - `backend/app/api/routes_qa.py`
+  - `backend/app/api/routes_reports.py`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-DQBYVgt0.js`
+  - `backend/app/static/assets/CameraZones-B51WuR4F.js`
+  - `backend/app/static/assets/charts-Dcp-uvrr.js`
+  - `backend/app/static/assets/CustomerJourneys-moeUhXsT.js`
+  - `backend/app/static/assets/EmployeeManagement-DAk1AkUB.js`
+  - `backend/app/static/assets/FrameReview-C5Q4vIjr.js`
+  - `backend/app/static/assets/index-BDlGdo1q.js`
+  - `backend/app/static/assets/index-LKUrHcsu.css`
+  - `backend/app/static/assets/Login-CVnBTPEy.js`
+  - `backend/app/static/assets/ModelAccuracy-XLp2Fbqv.js`
+  - `backend/app/static/assets/ModelFeedback-NzRVD6IP.js`
+  - `backend/app/static/assets/Organisation-DCfRJyof.js`
+  - `backend/app/static/assets/Overview-BrUyGZiP.js`
+  - `backend/app/static/assets/QualityFeedback-BJjhtgcI.js`
+  - `backend/app/static/assets/ReportsPage-D2R4LIwN.js`
+  - `backend/app/static/assets/RolePermissions-B4BhAjDZ.js`
+  - `backend/app/static/assets/RunDetail-Cey3lSK7.js`
+  - `backend/app/static/assets/SchedulerDashboard-C5_0ED9E.js`
+  - `backend/app/static/assets/StoreAccess-DNtiMq-W.js`
+  - `backend/app/static/assets/StoreDetail-Bnk9mDU4.js`
+  - `backend/app/static/assets/StoreMapping-CaH7G_iG.js`
+  - `backend/app/static/assets/StoreMaster-DjEIBoQb.js`
+  - `backend/app/static/assets/StoreSelect-BnbDSAKm.js`
+  - `backend/app/static/assets/ui-tzRwGSCQ.js`
+  - `backend/app/static/assets/UsersPage-86JkHl-W.js`
+  - `backend/app/static/assets/vendor-lQptqJEI.js`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added server-backed CSV download routes for summary, walk-in, and image-scan reports so the Report page can download the current filtered dataset directly from the backend instead of relying only on browser-side table exports.
+  - Restored a usable frame-review workflow in the new FastAPI UI by building a live review queue from `onfly_image_state`, serving real image thumbnails from local or Google Drive sources, and letting reviewers confirm customer/staff/banner/pedestrian labels directly from the thumbnail cards.
+  - Reconnected review saves to the existing QA feedback store so confirmed labels continue feeding the correction-memory / retrain flow rather than becoming a UI-only annotation step.
+
+### 2026-04-29 - Admin Store Master Actions And Searchable Store Filters
+- Changed paths:
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-94r3kSSM.js`
+  - `backend/app/static/assets/CameraZones-BXPRVAU2.js`
+  - `backend/app/static/assets/charts-Dcp-uvrr.js`
+  - `backend/app/static/assets/CustomerJourneys-B4rkHjw1.js`
+  - `backend/app/static/assets/EmployeeManagement-BopT_GXq.js`
+  - `backend/app/static/assets/FrameReview-Cn3_-a_M.js`
+  - `backend/app/static/assets/index-BJZZrzy9.js`
+  - `backend/app/static/assets/index-BeiV91CK.css`
+  - `backend/app/static/assets/Login-BhGw1qrS.js`
+  - `backend/app/static/assets/ModelAccuracy-fumYdAqt.js`
+  - `backend/app/static/assets/ModelFeedback-Bc0_GVUh.js`
+  - `backend/app/static/assets/Organisation-BMuxv1HM.js`
+  - `backend/app/static/assets/Overview-BgsNOslf.js`
+  - `backend/app/static/assets/QualityFeedback-wNGidDyV.js`
+  - `backend/app/static/assets/ReportsPage-CSzrUJ1Y.js`
+  - `backend/app/static/assets/RolePermissions-UtwgVcDR.js`
+  - `backend/app/static/assets/RunDetail-BSbOSAWK.js`
+  - `backend/app/static/assets/SchedulerDashboard-BIE4dtma.js`
+  - `backend/app/static/assets/StoreAccess-CS0J0Uir.js`
+  - `backend/app/static/assets/StoreDetail-D1ypSlP9.js`
+  - `backend/app/static/assets/StoreMapping-jE9hHdOK.js`
+  - `backend/app/static/assets/StoreMaster-Cx8iTrbh.js`
+  - `backend/app/static/assets/StoreSelect-BxIiw7TL.js`
+  - `backend/app/static/assets/ui-CL4sq9tf.js`
+  - `backend/app/static/assets/UsersPage-BfncX1a0.js`
+  - `backend/app/static/assets/vendor-lQptqJEI.js`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/components/StoreSelect.tsx`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/CustomerJourneys.tsx`
+  - `frontend/src/pages/EmployeeManagement.tsx`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/ModelFeedback.tsx`
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added an admin-safe delete route for Store Master rows and upgraded the Store Master list endpoint to join `stores` so store name is visible alongside master metadata.
+  - Built a reusable searchable store picker with a solid white dropdown, store-name-plus-ID labeling, and clear/reset support, then wired it into overview, store detail, reports, scheduler, QA, camera, employee, and journey pages.
+  - Finished the Store Master admin page with search, categorical filters, manual add/edit form, and delete actions so store rows can be managed without CSV-only workflows.
+
 ### 2026-04-29 - Startup Fix For Localhost Postgres Alias
 - Changed paths:
   - `start_iris.ps1`
@@ -123,6 +342,7 @@ It records what changed, where it changed, and why.
 ## Module Registry
 | Module/File | Responsibility |
 |---|---|
+| `frontend/src/components/StoreSelect.tsx` | Shared searchable store picker with clean dropdown styling, store-name-plus-ID rendering, and resettable store filtering across admin/report pages. |
 | `src/iris/iris_dashboard.py` | Streamlit UI, navigation, auth flow, operations/access pages, configuration UI. |
 | `src/iris/iris_analysis.py` | Store image analysis pipeline, detector abstraction, metrics, exports, tracking logic. |
 | `src/iris/store_registry.py` | Store/user/role DB logic, source sync adapters (Drive/S3/local), audit state. |
@@ -156,6 +376,7 @@ It records what changed, where it changed, and why.
 | `tests/test_drive_delta_sync.py` | Delta-sync planner/scope/deletion behavior tests. |
 | `tests/test_onfly_pipeline.py` | On-fly pipeline regression tests for YOLO/GPT gating, state transitions, and export behavior. |
 | `tests/test_onfly_scheduler.py` | DB-backed on-fly scheduler regression tests for browser-managed schedule loading. |
+| `tests/test_routes_onfly.py` | API regression tests for manual source normalization and live-progress run-id selection on the FastAPI scheduler endpoints. |
 | `release-notes/2026-04-01-onfly-pipeline.md` | Release-note summary for the on-fly pipeline rollout and deprecation note for bulk upload nav. |
 | `scripts/benchmark_onfly_pipeline.py` | Before/after timing benchmark utility (3-run profile) for slowness diagnosis and optimization tracking. |
 | `scripts/onfly_scheduler.py` | Hourly + nightly catch-up scheduler for on-the-fly runtime with app-setting status persistence. |
@@ -3235,4 +3456,24 @@ Use this template for each new change:
   - `psycopg2-binary` must be installed (`pip install psycopg2-binary`).
   - Postgres must have `store_sync_state`, `qa_feedback`, and `model_versions` tables (created by Alembic migrations or canonical_metadata.py init).
   - No Celery or Redis required — pipeline runs in-process via ThreadPoolExecutor.
+
+### 2026-04-30 | RR Nagar live-sync status hardening, store mapping cleanup, and report enrichment
+
+- Summary:
+  - Hardened on-fly status reporting so stale runs are auto-marked failed, active runs show `running` instead of stale `error`, and current source/stage/report-path details can be surfaced cleanly in the UI.
+  - Updated sync-state writes to persist the active source URI/provider, mark `running` at pipeline start, and retain the most recent meaningful failure reason for admin visibility.
+  - Enriched footfall detail rows with source-image context (`Source Image`, `Drive Actual Image Name`, `Drive Folder Name`, `Drive Image Link`, `Drive Relative Path`, `Seeded Data`) and rebuilt validation mapping to emit one row per walk-in/image match using actual scan windows or nearest available images.
+  - Added walk-in report explainer copy in the UI so seeded/demo sessions are distinguishable from live GPT-derived sessions.
+  - Removed the `Add Store` / delete controls from `Store Mapping`; that page now focuses on source mapping + auto-sync toggles and points add/remove actions back to `Admin → Store Master`.
+  - Improved store mapping / scheduler status cells so operators can see `running`, current stage, and the latest sync message instead of a confusing static badge.
+- Changed Paths:
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/routes_reports.py`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `tests/test_routes_onfly.py`
+  - `CHANGE_LEDGER.md`
+- Infra/Config Impact:
+  - No rebuild-first requirement. Restart the API/static host after frontend rebuild so the new report/store-mapping behaviors are visible at `http://127.0.0.1:8767`.
 

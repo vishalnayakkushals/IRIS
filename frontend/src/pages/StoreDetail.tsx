@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Title, Text, Metric, Card, Grid, Select, SelectItem, Badge } from "@tremor/react";
+import { Title, Text, Metric, Card, Grid, Badge } from "@tremor/react";
 import { listStores, fetchStoreMetrics, fetchWalkins, StoreOption, WalkinSession } from "../api/client";
+import StoreSelect from "../components/StoreSelect";
 
 const ROLE_COLOR: Record<string, "rose" | "blue" | "gray"> = {
   CUSTOMER: "blue",
@@ -55,13 +56,13 @@ export default function StoreDetail() {
           <Text>{selectedStore?.store_name ?? "Select a store to view analytics"}</Text>
         </div>
         {stores.length > 0 && (
-          <Select value={storeId} onValueChange={setStoreId} className="w-56">
-            {stores.map((s) => (
-              <SelectItem key={s.store_id} value={s.store_id}>
-                {s.store_name || s.store_id}
-              </SelectItem>
-            ))}
-          </Select>
+          <StoreSelect
+            stores={stores}
+            value={storeId}
+            onChange={setStoreId}
+            placeholder="Select store"
+            className="w-full sm:w-80"
+          />
         )}
       </div>
 

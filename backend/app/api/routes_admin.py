@@ -882,9 +882,27 @@ class StoreMasterRow(BaseModel):
 @router.get("/store-master")
 async def list_store_master_endpoint(_: str = Depends(get_current_user)) -> list[dict]:
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(store_master).order_by(store_master.c.store_id)
+        stmt = (
+            select(
+                store_master.c.store_id,
+                stores.c.store_name,
+                store_master.c.short_code,
+                store_master.c.gofrugal_name,
+                store_master.c.outlet_id,
+                store_master.c.city,
+                store_master.c.state,
+                store_master.c.zone,
+                store_master.c.country,
+                store_master.c.mobile_no,
+                store_master.c.store_email,
+                store_master.c.cluster_manager,
+                store_master.c.area_manager,
+                store_master.c.updated_at,
+            )
+            .select_from(store_master.outerjoin(stores, stores.c.store_id == store_master.c.store_id))
+            .order_by(func.coalesce(stores.c.store_name, store_master.c.store_id), store_master.c.store_id)
         )
+        result = await session.execute(stmt)
         return [dict(r) for r in result.mappings().all()]
 
 
@@ -943,6 +961,8 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
 
             # store_name is NEVER required from the CSV — derive from gofrugal_name or fall back to store_id
             store_display_name = (
+                _clean_store_master_value(row.store_name)
+                or
                 _clean_store_master_value(row.gofrugal_name)
                 or inferred_store_id
             )
@@ -1054,6 +1074,19 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
         "generated_store_ids": generated_store_ids,
         "errors": row_errors,
     }
+
+
+@router.delete("/store-master/{store_id}")
+async def delete_store_master_row(store_id: str, actor: str = Depends(get_current_user)) -> dict:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            delete(store_master).where(store_master.c.store_id == store_id)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Store master row not found")
+        await session.commit()
+    await _log_activity(actor, "store_master.delete", store_id, {"store_id": store_id})
+    return {"store_id": store_id, "deleted": True}
 
 
 @router.post("/store-master/upload", status_code=status.HTTP_201_CREATED)

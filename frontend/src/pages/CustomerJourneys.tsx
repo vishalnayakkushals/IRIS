@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { reportsWalkins, adminListStores } from "../api/client";
 import { Card, Title, Text, Badge, Select, SelectItem } from "@tremor/react";
+import StoreSelect from "../components/StoreSelect";
 
 function roleBadge(role: string) {
   const r = (role || "").toUpperCase();
@@ -91,11 +92,15 @@ export default function CustomerJourneys() {
           <Text>Individual session details — demographics, engagement, and behavior.</Text>
         </div>
         <div className="flex gap-2">
-          <div className="w-44">
-            <Select value={selectedStore} onValueChange={setSelectedStore} placeholder="All Stores">
-              <SelectItem value="">All Stores</SelectItem>
-              {stores.map((s) => <SelectItem key={s.store_id} value={s.store_id}>{s.store_name}</SelectItem>)}
-            </Select>
+          <div className="w-72">
+            <StoreSelect
+              stores={stores}
+              value={selectedStore}
+              onChange={setSelectedStore}
+              includeAll
+              allLabel="All Stores"
+              placeholder="Filter journeys by store"
+            />
           </div>
           <div className="w-36">
             <Select value={roleFilter} onValueChange={setRoleFilter} placeholder="All Roles">

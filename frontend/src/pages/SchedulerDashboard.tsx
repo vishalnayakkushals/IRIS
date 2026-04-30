@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   adminListStores, getRuns, onFlyListStores, onFlySync,
@@ -55,11 +55,16 @@ export default function SchedulerDashboard() {
   const [adminStores, setAdminStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState("");
   const [gptEnabled, setGptEnabled] = useState(false);
+  const [manualSource, setManualSource] = useState("");
+  const [maxImages, setMaxImages] = useState(10000);
+  const [forceReprocess, setForceReprocess] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [liveProgress, setLiveProgress] = useState<any>(null);
   const [dateReport, setDateReport] = useState<any[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
+  const [storeStatusFilter, setStoreStatusFilter] = useState<"enabled" | "disabled" | "all">("enabled");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollCountRef = useRef(0);
 
   const loadRuns = useCallback(async () => {
     try { const { data } = await getRuns(20); setRuns(data.runs); } catch {}
@@ -79,18 +84,18 @@ export default function SchedulerDashboard() {
     try {
       const { data } = await onFlyLiveProgress(storeId);
       setLiveProgress(data);
-      if (data.is_running) setSyncing(true);
-      else if (data.status !== "running") setSyncing(false);
+      setSyncing(Boolean(data.is_running || data.status === "running"));
     } catch {}
   }, []);
 
-  const loadDateReport = useCallback(async (storeId: string) => {
+  const loadDateReport = useCallback(async (storeId: string, options?: { silent?: boolean }) => {
     if (!storeId) return;
-    setLoadingReport(true);
+    const silent = Boolean(options?.silent);
+    if (!silent) setLoadingReport(true);
     try {
       const { data } = await onFlyDateReport(storeId);
       setDateReport(data);
-    } catch {} finally { setLoadingReport(false); }
+    } catch {} finally { if (!silent) setLoadingReport(false); }
   }, []);
 
   useEffect(() => {
@@ -99,6 +104,9 @@ export default function SchedulerDashboard() {
 
   useEffect(() => {
     if (!selectedStore) return;
+    setManualSource("");
+    setMaxImages(10000);
+    setForceReprocess(false);
     loadProgress(selectedStore);
     loadDateReport(selectedStore);
   }, [selectedStore, loadProgress, loadDateReport]);
@@ -107,29 +115,69 @@ export default function SchedulerDashboard() {
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
+      pollCountRef.current += 1;
       loadRuns();
       if (selectedStore) {
         loadProgress(selectedStore);
-        if (syncing) loadDateReport(selectedStore);
+        loadDateReport(selectedStore, { silent: true });
+      }
+      if (pollCountRef.current % 5 === 0) {
+        loadStores();
       }
     }, POLL_MS);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [loadRuns, selectedStore, syncing, loadProgress, loadDateReport]);
+  }, [loadRuns, loadStores, selectedStore, loadProgress, loadDateReport]);
 
   function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(""), 4000); }
 
   async function handleSyncNow() {
     if (!selectedStore) { showToast("Select a store first"); return; }
     const store = stores.find((s) => s.store_id === selectedStore);
-    if (!store?.drive_folder_url) {
+    const effectiveSource = manualSource.trim() || store?.drive_folder_url || "";
+    if (!effectiveSource) {
       showToast("Store has no Drive URL — configure in Admin > Store Mapping first");
       return;
     }
+    if (maxImages < 0 || maxImages > 10000) {
+      showToast("Max images must be between 0 and 10000 (0 = full folder)");
+      return;
+    }
     setSyncing(true);
+    setLiveProgress({
+      store_id: selectedStore,
+      active_run_id: "",
+      run_id: "",
+      is_running: true,
+      status: "running",
+      stage: "",
+      images_discovered: 0,
+      images_processed: 0,
+      images_relevant: 0,
+      images_skipped: 0,
+      gpt_success: 0,
+      gpt_failed: 0,
+      pending_tasks: 0,
+      error: "",
+      stale_heartbeat: false,
+    });
     try {
-      const { data } = await onFlySync(selectedStore, { gpt_enabled: gptEnabled });
+      const { data } = await onFlySync(selectedStore, {
+        gpt_enabled: gptEnabled,
+        source_url: manualSource.trim() || undefined,
+        max_images: maxImages,
+        force_reprocess: forceReprocess,
+      });
       showToast(data.message || "Sync started");
-      setTimeout(() => { loadProgress(selectedStore); loadDateReport(selectedStore); }, 1500);
+      setLiveProgress((prev: any) => ({
+        ...(prev || {}),
+        ...data,
+        run_id: data.run_id,
+        active_run_id: data.run_id,
+        is_running: true,
+        status: "running",
+        stage: "",
+      }));
+      setTimeout(() => { loadProgress(selectedStore); loadDateReport(selectedStore, { silent: true }); loadStores(); }, 1500);
     } catch (e: any) {
       showToast(e?.response?.data?.detail || "Failed to start sync");
       setSyncing(false);
@@ -139,9 +187,15 @@ export default function SchedulerDashboard() {
   const selectedAdminStore = adminStores.find((s) => s.store_id === selectedStore);
   const selectedSyncStore = stores.find((s) => s.store_id === selectedStore);
   const storeHasUrl = Boolean(selectedSyncStore?.drive_folder_url);
+  const effectiveSource = useMemo(() => manualSource.trim() || String(selectedSyncStore?.drive_folder_url || ""), [manualSource, selectedSyncStore]);
   const runningCount = stores.filter((s) => s.is_running).length;
   const driveReadyCount = stores.filter((s) => Boolean(s.drive_folder_url)).length;
   const autoSyncCount = adminStores.filter((s) => Boolean(s.sync_enabled)).length;
+  const visibleAutomationStores = adminStores.filter((store) => {
+    if (storeStatusFilter === "enabled") return Boolean(store.sync_enabled);
+    if (storeStatusFilter === "disabled") return !store.sync_enabled;
+    return true;
+  });
   const storeNameById = Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id]));
 
   const progressPct = liveProgress && liveProgress.images_discovered > 0
@@ -195,20 +249,46 @@ export default function SchedulerDashboard() {
                 includeAll={false}
               />
             </div>
+            <div className="w-96">
+              <label className="iris-label">Manual Folder URL / Folder ID (optional)</label>
+              <input
+                type="text"
+                value={manualSource}
+                onChange={(e) => setManualSource(e.target.value)}
+                placeholder="Blank = use mapped parent folder. You can paste a child date-folder URL or raw folder ID."
+                className="iris-input"
+              />
+            </div>
+            <div className="w-36">
+              <label className="iris-label">Max Images</label>
+              <input
+                type="number"
+                min={0}
+                max={10000}
+                step={100}
+                value={maxImages}
+                onChange={(e) => setMaxImages(Number(e.target.value || 0))}
+                className="iris-input"
+              />
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
               <input type="checkbox" checked={gptEnabled} onChange={(e) => setGptEnabled(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
               GPT analysis
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
+              <input type="checkbox" checked={forceReprocess} onChange={(e) => setForceReprocess(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
+              Force rerun / overwrite
+            </label>
             <button
               onClick={handleSyncNow}
-              disabled={syncing || !storeHasUrl || !selectedStore}
+              disabled={syncing || !effectiveSource || !selectedStore}
               className="iris-btn-primary"
             >
               <Play size={14} />
               {syncing ? "Running…" : "Sync Now"}
             </button>
             <button
-              onClick={() => { loadProgress(selectedStore); loadDateReport(selectedStore); loadRuns(); }}
+              onClick={() => { loadProgress(selectedStore); loadDateReport(selectedStore); loadRuns(); loadStores(); }}
               className="iris-btn-secondary"
               title="Refresh"
             >
@@ -221,10 +301,15 @@ export default function SchedulerDashboard() {
         {selectedSyncStore && (
           <div className="pt-3 border-t grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
             <div>
-              <p className="iris-label">Drive URL</p>
-              <p className={storeHasUrl ? "text-slate-600 text-xs truncate max-w-[200px]" : "text-rose-500 text-xs"}>
-                {storeHasUrl ? "Configured ✓" : "Not set — go to Admin > Store Mapping"}
+              <p className="iris-label">Source</p>
+              <p className={effectiveSource ? "text-slate-600 text-xs truncate max-w-[320px]" : "text-rose-500 text-xs"} title={effectiveSource || "No source configured"}>
+                {manualSource.trim()
+                  ? "Manual child folder override ready"
+                  : storeHasUrl
+                    ? "Configured parent folder ✓"
+                    : "Not set — go to Admin > Store Mapping"}
               </p>
+              {effectiveSource ? <p className="mt-1 text-[10px] text-slate-400 truncate max-w-[320px]" title={effectiveSource}>{effectiveSource}</p> : null}
             </div>
             <div>
               <p className="iris-label">Auto-Sync</p>
@@ -247,11 +332,21 @@ export default function SchedulerDashboard() {
                 selectedSyncStore.last_status === "ok" ? "emerald" :
                 selectedSyncStore.last_status === "error" ? "rose" : "slate"
               }>
-                {syncing || selectedSyncStore.is_running ? "Running" : selectedSyncStore.last_status || "Never"}
+                {syncing || selectedSyncStore.is_running
+                  ? `Running${selectedSyncStore.current_stage ? ` • ${selectedSyncStore.current_stage}` : ""}`
+                  : selectedSyncStore.last_status || "Never"}
               </Badge>
+              {selectedSyncStore?.last_message ? (
+                <p className={`mt-1 max-w-[260px] truncate text-[10px] ${selectedSyncStore.last_status === "error" && !selectedSyncStore.is_running ? "text-rose-500" : "text-slate-400"}`} title={selectedSyncStore.last_message}>
+                  {selectedSyncStore.last_message}
+                </p>
+              ) : null}
             </div>
           </div>
         )}
+        <div className="text-xs text-slate-400">
+          Manual sync accepts the mapped parent folder, a child date-folder URL, or a raw Google Drive folder ID. Delta skip still applies unless Force rerun is enabled. 0 = full folder. Manual runs can process up to 10,000 images per request.
+        </div>
       </Card>
 
       {/* Live Progress Panel — shown when running OR recent run exists */}
@@ -334,14 +429,15 @@ export default function SchedulerDashboard() {
       {/* Date-wise Scan Report */}
       {selectedStore && (
         <Card className="p-0 overflow-hidden">
-          <div className="p-4 border-b flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-slate-700">Date-wise Scan Report</p>
-              <p className="text-xs text-slate-400 mt-0.5">Images discovered, YOLO processed, relevant, and GPT results per date.</p>
-            </div>
-            <button onClick={() => loadDateReport(selectedStore)} className="iris-btn-secondary text-xs px-3 py-1.5">
-              <RefreshCw size={12} /> Refresh
-            </button>
+        <div className="p-4 border-b flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-slate-700">Date-wise Scan Report</p>
+            <p className="text-xs text-slate-400 mt-0.5">Images discovered, YOLO processed, relevant, and GPT results per date.</p>
+          </div>
+          {syncing ? <span className="text-xs text-slate-400">Live auto-refresh every 3s</span> : null}
+          <button onClick={() => loadDateReport(selectedStore)} className="iris-btn-secondary text-xs px-3 py-1.5">
+            <RefreshCw size={12} /> Refresh
+          </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
@@ -415,8 +511,16 @@ export default function SchedulerDashboard() {
 
       {/* Store automation status table */}
       <Card className="p-0 overflow-hidden">
-        <div className="p-4 border-b">
+        <div className="p-4 border-b flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <p className="text-sm font-semibold text-slate-700">All Stores — Automation Status</p>
+          <div className="w-full md:w-52">
+            <label className="iris-label">Show Stores</label>
+            <select className="iris-select" value={storeStatusFilter} onChange={(e) => setStoreStatusFilter(e.target.value as "enabled" | "disabled" | "all")}>
+              <option value="enabled">Auto-sync enabled</option>
+              <option value="disabled">Auto-sync disabled</option>
+              <option value="all">All stores</option>
+            </select>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
@@ -430,7 +534,7 @@ export default function SchedulerDashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {adminStores.map((store) => {
+              {visibleAutomationStores.map((store) => {
                 const syncStore = stores.find((s) => s.store_id === store.store_id);
                 return (
                   <tr key={store.store_id} className="hover:bg-slate-50/50">
@@ -445,8 +549,9 @@ export default function SchedulerDashboard() {
                     </td>
                     <td className="px-5 py-3">
                       <Badge color={syncStore?.is_running ? "amber" : syncStore?.last_status === "ok" ? "emerald" : syncStore?.last_status === "error" ? "rose" : "slate"}>
-                        {syncStore?.is_running ? "Running" : syncStore?.last_status || "Never"}
+                        {syncStore?.is_running ? `Running${syncStore?.current_stage ? ` • ${syncStore.current_stage}` : ""}` : syncStore?.last_status || "Never"}
                       </Badge>
+                      {syncStore?.last_message ? <p className="mt-1 max-w-[220px] truncate text-[10px] text-slate-400" title={syncStore.last_message}>{syncStore.last_message}</p> : null}
                     </td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
                       {syncStore?.last_sync_at ? new Date(syncStore.last_sync_at).toLocaleString("en-IN", { hour12: true }) : "Never"}
@@ -454,7 +559,7 @@ export default function SchedulerDashboard() {
                   </tr>
                 );
               })}
-              {adminStores.length === 0 && (
+              {visibleAutomationStores.length === 0 && (
                 <tr><td colSpan={5} className="px-5 py-10 text-center text-slate-400 text-sm">No stores configured.</td></tr>
               )}
             </tbody>

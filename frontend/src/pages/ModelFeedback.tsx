@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { adminListStores, qaAccuracy, qaRetrain, reportsModelAccuracy } from "../api/client";
-import { Card, Title, Text, Badge, Button, Select, SelectItem } from "@tremor/react";
+import { Card, Title, Text, Badge, Button } from "@tremor/react";
 import { Zap } from "lucide-react";
+import StoreSelect from "../components/StoreSelect";
 
 export default function ModelFeedback() {
   const [stores, setStores] = useState<any[]>([]);
@@ -57,10 +58,8 @@ export default function ModelFeedback() {
           <Text>Generate rule files from confirmed QA feedback to improve label accuracy.</Text>
         </div>
         <div className="flex gap-2 items-center">
-          <div className="w-52">
-            <Select value={storeId} onValueChange={setStoreId} placeholder="Select store">
-              {stores.map((s) => <SelectItem key={s.store_id} value={s.store_id}>{s.store_name}</SelectItem>)}
-            </Select>
+          <div className="w-72">
+            <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Select store" />
           </div>
           <Button icon={Zap} loading={retraining} onClick={handleRetrain} color="violet">
             Generate Rule File

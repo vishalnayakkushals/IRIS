@@ -86,6 +86,66 @@ export const fetchTraffic = (storeId?: string, days = 30) =>
 export const fetchDashboardRuns = (limit = 50) =>
   api.get<{ runs: RunRecord[]; total: number }>(`/dashboard/pipeline-runs?limit=${limit}`);
 
+// ── Analytics ─────────────────────────────────────────────────────────────────
+export interface BreakdownItem { label: string; value: number; }
+
+export interface AnalyticsData {
+  total_groups: number;
+  total_walkins: number;
+  total_conversions: number;
+  total_staff: number;
+  avg_dwell_mins: number;
+  conversion_rate: number;
+  gender: BreakdownItem[];
+  age_bands: BreakdownItem[];
+  engagement: BreakdownItem[];
+}
+
+export const fetchAnalytics = (storeId?: string, days = 30) =>
+  api.get<AnalyticsData>(
+    `/dashboard/analytics?days=${days}${storeId ? `&store_id=${storeId}` : ""}`
+  );
+
+export interface TrendPoint {
+  period: string;
+  walkins: number;
+  conversions: number;
+  staff: number;
+  avg_dwell: number;
+  conversion_rate: number;
+}
+
+export const fetchTrend = (storeId?: string, days = 30, groupBy = "day") =>
+  api.get<TrendPoint[]>(
+    `/dashboard/trend?days=${days}&group_by=${groupBy}${storeId ? `&store_id=${storeId}` : ""}`
+  );
+
+export interface LeaderboardRow {
+  store_id: string;
+  store_name: string;
+  walkins: number;
+  conversions: number;
+  groups: number;
+  avg_dwell: number;
+  conversion_rate: number;
+}
+
+export const fetchLeaderboard = (days = 30) =>
+  api.get<LeaderboardRow[]>(`/dashboard/leaderboard?days=${days}`);
+
+export interface DeltaData {
+  current: { walkins: number; conversions: number; conversion_rate: number };
+  prior: { walkins: number; conversions: number; conversion_rate: number };
+  delta_walkins_pct: number;
+  delta_conversions_pct: number;
+  delta_rate_pct: number;
+}
+
+export const fetchDelta = (storeId?: string, currentDays = 30, priorDays = 30) =>
+  api.get<DeltaData>(
+    `/dashboard/delta?current_days=${currentDays}&prior_days=${priorDays}${storeId ? `&store_id=${storeId}` : ""}`
+  );
+
 // ── Stores ───────────────────────────────────────────────────────────────────
 export interface StoreOption {
   store_id: string;
@@ -211,13 +271,42 @@ export const reportsImageScans = (storeId?: string, date?: string, limit = 200) 
   if (date) params.set("business_date", date);
   return api.get<any[]>(`/reports/image-scans?${params}`);
 };
+export const reportsDownloadSummary = (storeId?: string, limit = 100000) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  return api.get(`/reports/download/summary?${params}`, { responseType: "blob" });
+};
+export const reportsDownloadWalkins = (storeId?: string, date?: string, limit = 100000) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get(`/reports/download/walkins?${params}`, { responseType: "blob" });
+};
+export const reportsDownloadImageScans = (storeId?: string, date?: string, limit = 100000) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get(`/reports/download/image-scans?${params}`, { responseType: "blob" });
+};
 export const reportsModelAccuracy = () => api.get<any[]>("/reports/model-accuracy");
 export const reportsStoresWithData = () => api.get<any[]>("/reports/stores-with-data");
+export const reportsValidationMap = (storeId?: string, date?: string, limit = 5000) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get<any[]>(`/reports/validation/walkin-image-map?${params}`);
+};
+export const reportsDownloadValidationMap = (storeId?: string, date?: string, limit = 100000) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  if (date) params.set("business_date", date);
+  return api.get(`/reports/download/walkin-image-map?${params}`, { responseType: "blob" });
+};
 
 // ── On-fly pipeline (no Celery) ───────────────────────────────────────────────
 export const onFlyListStores = () => api.get<any[]>("/onfly/stores");
 export const onFlyStoreStatus = (storeId: string) => api.get<any>(`/onfly/status/${storeId}`);
-export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean }) =>
+export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean; source_url?: string; max_images?: number; force_reprocess?: boolean }) =>
   api.post<any>(`/onfly/sync/${storeId}`, body);
 export const onFlyLiveProgress = (storeId: string) => api.get<any>(`/onfly/live-progress/${storeId}`);
 export const onFlyDateReport = (storeId: string) => api.get<any[]>(`/onfly/date-report/${storeId}`);
@@ -229,6 +318,27 @@ export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 
   if (reviewStatus) params.set("review_status", reviewStatus);
   return api.get<any[]>(`/qa/feedback?${params}`);
 };
+export const qaReviewQueue = (storeId: string, reviewStatus?: string, businessDate?: string, limit = 200) => {
+  const params = new URLSearchParams({ store_id: storeId, limit: String(limit) });
+  if (reviewStatus) params.set("review_status", reviewStatus);
+  if (businessDate) params.set("business_date", businessDate);
+  return api.get<any[]>(`/qa/review-queue?${params}`);
+};
+export const qaCreateFeedback = (body: {
+  store_id: string;
+  capture_date: string;
+  filename: string;
+  camera_id?: string;
+  track_id?: string;
+  predicted_label?: string;
+  corrected_label?: string;
+  confidence?: number;
+  model_version?: string;
+  drive_link?: string;
+  needs_review?: boolean;
+  review_status?: string;
+  comment?: string;
+}) => api.post("/qa/feedback", body);
 export const qaUpdateFeedback = (id: number, body: { review_status: string; corrected_label?: string; comment?: string }) =>
   api.put(`/qa/feedback/${id}`, body);
 export const qaDeleteFeedback = (id: number) => api.delete(`/qa/feedback/${id}`);
@@ -236,3 +346,8 @@ export const qaRetrain = (storeId: string) => api.post<any>(`/qa/retrain/${store
 export const qaAccuracy = (storeId: string) => api.get<any>(`/qa/accuracy/${storeId}`);
 export const qaImageUrl = (path: string) =>
   `${(import.meta.env.VITE_API_URL ?? "/api")}/qa/image?path=${encodeURIComponent(path)}`;
+export const qaFrameImageUrl = (storeId: string, imageId: string) => {
+  const base = import.meta.env.VITE_API_URL ?? "/api";
+  const token = localStorage.getItem("iris_token") ?? "";
+  return `${base}/qa/frame-image/${encodeURIComponent(storeId)}/${encodeURIComponent(imageId)}?token=${encodeURIComponent(token)}`;
+};

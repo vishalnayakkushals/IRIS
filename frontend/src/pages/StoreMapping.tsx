@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { adminListStores, adminCreateStore, adminUpdateStore, adminDeleteStore, adminToggleStoreSync, onFlyListStores, onFlySync } from "../api/client";
+import { adminListStores, adminUpdateStore, adminToggleStoreSync, onFlyListStores, onFlySync } from "../api/client";
 import { Card, Title, Text, Badge } from "@tremor/react";
-import { Plus, Pencil, Trash2, X, Check, Play, Search, ChevronDown } from "lucide-react";
+import { Pencil, X, Check, Play, Search, ChevronDown } from "lucide-react";
 
 const EMPTY = { store_id: "", store_name: "", email: "", drive_folder_url: "" };
 
@@ -75,7 +75,6 @@ function HeaderFilter({ label, options, value, onChange }: {
 
 export default function StoreMapping() {
   const [rows, setRows] = useState<any[]>([]);
-  const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [syncData, setSyncData] = useState<Record<string, any>>({});
@@ -138,26 +137,21 @@ export default function StoreMapping() {
     } catch (e: any) { flash(e?.response?.data?.detail || "Toggle failed"); }
   }
 
-  async function handleCreate(v: typeof EMPTY) { await adminCreateStore(v); setShowNew(false); flash("Store created"); load(); }
   async function handleUpdate(v: typeof EMPTY) { await adminUpdateStore(v.store_id, v); setEditing(null); flash("Store updated"); load(); }
-  async function handleDelete(id: string) {
-    if (!confirm(`Delete store ${id}? This cannot be undone.`)) return;
-    await adminDeleteStore(id); flash("Store deleted"); load();
-  }
 
   return (
     <div className="space-y-6">
       {toast && <div className="iris-toast">{toast}</div>}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <Title>Store Mapping</Title>
           <Text>Manage store registry, contact emails, and Drive folder links.</Text>
+          <p className="mt-2 text-xs text-slate-400">
+            Add or remove stores in <span className="font-semibold text-slate-500">Admin → Store Master</span>. This page is only for source mapping and auto-sync control.
+          </p>
         </div>
-        <button onClick={() => setShowNew(true)} className="iris-btn-primary"><Plus size={15} /> Add Store</button>
       </div>
-
-      {showNew && <StoreForm initial={EMPTY} onSave={handleCreate} onCancel={() => setShowNew(false)} isNew />}
 
       <Card className="p-0 overflow-hidden">
         {/* Search bar */}
@@ -236,10 +230,15 @@ export default function StoreMapping() {
                       <td className="px-5 py-3">
                         {sync ? (
                           <div className="space-y-0.5">
-                            <Badge color={sync.last_status === "ok" ? "emerald" : sync.last_status === "error" ? "rose" : "slate"}>
-                              {sync.last_status || "never"}
+                            <Badge color={sync.is_running ? "amber" : sync.last_status === "ok" ? "emerald" : sync.last_status === "error" ? "rose" : "slate"}>
+                              {sync.is_running ? `running${sync.current_stage ? ` • ${String(sync.current_stage).toLowerCase()}` : ""}` : sync.last_status || "never"}
                             </Badge>
                             {sync.last_sync_at && <p className="text-xs text-slate-400">{new Date(sync.last_sync_at).toLocaleDateString("en-IN")}</p>}
+                            {sync.last_message ? (
+                              <p className={`max-w-[220px] truncate text-[10px] ${sync.last_status === "error" && !sync.is_running ? "text-rose-500" : "text-slate-400"}`} title={sync.last_message}>
+                                {sync.last_message}
+                              </p>
+                            ) : null}
                           </div>
                         ) : <span className="text-slate-400 text-xs">Never</span>}
                       </td>
@@ -253,14 +252,15 @@ export default function StoreMapping() {
                           >
                             <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${r.sync_enabled ? "translate-x-5" : "translate-x-0.5"}`} />
                           </button>
-                          {r.sync_enabled && <span className="text-[10px] text-emerald-600 font-medium">Every {r.sync_interval_hours || 1}h</span>}
+                          <span className={`text-[10px] font-medium ${r.sync_enabled ? "text-emerald-600" : "text-slate-400"}`}>
+                            {r.sync_enabled ? `Enabled • Every ${r.sync_interval_hours || 1}h` : "Disabled"}
+                          </span>
                         </div>
                       </td>
                       <td className="px-5 py-3 sticky right-0 bg-white shadow-[-8px_0_8px_-4px_rgba(0,0,0,0.05)]">
                         <div className="flex gap-2 items-center">
                           <button onClick={() => handleSync(r.store_id)} disabled={syncing === r.store_id || !r.drive_folder_url} className="text-slate-400 hover:text-emerald-600 disabled:opacity-30" title="Sync now"><Play size={14} /></button>
                           <button onClick={() => setEditing(editing === r.store_id ? null : r.store_id)} className="text-slate-400 hover:text-blue-600" title="Edit"><Pencil size={14} /></button>
-                          <button onClick={() => handleDelete(r.store_id)} className="text-slate-400 hover:text-rose-600" title="Delete"><Trash2 size={14} /></button>
                         </div>
                       </td>
                     </tr>

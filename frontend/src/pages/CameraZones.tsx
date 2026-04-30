@@ -8,8 +8,9 @@ import {
   adminUpsertLocation,
   adminDeleteLocation,
 } from "../api/client";
-import { Card, Title, Text, Button, Select, SelectItem, TabGroup, TabList, Tab, TabPanels, TabPanel } from "@tremor/react";
+import { Card, Title, Text, Button, TabGroup, TabList, Tab, TabPanels, TabPanel } from "@tremor/react";
 import { Plus, Trash2, Check, X } from "lucide-react";
+import StoreSelect from "../components/StoreSelect";
 
 const CAM_ROLES = ["INSIDE", "ENTRY", "EXIT", "OUTSIDE"];
 const DIRECTIONS = ["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"];
@@ -129,10 +130,8 @@ export default function CameraZones() {
 
       <div className="flex items-center justify-between">
         <div><Title>Camera Zones</Title><Text>Configure cameras and store location master.</Text></div>
-        <div className="w-52">
-          <Select value={storeId} onValueChange={setStoreId} placeholder="Select store">
-            {stores.map((s) => <SelectItem key={s.store_id} value={s.store_id}>{s.store_name}</SelectItem>)}
-          </Select>
+        <div className="w-full sm:w-80">
+          <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Select store" />
         </div>
       </div>
 

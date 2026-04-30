@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     onfly_source_url: str = ""
     yolo_conf: float = 0.18
-    max_images: int = 100
+    max_images: int = 10000
     # Comma-separated allowed CORS origins; defaults cover local dev only
     cors_origins: str = "http://localhost:3000,http://localhost:8767,http://127.0.0.1:8767"
 

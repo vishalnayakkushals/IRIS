@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { adminListStores, adminListEmployees, adminDeleteEmployee, api } from "../api/client";
-import { Card, Title, Text, Button, Select, SelectItem } from "@tremor/react";
+import { Card, Title, Text, Button } from "@tremor/react";
 import { Upload, Trash2, UserCircle } from "lucide-react";
+import StoreSelect from "../components/StoreSelect";
 
 export default function EmployeeManagement() {
   const [stores, setStores] = useState<any[]>([]);
@@ -67,10 +68,13 @@ export default function EmployeeManagement() {
           <Text>Upload employee photos for staff recognition during pipeline runs.</Text>
         </div>
         <div className="flex gap-3 items-center">
-          <div className="w-52">
-            <Select value={storeId} onValueChange={setStoreId} placeholder="Select store">
-              {stores.map((s) => <SelectItem key={s.store_id} value={s.store_id}>{s.store_name}</SelectItem>)}
-            </Select>
+          <div className="w-72">
+            <StoreSelect
+              stores={stores}
+              value={storeId}
+              onChange={setStoreId}
+              placeholder="Select store"
+            />
           </div>
           <Button
             size="sm"
