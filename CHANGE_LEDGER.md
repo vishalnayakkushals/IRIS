@@ -11,6 +11,14 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-04-30 - Fix CI, Clean BLRJAY Data, Stop Redundant Processes
+- Changed paths:
+  - `.github/workflows/python-package-conda.yml`
+- Summary:
+  - Fixed CI failure: added `pip install -r backend/requirements.txt` so FastAPI/SQLAlchemy deps are present when pytest imports backend route modules. Added `--exclude` for node_modules and static assets in flake8. Added `--ignore` for frontend and static dirs in pytest.
+  - Cleaned all BLRJAY (BLR - Jayanagar) pipeline data from SQLite: 299 walk-in sessions, 7422 image states, 15 pipeline runs, 19917 task queue entries, 101548 source file index rows, 8 run logs, 6 run metrics, 4 report index rows, 1 sync state row. Drive folder URL cleared from stores table.
+  - Stopped redundant uvicorn processes on ports 8768 (PID 20492) and 8769 (PID 17944). Only port 8767 (NSSM service) remains.
+
 ### 2026-04-30 - Fix Validation Camera Matching, Update Developer Docs, Deployment Prep
 - Changed paths:
   - `backend/app/api/routes_reports.py`
