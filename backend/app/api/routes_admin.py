@@ -2,6 +2,7 @@
 org settings, store access, activity log, store master."""
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import io
@@ -564,6 +565,34 @@ async def update_settings(body: dict[str, str], actor: str = Depends(get_current
         await session.commit()
     await _log_activity(actor, "settings.update", "", {"keys": list(body.keys())})
     return {"updated": len(body)}
+
+
+@router.post("/settings/logo")
+async def upload_logo(file: UploadFile, actor: str = Depends(get_current_user)) -> dict:
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Logo too large (max 2 MB)")
+    ext = (file.filename or "png").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "png"
+    media_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "svg": "image/svg+xml"}
+    media = media_map.get(ext, "image/png")
+    data_url = f"data:{media};base64,{base64.b64encode(content).decode()}"
+    now = _now()
+    async with AsyncSessionLocal() as session:
+        existing = await session.execute(
+            select(app_settings.c.setting_key).where(app_settings.c.setting_key == "logo_url")
+        )
+        if existing.first():
+            await session.execute(
+                update(app_settings).where(app_settings.c.setting_key == "logo_url")
+                .values(setting_value=data_url, updated_at=now)
+            )
+        else:
+            await session.execute(
+                insert(app_settings).values(setting_key="logo_url", setting_value=data_url, updated_at=now)
+            )
+        await session.commit()
+    await _log_activity(actor, "settings.logo_upload", "", {"size": len(content), "media_type": media})
+    return {"logo_url": data_url}
 
 
 # ---------------------------------------------------------------------------

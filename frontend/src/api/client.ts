@@ -214,6 +214,11 @@ export const adminListPermissionCodes = () => api.get<string[]>("/admin/permissi
 // ── Admin — Settings ──────────────────────────────────────────────────────────
 export const adminGetSettings = () => api.get<Record<string, string>>("/admin/settings");
 export const adminUpdateSettings = (body: Record<string, string>) => api.put("/admin/settings", body);
+export const adminUploadLogo = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post<{ logo_url: string }>("/admin/settings/logo", form);
+};
 
 // ── Admin — Employees ─────────────────────────────────────────────────────────
 export const adminListEmployees = (storeId: string) => api.get<any[]>(`/admin/employees/${storeId}`);

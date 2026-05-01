@@ -7,8 +7,8 @@ import {
   qaDeleteFeedback,
   qaFrameImageUrl,
 } from "../api/client";
-import { Card, Title, Text, Badge, Select, SelectItem } from "@tremor/react";
-import { Check, X, Trash2, RefreshCw, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
+import { Card, Title, Text, Badge } from "@tremor/react";
+import { Check, X, Trash2, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Zap } from "lucide-react";
 import StoreSelect from "../components/StoreSelect";
 
 const LABELS = ["customer", "staff", "banner", "pedestrian", "unknown"];
@@ -90,6 +90,34 @@ function FeedbackCard({
     if (!confirm("Delete this review row?")) return;
     await qaDeleteFeedback(row.feedback_id);
     onDelete();
+  }
+
+  if (row.auto_approved) {
+    return (
+      <div className="border border-emerald-200 rounded-2xl bg-emerald-50/40 overflow-hidden">
+        <div className="bg-slate-100 flex items-center justify-center h-44 overflow-hidden">
+          {!imgError ? (
+            <img src={qaFrameImageUrl(row.store_id, row.image_id)} alt={row.filename}
+              className="object-cover h-full w-full" loading="lazy" onError={() => setImgError(true)} />
+          ) : (
+            <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
+          )}
+        </div>
+        <div className="p-3 space-y-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-slate-600 truncate">{row.filename || "—"}</p>
+              <p className="text-xs text-slate-400">{row.capture_date_display || row.capture_date || "—"} · {row.camera_id || "—"}</p>
+            </div>
+            <Badge color="emerald" size="xs">confirmed</Badge>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-100 rounded-lg px-2.5 py-1.5">
+            <Zap size={12} />
+            <span>Auto-approved — 0 people detected by YOLO</span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -194,7 +222,7 @@ function FeedbackCard({
 export default function FrameReview() {
   const [stores, setStores] = useState<any[]>([]);
   const [storeId, setStoreId] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("pending");
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
@@ -209,7 +237,6 @@ export default function FrameReview() {
   useEffect(() => {
     adminListStores().then((r) => {
       setStores(r.data);
-      if (r.data.length) setStoreId(r.data[0].store_id);
     });
   }, []);
 
@@ -251,19 +278,27 @@ export default function FrameReview() {
           <div className="w-72">
             <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Filter review by store" />
           </div>
-          <div className="w-40">
-            <Select value={statusFilter} onValueChange={setStatusFilter} placeholder="All Status">
-              <SelectItem value="">All</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="confirmed">Confirmed</SelectItem>
-              <SelectItem value="rejected">Rejected</SelectItem>
-            </Select>
+          <div>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="rejected">Rejected</option>
+            </select>
           </div>
-          <div className="w-40">
-            <Select value={dateFilter} onValueChange={setDateFilter} placeholder="All Dates">
-              <SelectItem value="">All Dates</SelectItem>
-              {dateOptions.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-            </Select>
+          <div>
+            <select
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              <option value="">All Dates</option>
+              {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
           </div>
           <button onClick={() => void load()} className="p-2 rounded border text-slate-500 hover:text-blue-600 hover:border-blue-400">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
@@ -287,7 +322,12 @@ export default function FrameReview() {
         </ol>
       </Card>
 
-      {loading ? (
+      {!storeId ? (
+        <div className="text-center py-20 text-slate-400 text-sm">
+          <p className="text-base font-medium text-slate-500 mb-2">Select a store to begin reviewing</p>
+          <p>Use the store selector above to load frames for review.</p>
+        </div>
+      ) : loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Loading frames…</div>
       ) : rows.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm">

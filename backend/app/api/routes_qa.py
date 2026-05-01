@@ -306,6 +306,11 @@ async def review_queue(
         filename = str(row.get("image_name", "") or "").strip()
         feedback = feedback_map.get((capture_date_iso, filename), {})
         predicted_label = _dominant_predicted_label(row, row)
+        person_count = int(row.get("person_count") or 0)
+        # Auto-approve images where YOLO detected no people — no human review needed
+        has_existing_feedback = bool(feedback)
+        auto_approved = (person_count == 0) and not has_existing_feedback
+        resolved_status = "confirmed" if auto_approved else str(feedback.get("review_status", "") or "pending")
         record = {
             "feedback_id": feedback.get("id"),
             "store_id": store_id,
@@ -316,7 +321,8 @@ async def review_queue(
             "camera_id": row.get("camera_id", ""),
             "predicted_label": str(feedback.get("predicted_label", "") or predicted_label),
             "corrected_label": str(feedback.get("corrected_label", "") or ""),
-            "review_status": str(feedback.get("review_status", "") or "pending"),
+            "review_status": resolved_status,
+            "auto_approved": auto_approved,
             "comment": str(feedback.get("comment", "") or ""),
             "confidence": float(feedback.get("confidence") or 0.8),
             "drive_link": str(feedback.get("drive_link", "") or row.get("source_url", "") or ""),
@@ -325,7 +331,7 @@ async def review_queue(
             "relative_path": row.get("relative_path", ""),
             "timestamp_hint": row.get("timestamp_hint", ""),
             "yolo_relevant": bool(row.get("yolo_relevant")),
-            "person_count": int(row.get("person_count") or 0),
+            "person_count": person_count,
             "gpt_status": row.get("gpt_status", ""),
             "gpt_error": row.get("gpt_error", ""),
             "customer_count": int(row.get("gpt_customer_count") or 0),
