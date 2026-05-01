@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Title, Text, Metric, Card, Grid, BarChart, LineChart, DonutChart, Badge,
 } from "@tremor/react";
@@ -64,22 +64,22 @@ export default function Overview() {
 
   useEffect(() => { load(); }, [load]);
 
-  const trendData = trend.map((p) => ({
+  const trendData = useMemo(() => trend.map((p) => ({
     period: p.period,
     "Walk-ins": p.walkins,
     Conversions: p.conversions,
     "Avg Dwell (min)": p.avg_dwell,
-  }));
+  })), [trend]);
 
-  const genderData = (analytics?.gender ?? []).map((g) => ({
+  const genderData = useMemo(() => (analytics?.gender ?? []).map((g) => ({
     name: g.label,
     value: g.value,
-  }));
+  })), [analytics?.gender]);
 
-  const ageData = (analytics?.age_bands ?? []).map((a) => ({
+  const ageData = useMemo(() => (analytics?.age_bands ?? []).map((a) => ({
     name: a.label,
     value: a.value,
-  }));
+  })), [analytics?.age_bands]);
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
@@ -177,7 +177,6 @@ export default function Overview() {
             categories={["Walk-ins", "Conversions"]}
             colors={["blue", "emerald"]}
             showLegend
-            showAnimation
             yAxisWidth={40}
           />
         )}
@@ -197,7 +196,6 @@ export default function Overview() {
                 category="value"
                 index="name"
                 colors={["blue", "rose", "amber", "gray"]}
-                showAnimation
               />
               <div className="space-y-2">
                 {genderData.map((g, i) => {
@@ -227,7 +225,6 @@ export default function Overview() {
               categories={["value"]}
               colors={["violet"]}
               showLegend={false}
-              showAnimation
               yAxisWidth={36}
             />
           )}
@@ -245,7 +242,6 @@ export default function Overview() {
             categories={["Customers"]}
             colors={["teal"]}
             showLegend={false}
-            showAnimation
             yAxisWidth={36}
             layout="vertical"
           />

@@ -11,6 +11,19 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-05-01 - Frontend Performance Optimizations
+- Changed paths:
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/package.json` (added `@tanstack/react-virtual`)
+  - `frontend/package-lock.json`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - Removed `showAnimation` from all 4 Tremor chart instances in Overview.tsx (LineChart, DonutChart, BarChart ×2). Chart entry animations were causing CPU spikes on every page load.
+  - Added `useMemo` to all inline chart data transforms in Overview.tsx (`trendData`, `genderData`, `ageData`) and to computed KPI values in ReportsPage.tsx (`storeMap`, `totalWalkins`, `totalConversions`, `avgRate`).
+  - Replaced flat DOM rendering in `ValidationTable` with TanStack Virtual (`@tanstack/react-virtual`). Table now renders only the ~15 rows visible in the 600px scroll window regardless of total row count (up to 5000). ValidationTable bypasses the `visibleRows` slice cap and receives all rows directly.
+  - Static bundle rebuilt and copied to `backend/app/static/`.
+
 ### 2026-04-30 - Fix CI, Clean BLRJAY Data, Stop Redundant Processes
 - Changed paths:
   - `.github/workflows/python-package-conda.yml`

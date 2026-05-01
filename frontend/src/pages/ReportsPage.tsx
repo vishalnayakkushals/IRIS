@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   reportsSummary,
   reportsWalkins,
@@ -238,11 +239,30 @@ const IMAGE_COLS = [
 ];
 
 function ValidationTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string, string> }) {
-  const allCols = [...SESSION_COLS, ...IMAGE_COLS];
+  const parentRef = useRef<HTMLDivElement>(null);
+  const totalCols = SESSION_COLS.length + IMAGE_COLS.length + 2; // +2: Store col + divider col
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 38,
+    overscan: 8,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? (virtualRows[0]?.start ?? 0) : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0)
+    : 0;
+
   return (
-    <div className="overflow-x-auto">
+    <div
+      ref={parentRef}
+      className="overflow-auto"
+      style={{ height: rows.length > 20 ? "600px" : undefined, maxHeight: "600px" }}
+    >
       <table className="w-full text-sm text-left whitespace-nowrap">
-        <thead>
+        <thead className="sticky top-0 z-20">
           <tr className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider font-semibold">
             <th className="px-4 py-3 sticky left-0 bg-slate-50 z-10">Store</th>
             {SESSION_COLS.map((c) => <th key={c.key} className="px-4 py-3 bg-blue-50">{c.label}</th>)}
@@ -250,11 +270,21 @@ function ValidationTable({ rows, storeMap }: { rows: any[]; storeMap: Record<str
             {IMAGE_COLS.map((c) => <th key={c.key} className="px-4 py-3 bg-emerald-50">{c.label}</th>)}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
-          {rows.map((r, i) => {
+        <tbody>
+          {rows.length === 0 && (
+            <tr><td colSpan={totalCols} className="px-5 py-10 text-center text-gray-400 text-sm">No validation data found.</td></tr>
+          )}
+          {paddingTop > 0 && <tr><td colSpan={totalCols} style={{ height: paddingTop }} /></tr>}
+          {virtualRows.map((virtualRow) => {
+            const r = rows[virtualRow.index];
             const hasImage = r["Image Filename"] && r["Image Filename"] !== "—";
             return (
-              <tr key={i} className={`hover:bg-slate-50/50 ${hasImage ? "" : "opacity-60"}`}>
+              <tr
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                className={`border-b border-slate-100 hover:bg-slate-50/50 ${hasImage ? "" : "opacity-60"}`}
+              >
                 <td className="px-4 py-2.5 font-medium text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-100">
                   {storeMap[r.store_id] || r.store_id || "—"}
                 </td>
@@ -292,9 +322,7 @@ function ValidationTable({ rows, storeMap }: { rows: any[]; storeMap: Record<str
               </tr>
             );
           })}
-          {rows.length === 0 && (
-            <tr><td colSpan={allCols.length + 2} className="px-5 py-10 text-center text-gray-400 text-sm">No validation data found.</td></tr>
-          )}
+          {paddingBottom > 0 && <tr><td colSpan={totalCols} style={{ height: paddingBottom }} /></tr>}
         </tbody>
       </table>
     </div>
@@ -316,12 +344,24 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [liveProgress, setLiveProgress] = useState<any>(null);
 
-  const storeMap = Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id]));
-  const totalWalkins     = summaryRows.reduce((s, r) => s + Number(r.walkins || 0), 0);
-  const totalConversions = summaryRows.reduce((s, r) => s + Number(r.conversions || 0), 0);
-  const avgRate          = summaryRows.length
-    ? summaryRows.reduce((s, r) => s + Number(r.conversion_rate || 0), 0) / summaryRows.length
-    : 0;
+  const storeMap = useMemo(
+    () => Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id])),
+    [stores],
+  );
+  const totalWalkins = useMemo(
+    () => summaryRows.reduce((s, r) => s + Number(r.walkins || 0), 0),
+    [summaryRows],
+  );
+  const totalConversions = useMemo(
+    () => summaryRows.reduce((s, r) => s + Number(r.conversions || 0), 0),
+    [summaryRows],
+  );
+  const avgRate = useMemo(
+    () => summaryRows.length
+      ? summaryRows.reduce((s, r) => s + Number(r.conversion_rate || 0), 0) / summaryRows.length
+      : 0,
+    [summaryRows],
+  );
   const todayTag = new Date().toISOString().slice(0, 10);
   const tag = selectedStore || "all";
 
@@ -527,7 +567,9 @@ export default function ReportsPage() {
               {reportChoices.find((option) => option.value === reportView)?.label || "Report"}
             </p>
             <p className="text-xs text-slate-400">
-              Showing top {Math.min(visibleRows, activeRows.length)} of {activeRows.length.toLocaleString()} rows in UI. Download always includes all available rows.
+              {reportView === "validation"
+                ? `${validationRows.length.toLocaleString()} rows — scrollable, virtualized. Download includes all.`
+                : `Showing top ${Math.min(visibleRows, activeRows.length)} of ${activeRows.length.toLocaleString()} rows in UI. Download always includes all available rows.`}
             </p>
           </div>
           <div className="flex justify-end">
@@ -562,7 +604,7 @@ export default function ReportsPage() {
           {!loading && reportView === "summary" ? <DaySummaryTable rows={visibleReportRows} storeMap={storeMap} /> : null}
           {!loading && reportView === "walkins" ? <WalkinTable rows={visibleReportRows} storeMap={storeMap} /> : null}
           {!loading && reportView === "image_scans" ? <ImageScanTable rows={visibleReportRows} storeMap={storeMap} /> : null}
-          {!loading && reportView === "validation" ? <ValidationTable rows={visibleReportRows} storeMap={storeMap} /> : null}
+          {!loading && reportView === "validation" ? <ValidationTable rows={validationRows} storeMap={storeMap} /> : null}
         </Card>
       </Card>
     </div>
