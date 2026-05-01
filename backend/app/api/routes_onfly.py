@@ -726,9 +726,25 @@ async def get_date_report(store_id: str, _: str = Depends(get_current_user)) -> 
 
 @router.delete("/sync/{store_id}/cancel")
 async def cancel_sync(store_id: str, _: str = Depends(get_current_user)) -> dict:
-    """Mark a running sync as cancelled (best-effort — thread continues but status is cleared)."""
-    run_id = _active_runs.pop(store_id, None)
-    return {"store_id": store_id, "cancelled": run_id is not None, "run_id": run_id}
+    """Mark a running sync as cancelled — clears in-memory state and marks DB record."""
+    meta = _active_runs.pop(store_id, {})
+    run_id = meta.get("run_id") if isinstance(meta, dict) else str(meta or "")
+    # Also mark any running DB record for this store as cancelled
+    db_path = get_settings().db_path_obj
+    if db_path.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(db_path), timeout=10)
+            now = _now_str()
+            conn.execute(
+                "UPDATE onfly_pipeline_runs SET status='cancelled', error_message='Cancelled by user', ended_at=?, updated_at=? WHERE store_id=? AND status='running'",
+                (now, now, store_id),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as exc:
+            logger.warning("Cancel DB update failed: %s", exc)
+    return {"store_id": store_id, "cancelled": bool(run_id), "run_id": run_id or ""}
 
 
 # ---------------------------------------------------------------------------

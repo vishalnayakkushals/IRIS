@@ -63,7 +63,38 @@ async def startup_checks() -> None:
             "JWT_SECRET is using the insecure default value. "
             "Set the JWT_SECRET environment variable before going to production."
         )
+    # Clean up any zombie runs from a previous process that died mid-run
+    _cleanup_zombie_runs(cfg)
     asyncio.create_task(auto_sync_loop())
+
+
+def _cleanup_zombie_runs(cfg) -> None:
+    import sqlite3
+    from datetime import datetime, timezone
+    db_path = cfg.db_path_obj
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        now = datetime.now(timezone.utc).isoformat()
+        result = conn.execute(
+            """
+            UPDATE onfly_pipeline_runs
+            SET status='abandoned',
+                error_message='Process died — API restarted while run was active',
+                ended_at=?, updated_at=?
+            WHERE status='running'
+              AND last_heartbeat_at < datetime('now', '-5 minutes')
+            """,
+            (now, now),
+        )
+        count = result.rowcount
+        conn.commit()
+        conn.close()
+        if count:
+            logger.info("Startup cleanup: marked %d zombie run(s) as abandoned", count)
+    except Exception as exc:
+        logger.warning("Startup zombie cleanup failed: %s", exc)
 
 
 app.include_router(health_router, prefix="/api")
