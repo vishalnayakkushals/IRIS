@@ -265,6 +265,8 @@ def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str
                 SUM(CASE WHEN yolo_status != 'pending' THEN 1 ELSE 0 END) AS yolo_done,
                 SUM(CASE WHEN yolo_relevant = 1 THEN 1 ELSE 0 END) AS yolo_relevant,
                 SUM(CASE WHEN gpt_status = 'done' THEN 1 ELSE 0 END) AS gpt_done,
+                SUM(CASE WHEN gpt_status IN ('failed','quota_pending_retry') THEN 1 ELSE 0 END) AS gpt_failed,
+                SUM(CASE WHEN gpt_status = 'disabled' THEN 1 ELSE 0 END) AS gpt_disabled,
                 SUM(COALESCE(gpt_customer_count, 0)) AS customers,
                 SUM(COALESCE(gpt_staff_count, 0)) AS staff
             FROM onfly_image_state
@@ -285,6 +287,8 @@ def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str
             "yolo_done": int(row.get("yolo_done") or 0),
             "yolo_relevant": int(row.get("yolo_relevant") or 0),
             "gpt_done": int(row.get("gpt_done") or 0),
+            "gpt_failed": int(row.get("gpt_failed") or 0),
+            "gpt_disabled": int(row.get("gpt_disabled") or 0),
             "customers": int(row.get("customers") or 0),
             "staff": int(row.get("staff") or 0),
             "pending_yolo": max(0, int(row.get("total_images") or 0) - int(row.get("yolo_done") or 0)),

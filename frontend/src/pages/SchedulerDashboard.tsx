@@ -466,13 +466,15 @@ export default function SchedulerDashboard() {
                   <th className="px-5 py-3">YOLO Relevant</th>
                   <th className="px-5 py-3">Pending</th>
                   <th className="px-5 py-3">GPT Done</th>
+                  <th className="px-5 py-3">GPT Failed</th>
+                  <th className="px-5 py-3">GPT Disabled</th>
                   <th className="px-5 py-3">Customers</th>
                   <th className="px-5 py-3">Staff</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loadingReport && (
-                  <tr><td colSpan={8} className="px-5 py-8 text-center text-slate-400 text-sm">Loading…</td></tr>
+                  <tr><td colSpan={10} className="px-5 py-8 text-center text-slate-400 text-sm">Loading…</td></tr>
                 )}
                 {!loadingReport && dateReport.map((r) => (
                   <tr key={r.date} className="hover:bg-slate-50/50">
@@ -497,12 +499,18 @@ export default function SchedulerDashboard() {
                     <td className="px-5 py-3">
                       <Badge color={r.gpt_done > 0 ? "blue" : "slate"}>{r.gpt_done}</Badge>
                     </td>
+                    <td className="px-5 py-3">
+                      <Badge color={r.gpt_failed > 0 ? "red" : "slate"}>{r.gpt_failed ?? 0}</Badge>
+                    </td>
+                    <td className="px-5 py-3">
+                      <Badge color={r.gpt_disabled > 0 ? "orange" : "slate"}>{r.gpt_disabled ?? 0}</Badge>
+                    </td>
                     <td className="px-5 py-3 font-semibold text-emerald-700">{r.customers || "—"}</td>
                     <td className="px-5 py-3 text-blue-700">{r.staff || "—"}</td>
                   </tr>
                 ))}
                 {!loadingReport && dateReport.length === 0 && (
-                  <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 text-sm">
+                  <tr><td colSpan={10} className="px-5 py-10 text-center text-slate-400 text-sm">
                     No scan data for this store yet. Run a sync to populate.
                   </td></tr>
                 )}
@@ -516,6 +524,8 @@ export default function SchedulerDashboard() {
                     <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.yolo_relevant, 0).toLocaleString()}</td>
                     <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.pending_yolo, 0).toLocaleString()}</td>
                     <td className="px-5 py-3">{dateReport.reduce((s, r) => s + r.gpt_done, 0).toLocaleString()}</td>
+                    <td className="px-5 py-3 text-red-600">{dateReport.reduce((s, r) => s + (r.gpt_failed ?? 0), 0).toLocaleString()}</td>
+                    <td className="px-5 py-3 text-orange-600">{dateReport.reduce((s, r) => s + (r.gpt_disabled ?? 0), 0).toLocaleString()}</td>
                     <td className="px-5 py-3 text-emerald-700">{dateReport.reduce((s, r) => s + r.customers, 0).toLocaleString()}</td>
                     <td className="px-5 py-3 text-blue-700">{dateReport.reduce((s, r) => s + r.staff, 0).toLocaleString()}</td>
                   </tr>

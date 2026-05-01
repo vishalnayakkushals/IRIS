@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 import base64
+import concurrent.futures
 import json
 import os
 import re
@@ -271,6 +272,7 @@ class OnFlyConfig:
     tracker_iou_threshold: float = 0.3
     tracker_max_age: int = 5
     tracker_min_hits: int = 2
+    gpt_parallel_workers: int = 5
 
 
 class SourceClient(Protocol):
@@ -1001,6 +1003,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_retry_pending = 0
         gpt_quota_unavailable = False
         gpt_quota_error = ""
+        gpt_work_list: list[tuple] = []
         bytes_cache: dict[str, bytes] = {}
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
@@ -1194,272 +1197,9 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     event_type="start",
                     image_id=item.image_id,
                     image_name=item.image_name,
-                    message="GPT analysis started",
+                    message="GPT analysis queued for parallel processing",
                 )
-                if gpt_quota_unavailable:
-                    gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_quota_waiting", "walkins": []}
-                    gstatus = "quota_pending_retry"
-                    gerr = gpt_quota_error or "GPT quota unavailable"
-                else:
-                    g0 = time.perf_counter()
-                    try:
-                        gpt = _openai_eval(cfg, image_bytes, item.image_name)
-                        gstatus = "done"
-                        gerr = ""
-                    except Exception as exc:
-                        gpt = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
-                        gerr = str(exc)
-                        gstatus = "quota_pending_retry" if _is_gpt_quota_error(gerr) else "failed"
-                        if gstatus == "quota_pending_retry":
-                            gpt_quota_unavailable = True
-                            gpt_quota_error = gerr
-                    timings["gpt_ms"] += round((time.perf_counter() - g0) * 1000.0, 2)
-                gpt_done += int(gstatus == "done")
-                gpt_failed += int(gstatus == "failed")
-                gpt_retry_pending += int(gstatus == "quota_pending_retry")
-                # Extract per-customer walkins before serialising to gpt_result_json
-                walkins = gpt.pop("walkins", [])
-                gpt_summary = json.dumps(gpt, separators=(',', ':'))
-                conn.execute(
-                    "UPDATE onfly_image_state SET gpt_version=?,gpt_status=?,gpt_customer_count=?,gpt_staff_count=?,gpt_conversions=?,gpt_bounce=?,gpt_result_json=?,gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
-                    (gpt_version, gstatus, int(gpt.get("customer_count", 0)), int(gpt.get("staff_count", 0)), int(gpt.get("conversions", 0)), int(gpt.get("bounce", 0)), gpt_summary, str(gerr)[:1000], run_id, cfg.store_id, item.image_id),
-                )
-                # Session state machine: GPT decides event semantics, filename timestamp is source-of-truth for event time.
-                event_time = _parse_filename_time(item.image_name) or str(item.timestamp_hint or "").split(" ")[-1].strip()
-                business_date = str(item.date_display or "").strip()
-
-                def _tsec(t: str) -> int:
-                    try:
-                        hh, mm, ss = [int(x) for x in str(t or "").split(":")]
-                        return hh * 3600 + mm * 60 + ss
-                    except Exception:
-                        return -1
-
-                def _find_best_open_session(row: dict[str, str]) -> tuple[int | None, float, str]:
-                    fp = _event_fingerprint(row, item.camera_id)
-                    candidates = conn.execute(
-                        """
-                        SELECT id, camera_id, gender, age_band, primary_clothing, bag_type,
-                               clothing_style_archetype, jewellery_load, attire_visual_marker, last_seen_time
-                        FROM onfly_walkin_sessions
-                        WHERE store_id=? AND business_date=? AND role='Customer'
-                          AND session_status IN ('OPEN','INFERRED_INSIDE_OPEN')
-                        ORDER BY id DESC
-                        """,
-                        (cfg.store_id, business_date),
-                    ).fetchall()
-                    best_id: int | None = None
-                    best_score = -1.0
-                    best_reason = "no_open_session"
-                    now_sec = _tsec(event_time)
-                    for cand in candidates:
-                        score = 0.0
-                        reasons: list[str] = []
-                        if str(cand["camera_id"] or "") == str(item.camera_id or ""):
-                            score += 2.0
-                            reasons.append("camera")
-                        for key in ["gender", "age_band", "primary_clothing", "bag_type", "clothing_style_archetype", "jewellery_load"]:
-                            rv = str(row.get({
-                                "gender": "Gender",
-                                "age_band": "Age Band",
-                                "primary_clothing": "Primary Clothing",
-                                "bag_type": "Bag Type",
-                                "clothing_style_archetype": "Primary Clothing Style Archetype",
-                                "jewellery_load": "Jewellery Load",
-                            }[key], "") or "").strip().lower()
-                            cv = str(cand[key] or "").strip().lower()
-                            if rv and cv and rv == cv:
-                                score += 1.0
-                                reasons.append(key)
-                        last_sec = _tsec(str(cand["last_seen_time"] or ""))
-                        if now_sec >= 0 and last_sec >= 0:
-                            gap = abs(now_sec - last_sec)
-                            if gap <= 120:
-                                score += 2.0
-                                reasons.append("time<=120s")
-                            elif gap <= 300:
-                                score += 1.0
-                                reasons.append("time<=300s")
-                        if score > best_score:
-                            best_score = score
-                            best_id = int(cand["id"])
-                            best_reason = ",".join(reasons) if reasons else "weak_match"
-                    return best_id, float(best_score if best_score > 0 else 0.0), best_reason
-
-                for walkin in walkins:
-                    role = str(walkin.get("Role", "") or "").strip() or "Uncertain"
-                    event_type = _canonical_event_type(walkin)
-                    direction_conf = str(walkin.get("Direction Confidence", "") or "").strip() or "NA"
-                    match_fingerprint = str(walkin.get("Match Fingerprint", "") or "").strip() or _event_fingerprint(walkin, item.camera_id)
-                    included = str(walkin.get("Included in Analytics", "") or "").strip() or ("Yes" if role.lower() == "customer" else "No")
-                    gpt_event = str(walkin.get("Event Type", "") or "").strip()
-
-                    if event_type in {"PASSERBY_OUTSIDE", "POSTER_NON_HUMAN", "STAFF", "UNCLEAR"}:
-                        conn.execute(
-                            """INSERT INTO onfly_walkin_sessions(
-                                   store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                   event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                   session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                   direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                   gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                   clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                cfg.store_id, run_id, item.image_id, item.image_name, business_date, item.camera_id, business_date, business_date,
-                                event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, "", "", "",
-                                "CLOSED", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "non_customer_event",
-                                direction_conf, match_fingerprint, event_time, gpt_event,
-                                walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), "No",
-                            ),
-                        )
-                        continue
-
-                    match_id, match_score, match_reason = _find_best_open_session(walkin)
-                    strong_entry_match = match_id is not None and match_score >= 6.0
-                    strong_match = match_id is not None and match_score >= 4.0
-
-                    if event_type == "ENTRY":
-                        if strong_entry_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
-                                (event_time, match_score, f"entry_attach:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, item.image_id, item.image_name, business_date, item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
-                                    "OPEN", "ENTRY", event_time, event_time, "", 0.0, "new_entry",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    if event_type in {"INSIDE_ACTIVE", "INSIDE_PURCHASING"}:
-                        if strong_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
-                                (event_time, match_score, f"inside_update:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, item.image_id, item.image_name, business_date, item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
-                                    "INFERRED_INSIDE_OPEN", "INFERRED_INSIDE", event_time, event_time, "", 0.0, "inferred_inside",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    if event_type == "EXIT":
-                        if strong_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET exit_time=?, last_seen_time=?, session_status='CLOSED', match_score=?, match_reason=? WHERE id=?",
-                                (event_time, event_time, match_score, f"exit_match:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, item.image_id, item.image_name, business_date, item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", "NA", event_time, "NA",
-                                    "UNMATCHED_EXIT", "NA", event_time, event_time, "", 0.0, "no_open_match",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    # Fallback deterministic record
-                    conn.execute(
-                        """INSERT INTO onfly_walkin_sessions(
-                               store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                               event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                               session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                               direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                               gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                               clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            cfg.store_id, run_id, item.image_id, item.image_name, business_date, item.camera_id, business_date, business_date,
-                            event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, event_time, "NA", "NA",
-                            "OPEN", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "fallback",
-                            direction_conf, match_fingerprint, event_time, gpt_event,
-                            walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                            walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                            walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                        ),
-                    )
-                queue_status = "waiting_quota" if gstatus == "quota_pending_retry" else gstatus
-                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status=queue_status, error=gerr)
-                _append_pipeline_event(
-                    conn,
-                    run_id=run_id,
-                    stage=stage,
-                    event_type="success" if gstatus == "done" else ("retry" if gstatus == "quota_pending_retry" else "failure"),
-                    image_id=item.image_id,
-                    image_name=item.image_name,
-                    message=(
-                        "GPT analysis completed"
-                        if gstatus == "done"
-                        else ("GPT quota unavailable; queued for retry" if gstatus == "quota_pending_retry" else "GPT analysis failed")
-                    ),
-                    payload={
-                        "walkins": len(walkins),
-                        "customer_count": int(gpt.get("customer_count", 0)),
-                        "staff_count": int(gpt.get("staff_count", 0)),
-                        "gpt_status": gstatus,
-                    },
-                    error_message=str(gerr)[:1000],
-                )
-                retry_status = (
-                    f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry"
-                    if gpt_retry_pending > 0
-                    else ""
-                )
-                _update_pipeline_run(
-                    conn,
-                    run_id,
-                    gpt_success_count=gpt_done,
-                    gpt_failed_count=gpt_failed,
-                    retry_status=retry_status,
-                )
-                if cfg.gpt_rate_limit_rps > 0:
-                    time.sleep(1.0 / max(0.01, float(cfg.gpt_rate_limit_rps)))
+                gpt_work_list.append((item, image_bytes))
             elif relevant == 1 and cfg.gpt_enabled and not gpt_needed:
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="skipped_version")
                 _append_pipeline_event(
@@ -1497,6 +1237,292 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 gpt_failed_count=gpt_failed,
             )
             conn.commit()
+        # Phase 2: parallel GPT — all OpenAI calls run concurrently (pure I/O-bound HTTP).
+        gpt_result_map: dict[str, tuple] = {}
+        if gpt_work_list and cfg.gpt_enabled:
+            def _run_gpt(work: tuple) -> tuple:
+                _item, _img_bytes = work
+                _g0 = time.perf_counter()
+                try:
+                    _out = _openai_eval(cfg, _img_bytes, _item.image_name)
+                    return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
+                except Exception as _exc:
+                    _gerr = str(_exc)
+                    _gstatus = "quota_pending_retry" if _is_gpt_quota_error(_gerr) else "failed"
+                    return (
+                        _item.image_id,
+                        {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
+                        _gstatus,
+                        _gerr,
+                        round((time.perf_counter() - _g0) * 1000.0, 2),
+                    )
+
+            _max_w = max(1, int(cfg.gpt_parallel_workers))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_w) as _pool:
+                _futs = {_pool.submit(_run_gpt, w): w for w in gpt_work_list}
+                for _fut in concurrent.futures.as_completed(_futs):
+                    try:
+                        _img_id, _gpt_out, _gstatus, _gerr, _elapsed = _fut.result()
+                        gpt_result_map[_img_id] = (_gpt_out, _gstatus, _gerr, _elapsed)
+                    except Exception as _exc2:
+                        _wk = _futs[_fut]
+                        gpt_result_map[_wk[0].image_id] = (
+                            {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
+                            "failed", str(_exc2), 0.0,
+                        )
+
+        # Phase 3: sequential session writes — preserves event-time ordering for Re-ID state machine.
+        if gpt_work_list:
+            stage = PIPELINE_STAGES[4]
+            for _item, _img_bytes in gpt_work_list:
+                _gpt_dict, gstatus, gerr, _elapsed_ms = gpt_result_map.get(
+                    _item.image_id,
+                    ({"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_missing", "walkins": []}, "failed", "no_result", 0.0),
+                )
+                timings["gpt_ms"] += _elapsed_ms
+                gpt_done += int(gstatus == "done")
+                gpt_failed += int(gstatus == "failed")
+                gpt_retry_pending += int(gstatus == "quota_pending_retry")
+                walkins = _gpt_dict.pop("walkins", [])
+                gpt_summary = json.dumps(_gpt_dict, separators=(',', ':'))
+                conn.execute(
+                    "UPDATE onfly_image_state SET gpt_version=?,gpt_status=?,gpt_customer_count=?,gpt_staff_count=?,gpt_conversions=?,gpt_bounce=?,gpt_result_json=?,gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
+                    (gpt_version, gstatus, int(_gpt_dict.get("customer_count", 0)), int(_gpt_dict.get("staff_count", 0)), int(_gpt_dict.get("conversions", 0)), int(_gpt_dict.get("bounce", 0)), gpt_summary, str(gerr)[:1000], run_id, cfg.store_id, _item.image_id),
+                )
+                event_time = _parse_filename_time(_item.image_name) or str(_item.timestamp_hint or "").split(" ")[-1].strip()
+                business_date = str(_item.date_display or "").strip()
+
+                def _tsec(t: str) -> int:
+                    try:
+                        hh, mm, ss = [int(x) for x in str(t or "").split(":")]
+                        return hh * 3600 + mm * 60 + ss
+                    except Exception:
+                        return -1
+
+                def _find_best_open_session(row: dict[str, str]) -> tuple[int | None, float, str]:
+                    candidates = conn.execute(
+                        """
+                        SELECT id, camera_id, gender, age_band, primary_clothing, bag_type,
+                               clothing_style_archetype, jewellery_load, attire_visual_marker, last_seen_time
+                        FROM onfly_walkin_sessions
+                        WHERE store_id=? AND business_date=? AND role='Customer'
+                          AND session_status IN ('OPEN','INFERRED_INSIDE_OPEN')
+                        ORDER BY id DESC
+                        """,
+                        (cfg.store_id, business_date),
+                    ).fetchall()
+                    best_id: int | None = None
+                    best_score = -1.0
+                    best_reason = "no_open_session"
+                    now_sec = _tsec(event_time)
+                    for cand in candidates:
+                        score = 0.0
+                        reasons: list[str] = []
+                        if str(cand["camera_id"] or "") == str(_item.camera_id or ""):
+                            score += 2.0
+                            reasons.append("camera")
+                        for key in ["gender", "age_band", "primary_clothing", "bag_type", "clothing_style_archetype", "jewellery_load"]:
+                            rv = str(row.get({
+                                "gender": "Gender",
+                                "age_band": "Age Band",
+                                "primary_clothing": "Primary Clothing",
+                                "bag_type": "Bag Type",
+                                "clothing_style_archetype": "Primary Clothing Style Archetype",
+                                "jewellery_load": "Jewellery Load",
+                            }[key], "") or "").strip().lower()
+                            cv = str(cand[key] or "").strip().lower()
+                            if rv and cv and rv == cv:
+                                score += 1.0
+                                reasons.append(key)
+                        last_sec = _tsec(str(cand["last_seen_time"] or ""))
+                        if now_sec >= 0 and last_sec >= 0:
+                            gap = abs(now_sec - last_sec)
+                            if gap <= 120:
+                                score += 2.0
+                                reasons.append("time<=120s")
+                            elif gap <= 300:
+                                score += 1.0
+                                reasons.append("time<=300s")
+                        if score > best_score:
+                            best_score = score
+                            best_id = int(cand["id"])
+                            best_reason = ",".join(reasons) if reasons else "weak_match"
+                    return best_id, float(best_score if best_score > 0 else 0.0), best_reason
+
+                for walkin in walkins:
+                    role = str(walkin.get("Role", "") or "").strip() or "Uncertain"
+                    event_type = _canonical_event_type(walkin)
+                    direction_conf = str(walkin.get("Direction Confidence", "") or "").strip() or "NA"
+                    match_fingerprint = str(walkin.get("Match Fingerprint", "") or "").strip() or _event_fingerprint(walkin, _item.camera_id)
+                    included = str(walkin.get("Included in Analytics", "") or "").strip() or ("Yes" if role.lower() == "customer" else "No")
+                    gpt_event = str(walkin.get("Event Type", "") or "").strip()
+
+                    if event_type in {"PASSERBY_OUTSIDE", "POSTER_NON_HUMAN", "STAFF", "UNCLEAR"}:
+                        conn.execute(
+                            """INSERT INTO onfly_walkin_sessions(
+                                   store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
+                                   event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
+                                   session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
+                                   direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
+                                   gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
+                                   clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
+                               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
+                                event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, "", "", "",
+                                "CLOSED", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "non_customer_event",
+                                direction_conf, match_fingerprint, event_time, gpt_event,
+                                walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
+                                walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
+                                walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), "No",
+                            ),
+                        )
+                        continue
+
+                    match_id, match_score, match_reason = _find_best_open_session(walkin)
+                    strong_entry_match = match_id is not None and match_score >= 6.0
+                    strong_match = match_id is not None and match_score >= 4.0
+
+                    if event_type == "ENTRY":
+                        if strong_entry_match:
+                            conn.execute(
+                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
+                                (event_time, match_score, f"entry_attach:{match_reason}", int(match_id)),
+                            )
+                        else:
+                            conn.execute(
+                                """INSERT INTO onfly_walkin_sessions(
+                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
+                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
+                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
+                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
+                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
+                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (
+                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
+                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
+                                    "OPEN", "ENTRY", event_time, event_time, "", 0.0, "new_entry",
+                                    direction_conf, match_fingerprint, event_time, gpt_event,
+                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
+                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
+                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
+                                ),
+                            )
+                        continue
+
+                    if event_type in {"INSIDE_ACTIVE", "INSIDE_PURCHASING"}:
+                        if strong_match:
+                            conn.execute(
+                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
+                                (event_time, match_score, f"inside_update:{match_reason}", int(match_id)),
+                            )
+                        else:
+                            conn.execute(
+                                """INSERT INTO onfly_walkin_sessions(
+                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
+                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
+                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
+                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
+                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
+                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (
+                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
+                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
+                                    "INFERRED_INSIDE_OPEN", "INFERRED_INSIDE", event_time, event_time, "", 0.0, "inferred_inside",
+                                    direction_conf, match_fingerprint, event_time, gpt_event,
+                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
+                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
+                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
+                                ),
+                            )
+                        continue
+
+                    if event_type == "EXIT":
+                        if strong_match:
+                            conn.execute(
+                                "UPDATE onfly_walkin_sessions SET exit_time=?, last_seen_time=?, session_status='CLOSED', match_score=?, match_reason=? WHERE id=?",
+                                (event_time, event_time, match_score, f"exit_match:{match_reason}", int(match_id)),
+                            )
+                        else:
+                            conn.execute(
+                                """INSERT INTO onfly_walkin_sessions(
+                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
+                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
+                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
+                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
+                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
+                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (
+                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
+                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", "NA", event_time, "NA",
+                                    "UNMATCHED_EXIT", "NA", event_time, event_time, "", 0.0, "no_open_match",
+                                    direction_conf, match_fingerprint, event_time, gpt_event,
+                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
+                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
+                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
+                                ),
+                            )
+                        continue
+
+                    # Fallback deterministic record
+                    conn.execute(
+                        """INSERT INTO onfly_walkin_sessions(
+                               store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
+                               event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
+                               session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
+                               direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
+                               gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
+                               clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
+                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
+                            event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, event_time, "NA", "NA",
+                            "OPEN", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "fallback",
+                            direction_conf, match_fingerprint, event_time, gpt_event,
+                            walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
+                            walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
+                            walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
+                        ),
+                    )
+                queue_status = "waiting_quota" if gstatus == "quota_pending_retry" else gstatus
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=_item.image_id, stage="chatgpt", status=queue_status, error=gerr)
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=stage,
+                    event_type="success" if gstatus == "done" else ("retry" if gstatus == "quota_pending_retry" else "failure"),
+                    image_id=_item.image_id,
+                    image_name=_item.image_name,
+                    message=(
+                        "GPT analysis completed"
+                        if gstatus == "done"
+                        else ("GPT quota unavailable; queued for retry" if gstatus == "quota_pending_retry" else "GPT analysis failed")
+                    ),
+                    payload={
+                        "walkins": len(walkins),
+                        "customer_count": int(_gpt_dict.get("customer_count", 0)),
+                        "staff_count": int(_gpt_dict.get("staff_count", 0)),
+                        "gpt_status": gstatus,
+                    },
+                    error_message=str(gerr)[:1000],
+                )
+                retry_status = (
+                    f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry"
+                    if gpt_retry_pending > 0
+                    else ""
+                )
+                _update_pipeline_run(
+                    conn,
+                    run_id,
+                    gpt_success_count=gpt_done,
+                    gpt_failed_count=gpt_failed,
+                    retry_status=retry_status,
+                )
+                conn.commit()
+
         # End-of-day closeout: deterministically close remaining open sessions.
         conn.execute(
             """

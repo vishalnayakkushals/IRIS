@@ -117,34 +117,35 @@ function parseStoreMaster(text: string): any[] {
     .filter((row) => hasUsefulStoreMasterData(row));
 }
 
-// Dropdown filter for a column — shows unique values from the data
-function ColFilter({ colKey, label, rows, value, onChange }: {
+// Dropdown filter for a column — accordion: only one open at a time, options cascade from filtered rows
+function ColFilter({ colKey, label, rows, value, onChange, openFilter, setOpenFilter }: {
   colKey: string; label: string; rows: any[]; value: string; onChange: (v: string) => void;
+  openFilter: string; setOpenFilter: (k: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const open = openFilter === colKey;
   const options = useMemo(() => {
     const set = new Set<string>();
     for (const r of rows) { const v = String(r[colKey] || "").trim(); if (v) set.add(v); }
     return Array.from(set).sort();
   }, [rows, colKey]);
 
-  if (options.length === 0) {
-    return <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</span>;
+  if (options.length === 0 && !value) {
+    return <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">{label}</span>;
   }
 
   return (
     <div className="relative inline-block">
       <button
-        onClick={() => setOpen((p) => !p)}
+        onClick={() => setOpenFilter(open ? "" : colKey)}
         className={`flex items-center gap-1 text-xs font-semibold uppercase tracking-wider transition-colors ${value ? "text-blue-600" : "text-slate-500"}`}
       >
-        {label} <ChevronDown size={11} />
+        {label} <ChevronDown size={11} className={`transition-transform ${open ? "rotate-180" : ""}`} />
         {value && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-500 inline-block" />}
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 z-[200] bg-white border border-slate-200 rounded-lg shadow-xl min-w-[160px] max-h-56 overflow-y-auto py-1">
           <button
-            onClick={() => { onChange(""); setOpen(false); }}
+            onClick={() => { onChange(""); setOpenFilter(""); }}
             className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${!value ? "text-blue-600 font-semibold" : "text-slate-500"}`}
           >
             All
@@ -152,7 +153,7 @@ function ColFilter({ colKey, label, rows, value, onChange }: {
           {options.map((o) => (
             <button
               key={o}
-              onClick={() => { onChange(o); setOpen(false); }}
+              onClick={() => { onChange(o); setOpenFilter(""); }}
               className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${o === value ? "text-blue-600 font-semibold bg-blue-50" : "text-slate-700"}`}
             >
               {o}
@@ -253,17 +254,13 @@ export default function StoreMaster() {
   const [formState, setFormState] = useState<Record<string, string>>(EMPTY_FORM);
   const [savingRow, setSavingRow] = useState(false);
 
-  // Filter state
+  // Filter state — multiple active simultaneously, accordion for open dropdown
   const [search, setSearch] = useState("");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  const [openFilter, setOpenFilter] = useState("");
 
   function setColFilter(key: string, value: string) {
-    // One filter active at a time — selecting a value clears all others
-    if (value) {
-      setColFilters({ [key]: value });
-    } else {
-      setColFilters((p) => ({ ...p, [key]: "" }));
-    }
+    setColFilters((p) => ({ ...p, [key]: value }));
   }
 
   const filtered = useMemo(() => {
@@ -542,14 +539,20 @@ export default function StoreMaster() {
               {FILTER_COLS.map((columnKey) => {
                 const column = COLUMNS.find((item) => item.key === columnKey);
                 if (!column) return null;
+                // Cascade: each filter sees options from rows already filtered by all OTHER active filters
+                const otherFiltered = rows.filter((r) =>
+                  FILTER_COLS.filter((k) => k !== columnKey && colFilters[k]).every((k) => String(r[k] || "").trim() === colFilters[k])
+                );
                 return (
                   <ColFilter
                     key={columnKey}
                     colKey={columnKey}
                     label={column.label}
-                    rows={rows}
+                    rows={otherFiltered}
                     value={colFilters[columnKey] || ""}
                     onChange={(next) => setColFilter(columnKey, next)}
+                    openFilter={openFilter}
+                    setOpenFilter={setOpenFilter}
                   />
                 );
               })}
