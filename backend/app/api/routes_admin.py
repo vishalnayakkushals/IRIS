@@ -1108,6 +1108,38 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
     }
 
 
+@router.post("/store-master/normalize-text")
+async def normalize_store_master_text(actor: str = Depends(get_current_user)) -> dict:
+    """Title-case city, state, zone, cluster_manager, area_manager for all existing rows."""
+    def _tc(v: str | None) -> str | None:
+        if not v or not v.strip():
+            return v
+        return v.strip().title()
+
+    updated = 0
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(select(store_master))).mappings().all()
+        for row in rows:
+            new_vals = {
+                "city": _tc(row.get("city")),
+                "state": _tc(row.get("state")),
+                "zone": _tc(row.get("zone")),
+                "cluster_manager": _tc(row.get("cluster_manager")),
+                "area_manager": _tc(row.get("area_manager")),
+            }
+            changed = any(new_vals[k] != row.get(k) for k in new_vals)
+            if changed:
+                await session.execute(
+                    update(store_master)
+                    .where(store_master.c.store_id == row["store_id"])
+                    .values(**new_vals)
+                )
+                updated += 1
+        await session.commit()
+    await _log_activity(actor, "store_master.normalize_text", "all", {"updated": updated})
+    return {"updated": updated}
+
+
 @router.delete("/store-master/{store_id}")
 async def delete_store_master_row(store_id: str, actor: str = Depends(get_current_user)) -> dict:
     async with AsyncSessionLocal() as session:

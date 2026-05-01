@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Title, Text, Metric, Card, Grid, BarChart, LineChart, DonutChart, Badge,
+  Title, Text, Metric, Card, Grid, LineChart, DonutChart, Badge,
 } from "@tremor/react";
 import {
   fetchAnalytics, fetchTrend, fetchLeaderboard, fetchDelta,
@@ -36,7 +36,6 @@ export default function Overview() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [delta, setDelta] = useState<DeltaData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [hasSelected, setHasSelected] = useState(false); // blank first — wait for explicit store selection
 
   useEffect(() => {
     listStores()
@@ -64,8 +63,8 @@ export default function Overview() {
   }, [storeFilter, days, groupBy]);
 
   useEffect(() => {
-    if (hasSelected) load();
-  }, [load, hasSelected]);
+    if (storeFilter) load();
+  }, [load]);
 
   const trendData = useMemo(() => trend.map((p) => ({
     period: p.period,
@@ -109,9 +108,8 @@ export default function Overview() {
             <StoreSelect
               stores={stores}
               value={storeFilter}
-              onChange={(v) => { setHasSelected(true); setStoreFilter(v); }}
-              includeAll
-              allLabel="All Stores"
+              onChange={(v) => { setStoreFilter(v); }}
+              includeAll={false}
               placeholder="Select a store to load…"
               className="w-52"
             />
@@ -119,16 +117,16 @@ export default function Overview() {
         </div>
       </div>
 
-      {/* Empty state — shown until user selects a store */}
-      {!hasSelected && (
+      {/* Empty state — shown until user picks a specific store */}
+      {!storeFilter && (
         <Card className="p-12 text-center space-y-2">
           <p className="text-slate-500 text-sm font-medium">Select a store to view analytics.</p>
-          <p className="text-slate-400 text-xs">Choose a store or "All Stores" from the selector above. Data loads only after selection.</p>
+          <p className="text-slate-400 text-xs">Choose a store from the selector above. Data loads only after selection.</p>
         </Card>
       )}
 
-      {/* KPI cards, charts, leaderboard — shown only after explicit store selection */}
-      {hasSelected && <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
+      {/* KPI cards, charts, leaderboard — shown only after store is selected */}
+      {storeFilter && <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
         <Card decoration="top" decorationColor="blue">
           <div className="flex items-start justify-between">
             <Text>Walk-ins</Text>
@@ -229,15 +227,24 @@ export default function Overview() {
           {ageData.length === 0 ? (
             <div className="h-40 flex items-center justify-center text-slate-400 text-sm">No data</div>
           ) : (
-            <BarChart
-              className="mt-2 h-40"
-              data={ageData}
-              index="name"
-              categories={["value"]}
-              colors={["purple"]}
-              showLegend={false}
-              yAxisWidth={36}
-            />
+            <div className="mt-4 space-y-3">
+              {(() => {
+                const maxVal = Math.max(...ageData.map((a) => a.value), 1);
+                return ageData.map((a) => (
+                  <div key={a.name} className="flex items-center gap-3">
+                    <span className="text-xs text-slate-500 w-20 text-right shrink-0">{a.name}</span>
+                    <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden">
+                      <div
+                        className="h-full rounded-full flex items-center pl-2 transition-all duration-500"
+                        style={{ width: `${Math.max(8, Math.round((a.value / maxVal) * 100))}%`, backgroundColor: "#7c3aed" }}
+                      >
+                        <span className="text-white text-xs font-semibold">{a.value}</span>
+                      </div>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
           )}
         </Card>
       </Grid>
@@ -246,16 +253,25 @@ export default function Overview() {
       {(analytics?.engagement ?? []).length > 0 && (
         <Card>
           <Title>Engagement Types</Title>
-          <BarChart
-            className="mt-4 h-48"
-            data={(analytics?.engagement ?? []).map((e) => ({ name: e.label, Customers: e.value }))}
-            index="name"
-            categories={["Customers"]}
-            colors={["cyan"]}
-            showLegend={false}
-            yAxisWidth={36}
-            layout="vertical"
-          />
+          <div className="mt-4 space-y-3">
+            {(() => {
+              const engData = analytics?.engagement ?? [];
+              const maxVal = Math.max(...engData.map((e) => e.value), 1);
+              return engData.map((e) => (
+                <div key={e.label} className="flex items-center gap-3">
+                  <span className="text-xs text-slate-500 w-36 text-right shrink-0 truncate" title={e.label}>{e.label}</span>
+                  <div className="flex-1 bg-slate-100 rounded-full h-7 overflow-hidden">
+                    <div
+                      className="h-full rounded-full flex items-center pl-3 transition-all duration-500"
+                      style={{ width: `${Math.max(8, Math.round((e.value / maxVal) * 100))}%`, backgroundColor: "#0284c7" }}
+                    >
+                      <span className="text-white text-xs font-semibold">{e.value}</span>
+                    </div>
+                  </div>
+                </div>
+              ));
+            })()}
+          </div>
         </Card>
       )}
 

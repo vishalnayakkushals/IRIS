@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { adminDeleteStoreMaster, adminListStoreMaster, adminUploadStoreMasterFile, adminUpsertStoreMaster } from "../api/client";
+import { adminDeleteStoreMaster, adminListStoreMaster, adminNormalizeStoreMasterText, adminUploadStoreMasterFile, adminUpsertStoreMaster } from "../api/client";
 import { Card, Title, Text } from "@tremor/react";
 import { Upload, RefreshCw, Search, ChevronDown, X, Plus, Pencil, Trash2, Check, Download } from "lucide-react";
 
@@ -408,6 +408,16 @@ export default function StoreMaster() {
     }
   }
 
+  async function normalizeText() {
+    try {
+      const res = await adminNormalizeStoreMasterText();
+      flash(`Normalized ${res.data.updated} row(s) — city, state, zone, managers now in title case`);
+      load();
+    } catch {
+      flash("Normalize failed");
+    }
+  }
+
   function downloadCSV() {
     const headers = ALL_COLUMNS.map((c) => c.label);
     const csvRows = [
@@ -459,6 +469,9 @@ export default function StoreMaster() {
               <Plus size={14} /> Add Store Row
             </button>
           )}
+          <button onClick={normalizeText} disabled={rows.length === 0} className="iris-btn-secondary" title="Title-case city/state/zone/managers for all existing rows">
+            Fix Case
+          </button>
           <button onClick={downloadCSV} disabled={rows.length === 0} className="iris-btn-secondary" title="Download Store Master CSV">
             <Download size={14} /> Download
           </button>

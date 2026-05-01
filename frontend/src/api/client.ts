@@ -250,6 +250,7 @@ export const adminListActivity = (actor?: string, limit = 100) =>
 export const adminListStoreMaster = () => api.get<any[]>("/admin/store-master");
 export const adminUpsertStoreMaster = (rows: any[]) => api.post("/admin/store-master", rows);
 export const adminDeleteStoreMaster = (storeId: string) => api.delete(`/admin/store-master/${storeId}`);
+export const adminNormalizeStoreMasterText = () => api.post("/admin/store-master/normalize-text");
 export const adminUploadStoreMasterFile = (file: File) => {
   const form = new FormData();
   form.append("file", file);
