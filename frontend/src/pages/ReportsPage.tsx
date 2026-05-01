@@ -380,7 +380,10 @@ export default function ReportsPage() {
     adminListStores().then((r) => setStores(r.data));
   }, []);
 
-  useEffect(() => { void loadReports(); }, [loadReports]);
+  useEffect(() => {
+    if (!selectedStore) return; // blank first — load only when a store is selected
+    void loadReports();
+  }, [loadReports, selectedStore]);
 
   useEffect(() => {
     if (!selectedStore) { setLiveProgress(null); return; }
@@ -506,8 +509,16 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Empty state */}
+      {!selectedStore && !loading && (
+        <Card className="p-12 text-center space-y-2">
+          <p className="text-slate-500 text-sm font-medium">Select a store to load report data.</p>
+          <p className="text-slate-400 text-xs">Use the store selector above to choose a store and view walk-in reports, image scans, and validation data.</p>
+        </Card>
+      )}
+
+      {/* KPI cards + report table (only shown when store selected) */}
+      {selectedStore && <><div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card decoration="top" decorationColor="blue">
           <Text>Total Walk-ins In View</Text>
           <Metric>{loading ? "—" : totalWalkins.toLocaleString()}</Metric>
@@ -607,6 +618,7 @@ export default function ReportsPage() {
           {!loading && reportView === "validation" ? <ValidationTable rows={validationRows} storeMap={storeMap} /> : null}
         </Card>
       </Card>
+      </> }
     </div>
   );
 }

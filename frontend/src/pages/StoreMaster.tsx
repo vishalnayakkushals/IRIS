@@ -258,7 +258,12 @@ export default function StoreMaster() {
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
 
   function setColFilter(key: string, value: string) {
-    setColFilters((p) => ({ ...p, [key]: value }));
+    // One filter active at a time — selecting a value clears all others
+    if (value) {
+      setColFilters({ [key]: value });
+    } else {
+      setColFilters((p) => ({ ...p, [key]: "" }));
+    }
   }
 
   const filtered = useMemo(() => {
@@ -307,6 +312,23 @@ export default function StoreMaster() {
 
   async function doImport() {
     if (!preview.length) return;
+
+    // Deduplicate by store_id — keep first occurrence, warn about rest
+    const seen = new Set<string>();
+    const dupeIds: string[] = [];
+    const deduped = preview.filter((row) => {
+      const id = String(row.store_id || "").trim().toUpperCase();
+      if (!id) return true;
+      if (seen.has(id)) { dupeIds.push(row.store_id); return false; }
+      seen.add(id);
+      return true;
+    });
+    if (dupeIds.length) {
+      flash(`Found ${dupeIds.length} duplicate store ID(s) — removed before import: ${dupeIds.slice(0, 5).join(", ")}${dupeIds.length > 5 ? "…" : ""}`);
+      setPreview(deduped);
+      return; // Let user review the deduped preview before proceeding
+    }
+
     setImporting(true);
     setImportErrors([]);
     try {

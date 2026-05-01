@@ -11,6 +11,20 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-05-01 - UX: Blank-first load, single filter, CSV dedup, run history controls
+- Changed paths:
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreMaster.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - Overview and Reports pages now start blank — no data fetched until user explicitly selects a store. An empty-state card prompts selection.
+  - SchedulerDashboard no longer auto-selects the first store on load; starts blank.
+  - StoreMaster column filters (City/State/Zone/Cluster Manager/Area Manager) now work one-at-a-time — selecting a value in one dropdown clears all others.
+  - CSV import in StoreMaster now detects duplicate store_id rows before upload: shows which IDs duplicated, removes them from preview, and asks user to re-confirm before proceeding.
+  - Execution History section in Scheduler: added row-limit dropdown (10/20/50/100) and Download CSV button that exports the visible run records.
+
 ### 2026-05-01 - Frontend Performance Optimizations
 - Changed paths:
   - `frontend/src/pages/Overview.tsx`

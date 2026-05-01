@@ -5,7 +5,7 @@ import {
   onFlyLiveProgress, onFlyDateReport,
 } from "../api/client";
 import type { RunRecord } from "../api/client";
-import { Play, RefreshCw, AlertCircle } from "lucide-react";
+import { Play, RefreshCw, AlertCircle, Download } from "lucide-react";
 import { Card, Title, Text, Badge, Metric } from "@tremor/react";
 import StoreSelect from "../components/StoreSelect";
 
@@ -63,19 +63,19 @@ export default function SchedulerDashboard() {
   const [dateReport, setDateReport] = useState<any[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
   const [storeStatusFilter, setStoreStatusFilter] = useState<"enabled" | "disabled" | "all">("enabled");
+  const [runLimit, setRunLimit] = useState(20);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollCountRef = useRef(0);
 
   const loadRuns = useCallback(async () => {
-    try { const { data } = await getRuns(20); setRuns(data.runs); } catch {}
-  }, []);
+    try { const { data } = await getRuns(runLimit); setRuns(data.runs); } catch {}
+  }, [runLimit]);
 
   const loadStores = useCallback(async () => {
     try {
       const [syncR, adminR] = await Promise.all([onFlyListStores(), adminListStores()]);
       setStores(syncR.data);
       setAdminStores(adminR.data);
-      if (syncR.data.length && !selectedStore) setSelectedStore(syncR.data[0].store_id);
     } catch {}
   }, [selectedStore]);
 
@@ -201,6 +201,23 @@ export default function SchedulerDashboard() {
   const progressPct = liveProgress && liveProgress.images_discovered > 0
     ? Math.round((liveProgress.images_processed / liveProgress.images_discovered) * 100)
     : 0;
+
+  function downloadRuns() {
+    if (!runs.length) return;
+    const escape = (v: any) => { const s = String(v ?? ""); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; };
+    const headers = ["Job", "Store", "Status", "Remarks", "Triggered By", "Started At", "Completed At"];
+    const csvRows = runs.map((r) => [
+      r.job_name, storeNameById[r.store_id] || r.store_id, r.status, r.remarks || "",
+      r.triggered_by,
+      r.started_at ? new Date(r.started_at).toLocaleString("en-IN") : "",
+      r.completed_at ? new Date(r.completed_at).toLocaleString("en-IN") : "",
+    ].map(escape).join(","));
+    const csv = [headers.join(","), ...csvRows].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a"); a.href = url;
+    a.download = `execution_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="space-y-6">
@@ -569,8 +586,21 @@ export default function SchedulerDashboard() {
 
       {/* Execution History */}
       <Card className="p-0 overflow-hidden">
-        <div className="p-4 border-b">
-          <p className="text-sm font-semibold text-slate-700">Recent Execution History</p>
+        <div className="p-4 border-b flex flex-wrap items-center gap-3">
+          <p className="text-sm font-semibold text-slate-700 flex-1">Recent Execution History</p>
+          <select
+            className="iris-select text-xs w-32"
+            value={runLimit}
+            onChange={(e) => setRunLimit(Number(e.target.value))}
+          >
+            <option value={10}>10 rows</option>
+            <option value={20}>20 rows</option>
+            <option value={50}>50 rows</option>
+            <option value={100}>100 rows</option>
+          </select>
+          <button onClick={downloadRuns} disabled={!runs.length} className="iris-btn-secondary text-xs px-3 py-1.5">
+            <Download size={12} /> Download CSV
+          </button>
         </div>
         {runs.length === 0 ? (
           <div className="text-center py-12 text-slate-400 text-sm">No runs recorded yet.</div>

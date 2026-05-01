@@ -35,7 +35,8 @@ export default function Overview() {
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [delta, setDelta] = useState<DeltaData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [hasSelected, setHasSelected] = useState(false); // blank first — wait for explicit store selection
 
   useEffect(() => {
     listStores()
@@ -62,7 +63,9 @@ export default function Overview() {
       .finally(() => setLoading(false));
   }, [storeFilter, days, groupBy]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (hasSelected) load();
+  }, [load, hasSelected]);
 
   const trendData = useMemo(() => trend.map((p) => ({
     period: p.period,
@@ -106,18 +109,26 @@ export default function Overview() {
             <StoreSelect
               stores={stores}
               value={storeFilter}
-              onChange={setStoreFilter}
+              onChange={(v) => { setHasSelected(true); setStoreFilter(v); }}
               includeAll
               allLabel="All Stores"
-              placeholder="Filter stores"
-              className="w-44"
+              placeholder="Select a store to load…"
+              className="w-52"
             />
           )}
         </div>
       </div>
 
-      {/* KPI cards with deltas */}
-      <Grid numItemsSm={2} numItemsLg={4} className="gap-4">
+      {/* Empty state — shown until user selects a store */}
+      {!hasSelected && (
+        <Card className="p-12 text-center space-y-2">
+          <p className="text-slate-500 text-sm font-medium">Select a store to view analytics.</p>
+          <p className="text-slate-400 text-xs">Choose a store or "All Stores" from the selector above. Data loads only after selection.</p>
+        </Card>
+      )}
+
+      {/* KPI cards, charts, leaderboard — shown only after explicit store selection */}
+      {hasSelected && <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
         <Card decoration="top" decorationColor="blue">
           <div className="flex items-start justify-between">
             <Text>Walk-ins</Text>
@@ -286,6 +297,7 @@ export default function Overview() {
           </div>
         </Card>
       )}
+      </> }
     </div>
   );
 }
