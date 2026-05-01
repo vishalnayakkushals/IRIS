@@ -7,7 +7,8 @@ function roleBadge(role: string) {
   const r = (role || "").toUpperCase();
   if (r === "STAFF") return <Badge color="blue">Staff</Badge>;
   if (r === "CUSTOMER") return <Badge color="emerald">Customer</Badge>;
-  return <Badge color="slate">{role || "Unknown"}</Badge>;
+  if (!role) return null;
+  return <Badge color="slate">{role}</Badge>;
 }
 
 function entryBadge(et: string) {
@@ -61,6 +62,7 @@ function JourneyCard({ session }: { session: any }) {
 export default function CustomerJourneys() {
   const [stores, setStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState("");
+  const [hasSelected, setHasSelected] = useState(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const [roleFilter, setRoleFilter] = useState("");
   const [loading, setLoading] = useState(false);
@@ -70,11 +72,12 @@ export default function CustomerJourneys() {
   }, []);
 
   useEffect(() => {
+    if (!hasSelected) return;
     setLoading(true);
     reportsWalkins(selectedStore || undefined, undefined, 300)
       .then((r) => setSessions(r.data))
       .finally(() => setLoading(false));
-  }, [selectedStore]);
+  }, [selectedStore, hasSelected]);
 
   const filtered = roleFilter
     ? sessions.filter((s) => (s.role || "").toUpperCase() === roleFilter.toUpperCase())
@@ -96,10 +99,10 @@ export default function CustomerJourneys() {
             <StoreSelect
               stores={stores}
               value={selectedStore}
-              onChange={setSelectedStore}
+              onChange={(v) => { setSelectedStore(v); setHasSelected(true); }}
               includeAll
               allLabel="All Stores"
-              placeholder="Filter journeys by store"
+              placeholder="Select a store to load"
             />
           </div>
           <div className="w-36">
@@ -118,10 +121,12 @@ export default function CustomerJourneys() {
         <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Billing</Text><p className="text-2xl font-bold mt-1">{billing}</p></Card>
       </div>
 
-      {loading ? (
+      {!hasSelected ? (
+        <div className="text-center py-16 text-gray-400 text-sm">Select a store to view customer journeys.</div>
+      ) : loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Loading sessions…</div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400 text-sm">No sessions found.</div>
+        <div className="text-center py-16 text-gray-400 text-sm">No sessions found for the selected store.</div>
       ) : (
         <div className="space-y-2">
           {filtered.map((s) => <JourneyCard key={s.id} session={s} />)}

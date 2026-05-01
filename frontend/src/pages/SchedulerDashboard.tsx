@@ -63,7 +63,7 @@ export default function SchedulerDashboard() {
   const [dateReport, setDateReport] = useState<any[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
   const [storeStatusFilter, setStoreStatusFilter] = useState<"enabled" | "disabled" | "all">("enabled");
-  const [runLimit, setRunLimit] = useState(20);
+  const [runLimit, setRunLimit] = useState(10);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollCountRef = useRef(0);
 
@@ -250,11 +250,11 @@ export default function SchedulerDashboard() {
 
       {/* Sync trigger panel */}
       <Card className="p-5 space-y-4">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <p className="text-sm font-semibold text-slate-700">Run Sync Now</p>
+          <p className="text-xs text-slate-400">Select a store, optionally enable GPT, then click Sync Now. Progress updates every 3 seconds.</p>
+        </div>
         <div className="flex flex-col md:flex-row md:items-end gap-4">
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-slate-700 mb-1">Run Sync Now</p>
-            <p className="text-xs text-slate-400">Select a store, optionally enable GPT, then click Sync Now. Progress updates every 3 seconds.</p>
-          </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-80">
               <label className="iris-label">Store</label>

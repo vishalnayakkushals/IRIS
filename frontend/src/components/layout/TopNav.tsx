@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, User, LogOut, ChevronDown } from "lucide-react";
+import { User, LogOut, ChevronDown } from "lucide-react";
 import { adminGetSettings, getMe } from "../../api/client";
 
 export function TopNav() {
@@ -38,28 +38,28 @@ export function TopNav() {
     ? user.full_name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2)
     : <User size={16} />;
   const appName = branding.app_name?.trim() || "IRIS";
-  const supportEmail = branding.support_email?.trim() || "";
-  const timezone = branding.timezone?.trim() || "Asia/Kolkata";
-  const brandPrimary = branding.brand_color_primary?.trim() || "#2563EB";
+  const orgName = branding.org_name?.trim() || "";
+  const logoUrl = branding.logo_url?.trim() || "";
 
   return (
     <header className="h-16 border-b bg-background flex items-center justify-between px-6 sticky top-0 z-10 w-full select-none">
+      {/* Left: logo + org name */}
       <div className="flex items-center gap-3 min-w-0">
-        <div className="h-10 w-1 rounded-full" style={{ backgroundColor: brandPrimary }} />
+        {logoUrl ? (
+          <img src={logoUrl} alt="Logo" className="h-8 w-8 object-contain rounded-lg" />
+        ) : (
+          <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center">
+            <span className="text-white text-xs font-bold">IR</span>
+          </div>
+        )}
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-foreground truncate">{appName} Control Center</p>
-          <p className="text-xs text-muted-foreground truncate">
-            {supportEmail ? `Support: ${supportEmail}` : "Management preview build"} • {timezone}
-          </p>
+          <p className="text-sm font-bold text-foreground truncate">{orgName || appName}</p>
+          {orgName && <p className="text-xs text-muted-foreground truncate">{appName}</p>}
         </div>
       </div>
 
+      {/* Right: profile dropdown */}
       <div className="flex items-center space-x-3">
-        <button className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-full hover:bg-muted">
-          <Bell size={20} />
-        </button>
-
-        {/* Profile dropdown */}
         <div className="relative" ref={ref}>
           <button
             onClick={() => setOpen((o) => !o)}

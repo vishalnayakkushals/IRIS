@@ -1049,18 +1049,21 @@ async def upsert_store_master(rows: list[StoreMasterRow], actor: str = Depends(g
                     existing_master_check = await session.execute(
                         select(store_master.c.store_id).where(store_master.c.store_id == inferred_store_id)
                     )
+                    def _title(v: str) -> str:
+                        return v.strip().title() if v and v.strip() else v
+
                     vals = dict(
                         short_code=row.short_code,
                         gofrugal_name=row.gofrugal_name,
                         outlet_id=row.outlet_id,
-                        city=row.city,
-                        state=row.state,
-                        zone=row.zone,
+                        city=_title(row.city),
+                        state=_title(row.state),
+                        zone=_title(row.zone),
                         country=row.country,
                         mobile_no=row.mobile_no,
                         store_email=row.store_email,
-                        cluster_manager=row.cluster_manager,
-                        area_manager=row.area_manager,
+                        cluster_manager=_title(row.cluster_manager),
+                        area_manager=_title(row.area_manager),
                         updated_at=now,
                     )
                     if existing_master_check.first():

@@ -11,7 +11,7 @@ const ENTRY_COLOR: Record<string, "emerald" | "gray"> = {
   BILLING: "emerald",
 };
 
-const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
 
 export default function StoreDetail() {
   const [stores, setStores] = useState<StoreOption[]>([]);
@@ -19,7 +19,7 @@ export default function StoreDetail() {
   const [metrics, setMetrics] = useState({ footfall: 0, bounce_rate: "0%", dwell_time: "0 min", status: "" });
   const [sessions, setSessions] = useState<WalkinSession[]>([]);
   const [sessionPage, setSessionPage] = useState(1);
-  const [sessionPageSize, setSessionPageSize] = useState(50);
+  const [sessionPageSize, setSessionPageSize] = useState(10);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
 

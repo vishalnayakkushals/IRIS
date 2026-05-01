@@ -186,7 +186,7 @@ export default function Overview() {
             data={trendData}
             index="period"
             categories={["Walk-ins", "Conversions"]}
-            colors={["blue", "emerald"]}
+            colors={["indigo", "orange"]}
             showLegend
             yAxisWidth={40}
           />
@@ -206,11 +206,11 @@ export default function Overview() {
                 data={genderData}
                 category="value"
                 index="name"
-                colors={["blue", "rose", "amber", "gray"]}
+                colors={["indigo", "pink", "amber", "slate"]}
               />
               <div className="space-y-2">
                 {genderData.map((g, i) => {
-                  const colors = ["bg-blue-500", "bg-rose-500", "bg-amber-500", "bg-gray-400"];
+                  const colors = ["bg-indigo-500", "bg-pink-500", "bg-amber-500", "bg-slate-400"];
                   const total = genderData.reduce((s, x) => s + x.value, 0);
                   return (
                     <div key={g.name} className="flex items-center gap-2 text-sm">
@@ -234,7 +234,7 @@ export default function Overview() {
               data={ageData}
               index="name"
               categories={["value"]}
-              colors={["violet"]}
+              colors={["purple"]}
               showLegend={false}
               yAxisWidth={36}
             />
@@ -251,7 +251,7 @@ export default function Overview() {
             data={(analytics?.engagement ?? []).map((e) => ({ name: e.label, Customers: e.value }))}
             index="name"
             categories={["Customers"]}
-            colors={["teal"]}
+            colors={["cyan"]}
             showLegend={false}
             yAxisWidth={36}
             layout="vertical"

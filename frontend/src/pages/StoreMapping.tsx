@@ -180,9 +180,9 @@ export default function StoreMapping() {
           <table className="w-full text-sm text-left">
             <thead>
               <tr className="bg-slate-50 border-b">
+                <th className="px-4 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold w-10">#</th>
                 <th className="px-5 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold">Store ID</th>
                 <th className="px-5 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold">Name</th>
-                <th className="px-5 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold">Email</th>
                 <th className="px-5 py-3">
                   <HeaderFilter
                     label="Drive Link"
@@ -212,14 +212,14 @@ export default function StoreMapping() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.map((r) => {
+              {filtered.map((r, idx) => {
                 const sync = syncData[r.store_id];
                 return (
                   <>
                     <tr key={r.store_id} className="hover:bg-slate-50/50">
+                      <td className="px-4 py-3 text-slate-400 text-xs text-center">{idx + 1}</td>
                       <td className="px-5 py-3 font-medium font-mono text-xs">{r.store_id}</td>
                       <td className="px-5 py-3 font-medium">{r.store_name}</td>
-                      <td className="px-5 py-3 text-slate-500 text-xs">{r.email}</td>
                       <td className="px-5 py-3 max-w-[160px] truncate text-slate-400 text-xs">
                         {r.drive_folder_url ? (
                           <a href={r.drive_folder_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
@@ -266,7 +266,7 @@ export default function StoreMapping() {
                     </tr>
                     {editing === r.store_id && (
                       <tr key={`edit-${r.store_id}`}>
-                        <td colSpan={7} className="px-5 py-3">
+                        <td colSpan={8} className="px-5 py-3">
                           <StoreForm initial={r} onSave={handleUpdate} onCancel={() => setEditing(null)} isNew={false} />
                         </td>
                       </tr>
@@ -276,7 +276,7 @@ export default function StoreMapping() {
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-gray-400 text-sm">
+                  <td colSpan={8} className="text-center py-12 text-gray-400 text-sm">
                     {rows.length === 0 ? "No stores configured." : "No stores match the current filters."}
                   </td>
                 </tr>

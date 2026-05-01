@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { adminDeleteStoreMaster, adminListStoreMaster, adminUploadStoreMasterFile, adminUpsertStoreMaster } from "../api/client";
 import { Card, Title, Text } from "@tremor/react";
-import { Upload, RefreshCw, Search, ChevronDown, X, Plus, Pencil, Trash2, Check } from "lucide-react";
+import { Upload, RefreshCw, Search, ChevronDown, X, Plus, Pencil, Trash2, Check, Download } from "lucide-react";
 
-const COLUMNS = [
+const ALL_COLUMNS = [
   { key: "store_id", label: "Store ID", required: true },
   { key: "store_name", label: "Store Name" },
-  { key: "short_code", label: "Short Code" },
-  { key: "gofrugal_name", label: "Gofrugal Name" },
+  { key: "short_code", label: "Short Code", hidden: true },
+  { key: "gofrugal_name", label: "Gofrugal Name", hidden: true },
   { key: "outlet_id", label: "Outlet ID" },
   { key: "city", label: "City" },
   { key: "state", label: "State" },
@@ -18,6 +18,8 @@ const COLUMNS = [
   { key: "cluster_manager", label: "Cluster Manager" },
   { key: "area_manager", label: "Area Manager" },
 ];
+
+const COLUMNS = ALL_COLUMNS.filter((c) => !c.hidden);
 
 const HEADER_ALIASES: Record<string, string> = {
   storeid: "store_id",
@@ -32,9 +34,9 @@ const HEADER_ALIASES: Record<string, string> = {
   locationname: "store_name",
   location_name: "store_name",
   name: "store_name",
-  shortcode: "short_code",
+  shortcode: "store_id",
   short_code: "short_code",
-  gofrugalname: "gofrugal_name",
+  gofrugalname: "store_name",
   gofrugal_name: "gofrugal_name",
   outletid: "outlet_id",
   outlet_id: "outlet_id",
@@ -166,7 +168,7 @@ function ColFilter({ colKey, label, rows, value, onChange, openFilter, setOpenFi
 }
 
 const FILTER_COLS = ["city", "state", "zone", "cluster_manager", "area_manager"];
-const MANUAL_FIELDS = COLUMNS;
+const MANUAL_FIELDS = ALL_COLUMNS;
 
 const EMPTY_FORM = {
   store_id: "",
@@ -406,6 +408,26 @@ export default function StoreMaster() {
     }
   }
 
+  function downloadCSV() {
+    const headers = ALL_COLUMNS.map((c) => c.label);
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) =>
+        ALL_COLUMNS.map((c) => {
+          const val = String(r[c.key] || "");
+          return val.includes(",") || val.includes('"') ? `"${val.replace(/"/g, '""')}"` : val;
+        }).join(",")
+      ),
+    ];
+    const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "store_master.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function deleteRow(storeId: string) {
     if (!confirm(`Remove store master row for ${storeId}?`)) return;
     try {
@@ -437,6 +459,9 @@ export default function StoreMaster() {
               <Plus size={14} /> Add Store Row
             </button>
           )}
+          <button onClick={downloadCSV} disabled={rows.length === 0} className="iris-btn-secondary" title="Download Store Master CSV">
+            <Download size={14} /> Download
+          </button>
           <button onClick={load} className="p-2 rounded border text-slate-500 hover:text-blue-600 hover:border-blue-400"><RefreshCw size={14} /></button>
         </div>
       </div>
