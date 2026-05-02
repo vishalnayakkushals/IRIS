@@ -499,6 +499,55 @@ async def get_walkins(
         return [dict(r) for r in result.mappings().all()]
 
 
+@router.get("/walkins-qa")
+async def get_walkins_for_qa(
+    store_id: str | None = None,
+    limit: int = 500,
+    _: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """Fast QA-Review endpoint — returns GPT-analysed walk-in sessions with image_id intact.
+    Skips the expensive Drive enrichment loop; client uses image_id to fetch thumbnails directly."""
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        params: list[Any] = []
+        where: list[str] = ["TRIM(COALESCE(role,'')) != ''"]
+        if store_id:
+            where.append("store_id = ?")
+            params.append(store_id)
+        where_sql = f"WHERE {' AND '.join(where)}"
+        cur = conn.execute(
+            f"""
+            SELECT
+                store_id,
+                image_id,
+                walkin_id,
+                COALESCE(business_date, date, '') AS date,
+                role,
+                COALESCE(entry_time, '') AS entry_time,
+                COALESCE(exit_time, '') AS exit_time,
+                COALESCE(time_spent_mins, '') AS time_spent_mins,
+                COALESCE(gender, '') AS gender,
+                COALESCE(age_band, '') AS age_band,
+                COALESCE(camera_id, '') AS camera_id,
+                COALESCE(first_seen_time, '') AS first_seen_time,
+                COALESCE(last_seen_time, '') AS last_seen_time,
+                COALESCE(included_in_analytics, '') AS included_in_analytics,
+                COALESCE(source_image_name, '') AS source_image_name
+            FROM onfly_walkin_sessions
+            {where_sql}
+            ORDER BY business_date DESC, entry_time ASC
+            LIMIT ?
+            """,
+            tuple(params + [max(1, int(limit))]),
+        )
+        return _row_dicts(cur)
+    finally:
+        conn.close()
+
+
 @router.get("/summary")
 async def get_store_day_summary(
     store_id: str | None = None,

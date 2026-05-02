@@ -269,6 +269,11 @@ export const reportsWalkins = (storeId?: string, date?: string, limit = 200) => 
   if (date) params.set("business_date", date);
   return api.get<any[]>(`/reports/walkins?${params}`);
 };
+export const reportsWalkinsQA = (storeId?: string, limit = 500) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (storeId) params.set("store_id", storeId);
+  return api.get<any[]>(`/reports/walkins-qa?${params}`);
+};
 export const reportsSummary = (storeId?: string, limit = 90) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (storeId) params.set("store_id", storeId);
