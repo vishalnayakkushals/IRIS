@@ -126,7 +126,6 @@ export function TopNav() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [user, setUser] = useState<{ email: string; full_name: string } | null>(null);
   const [appDetail, setAppDetail] = useState("Footfall Analysis");
-  const [logoUrl, setLogoUrl] = useState("");
   const profileRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
@@ -135,7 +134,6 @@ export function TopNav() {
     adminGetSettings().then((r) => {
       const data = r.data || {};
       setAppDetail(data.app_detail?.trim() || "Footfall Analysis");
-      setLogoUrl(data.logo_url?.trim() || "");
       const appName = data.app_name?.trim() || "IRIS";
       const orgName = data.org_name?.trim();
       document.title = orgName ? `${appName} | ${orgName}` : appName;
@@ -161,27 +159,15 @@ export function TopNav() {
 
   return (
     <header className="h-14 border-b bg-background flex items-center pl-5 pr-4 sticky top-0 z-10 w-full select-none gap-3">
-      {/* App identity — logo image if set, else fallback IRIS badge */}
+      {/* IRIS app identity */}
       <div className="flex items-center gap-2.5 shrink-0">
-        {logoUrl ? (
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <img
-              src={logoUrl}
-              alt="Logo"
-              style={{ height: 40, width: "auto", objectFit: "contain" }}
-            />
-          </div>
-        ) : (
-          <>
-            <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
-              <span className="text-white text-xs font-bold">IR</span>
-            </div>
-            <div className="leading-tight hidden sm:block">
-              <p className="text-sm font-bold text-foreground tracking-wide">IRIS</p>
-              <p className="text-[11px] text-muted-foreground">{appDetail}</p>
-            </div>
-          </>
-        )}
+        <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
+          <span className="text-white text-xs font-bold">IR</span>
+        </div>
+        <div className="leading-tight hidden sm:block">
+          <p className="text-sm font-bold text-foreground tracking-wide">IRIS</p>
+          <p className="text-[11px] text-muted-foreground">{appDetail}</p>
+        </div>
       </div>
 
       {/* Searchable global store selector */}

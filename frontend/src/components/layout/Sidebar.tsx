@@ -76,7 +76,11 @@ export function Sidebar() {
     <aside className="w-64 border-r bg-background min-h-screen hidden md:flex flex-col select-none">
       <div className="border-b flex-shrink-0 px-5 py-4 flex items-center justify-center">
         {logoUrl ? (
-          <img src={logoUrl} alt="Logo" className="h-10 w-10 rounded-xl border object-contain bg-white p-1 shadow-sm" />
+          <img
+            src={logoUrl}
+            alt="Logo"
+            style={{ height: 40, width: "auto", maxWidth: 160, objectFit: "contain" }}
+          />
         ) : (
           <div className="h-10 w-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm">
             <span className="text-white text-sm font-bold">IR</span>
