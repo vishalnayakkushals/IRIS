@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Title, Text, Metric, Card, Grid, Badge } from "@tremor/react";
-import { fetchStoreMetrics, fetchWalkins, WalkinSession } from "../api/client";
+import { fetchStoreMetrics, fetchWalkins, fetchAnalytics, WalkinSession } from "../api/client";
 import { useStore } from "../context/StoreContext";
 
 const ROLE_COLOR: Record<string, "rose" | "blue" | "gray"> = {
@@ -15,7 +15,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
 
 export default function StoreDetail() {
   const { storeId, stores } = useStore();
-  const [metrics, setMetrics] = useState({ footfall: 0, bounce_rate: "0%", dwell_time: "0 min", status: "" });
+  const [metrics, setMetrics] = useState<{ footfall: number | string; bounce_rate: string; dwell_time: string; status: string } | null>(null);
   const [sessions, setSessions] = useState<WalkinSession[]>([]);
   const [sessionPage, setSessionPage] = useState(1);
   const [sessionPageSize, setSessionPageSize] = useState(10);
@@ -23,45 +23,71 @@ export default function StoreDetail() {
   const [loadingSessions, setLoadingSessions] = useState(false);
 
   useEffect(() => {
-    if (!storeId) return;
     setLoadingMetrics(true);
     setLoadingSessions(true);
+    setMetrics(null);
+    setSessions([]);
+    setSessionPage(1);
 
-    fetchStoreMetrics(storeId)
-      .then((res) => setMetrics(res.data ?? metrics))
-      .catch(() => {})
-      .finally(() => setLoadingMetrics(false));
+    if (storeId) {
+      // Per-store: use dedicated metrics + walkins endpoints
+      fetchStoreMetrics(storeId)
+        .then((res) => setMetrics(res.data ?? null))
+        .catch(() => {})
+        .finally(() => setLoadingMetrics(false));
 
-    fetchWalkins(storeId)
-      .then((res) => { setSessions(res.data?.sessions ?? []); setSessionPage(1); })
-      .catch(() => {})
-      .finally(() => setLoadingSessions(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+      fetchWalkins(storeId, 500)
+        .then((res) => { setSessions(res.data?.sessions ?? []); setSessionPage(1); })
+        .catch(() => {})
+        .finally(() => setLoadingSessions(false));
+    } else {
+      // All stores: use analytics aggregate for KPIs, walkins without store filter
+      fetchAnalytics(undefined, 30)
+        .then((res) => {
+          const d = res.data;
+          if (d) {
+            setMetrics({
+              footfall: d.total_walkins ?? 0,
+              bounce_rate: `${d.conversion_rate ?? 0}% conv.`,
+              dwell_time: `${d.avg_dwell_mins ?? 0} min`,
+              status: "",
+            });
+          }
+        })
+        .catch(() => {})
+        .finally(() => setLoadingMetrics(false));
+
+      fetchWalkins(undefined, 500)
+        .then((res) => { setSessions(res.data?.sessions ?? []); setSessionPage(1); })
+        .catch(() => {})
+        .finally(() => setLoadingSessions(false));
+    }
   }, [storeId]);
 
   const selectedStore = stores.find((s) => s.store_id === storeId);
+  const pageTitle = storeId ? (selectedStore?.store_name ?? storeId) : "All Stores";
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <Title>Store Detail</Title>
-          <Text>{selectedStore?.store_name ?? "Select a store to view analytics"}</Text>
+          <Text>{pageTitle}</Text>
         </div>
       </div>
 
       <Grid numItemsSm={1} numItemsLg={3} className="gap-6">
         <Card decoration="top" decorationColor="indigo">
-          <Text>Daily Footfall</Text>
-          <Metric>{loadingMetrics ? "-" : metrics.footfall}</Metric>
+          <Text>{storeId ? "Daily Footfall" : "Total Walk-ins (30d)"}</Text>
+          <Metric>{loadingMetrics ? "—" : (metrics?.footfall ?? 0)}</Metric>
         </Card>
         <Card decoration="top" decorationColor="rose">
-          <Text>Bounce Rate</Text>
-          <Metric>{loadingMetrics ? "-" : metrics.bounce_rate}</Metric>
+          <Text>{storeId ? "Bounce Rate" : "Conversion Rate"}</Text>
+          <Metric>{loadingMetrics ? "—" : (metrics?.bounce_rate ?? "—")}</Metric>
         </Card>
         <Card decoration="top" decorationColor="amber">
           <Text>Avg Dwell Time</Text>
-          <Metric>{loadingMetrics ? "-" : metrics.dwell_time}</Metric>
+          <Metric>{loadingMetrics ? "—" : (metrics?.dwell_time ?? "—")}</Metric>
         </Card>
       </Grid>
 
@@ -94,6 +120,7 @@ export default function StoreDetail() {
                   <tr className="border-b text-slate-500 text-xs uppercase">
                     <th className="pb-2 pr-4">Walk-in ID</th>
                     <th className="pb-2 pr-4">Date</th>
+                    <th className="pb-2 pr-4">Store</th>
                     <th className="pb-2 pr-4">Role</th>
                     <th className="pb-2 pr-4">Entry</th>
                     <th className="pb-2 pr-4">Exit</th>
@@ -110,8 +137,8 @@ export default function StoreDetail() {
                 <tbody>
                   {sessions.length === 0 ? (
                     <tr>
-                      <td colSpan={13} className="py-10 text-center text-slate-400">
-                        No walk-in sessions recorded yet for {selectedStore?.store_name || storeId}. Run a sync to populate this table.
+                      <td colSpan={14} className="py-10 text-center text-slate-400">
+                        No walk-in sessions recorded yet{storeId ? ` for ${pageTitle}` : ""}. Run a sync to populate this table.
                       </td>
                     </tr>
                   ) : (
@@ -119,6 +146,7 @@ export default function StoreDetail() {
                       <tr key={s.id} className="border-b last:border-0 hover:bg-slate-50">
                         <td className="py-2 pr-4 font-mono text-xs text-slate-600">{s.walkin_id || "—"}</td>
                         <td className="py-2 pr-4">{s.date || "—"}</td>
+                        <td className="py-2 pr-4 text-xs text-slate-500">{s.store_id || "—"}</td>
                         <td className="py-2 pr-4">
                           <Badge color={ROLE_COLOR[s.role?.toUpperCase()] ?? "gray"} size="xs">
                             {s.role || "—"}

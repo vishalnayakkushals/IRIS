@@ -5,6 +5,8 @@ import { adminListStores } from "../api/client";
 export interface StoreEntry {
   store_id: string;
   store_name: string;
+  drive_folder_url: string;
+  sync_enabled: boolean;
 }
 
 interface StoreContextValue {
@@ -27,7 +29,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     adminListStores()
-      .then((r) => setStores((r.data ?? []).map((s: any) => ({ store_id: s.store_id, store_name: s.store_name }))))
+      .then((r) => setStores((r.data ?? []).map((s: any) => ({
+        store_id: s.store_id,
+        store_name: s.store_name,
+        drive_folder_url: s.drive_folder_url ?? "",
+        sync_enabled: Boolean(s.sync_enabled),
+      }))))
       .catch(() => {});
   }, []);
 

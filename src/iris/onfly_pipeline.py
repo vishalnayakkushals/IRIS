@@ -705,6 +705,11 @@ def init_onfly_tables(db_path: Path) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_date ON onfly_walkin_sessions(store_id, date, walkin_id)")
+        # Performance indexes for QA review queue and frame lookup
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store ON onfly_image_state(store_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_seen ON onfly_image_state(store_id, last_seen_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_date ON onfly_image_state(store_id, date_display, date_source)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_image ON onfly_walkin_sessions(store_id, image_id)")
         existing_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(onfly_walkin_sessions)").fetchall()}
         for col_name, col_def in [
             ("source_image_name", "TEXT NOT NULL DEFAULT ''"),

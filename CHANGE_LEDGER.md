@@ -3492,6 +3492,33 @@ Use this template for each new change:
   - Postgres must have `store_sync_state`, `qa_feedback`, and `model_versions` tables (created by Alembic migrations or canonical_metadata.py init).
   - No Celery or Redis required — pipeline runs in-process via ThreadPoolExecutor.
 
+### 2026-05-02 | Global store selector, QualityFeedback redesign, FrameReview hover previews, QA performance indexes
+
+- Summary:
+  - Added global store selector dropdown in TopNav with search, showing all stores (filtered to sync-enabled first). All data pages now load without requiring a store to be pre-selected — "All Stores" is the default context.
+  - Wired StoreContext to include `drive_folder_url` and `sync_enabled` so the TopNav dropdown can filter to sync-ready stores.
+  - Removed "select a store first" gates from Overview, ReportsPage, CustomerJourneys, and StoreDetail — all load data immediately with optional store filtering.
+  - Redesigned QualityFeedback page: shows GPT-analysed sessions as a table with source image thumbnails (hover to enlarge), role badges, entry/exit columns, dwell time, gender, camera, and approve/reject toggles. Paginated at 20 rows per page.
+  - Added HoverPreview component to FrameReview so thumbnail cards show a large popup on hover without navigating away.
+  - Added SQLite performance indexes for QA review queue queries (`onfly_image_state` and `onfly_walkin_sessions`) in both `onfly_pipeline.py` (schema-time) and `routes_qa.py` (runtime lazy-ensure for existing DBs).
+  - Increased QA image cache-control from 60s to 3600s to reduce redundant image fetches.
+  - Rebuilt frontend static assets.
+- Changed Paths:
+  - `frontend/src/components/layout/TopNav.tsx`
+  - `frontend/src/context/StoreContext.tsx`
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/CustomerJourneys.tsx`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `backend/app/api/routes_qa.py`
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/static/` (rebuilt)
+- Infra/Config Impact:
+  - No schema migration required — indexes are additive and idempotent.
+  - Restart the API server after deploying so the new static build is served.
+
 ### 2026-04-30 | RR Nagar live-sync status hardening, store mapping cleanup, and report enrichment
 
 - Summary:

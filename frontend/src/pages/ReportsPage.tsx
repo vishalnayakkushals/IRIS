@@ -334,7 +334,8 @@ export default function ReportsPage() {
   const { storeId: selectedStore } = useStore();
   const [reportBucket, setReportBucket] = useState<"main" | "validation">("main");
   const [reportView, setReportView] = useState("summary");
-  const [visibleRows, setVisibleRows] = useState(10);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
   const [summaryRows, setSummaryRows] = useState<any[]>([]);
   const [walkinRows, setWalkinRows] = useState<any[]>([]);
   const [scanRows, setScanRows] = useState<any[]>([]);
@@ -378,9 +379,8 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedStore) return; // blank first — load only when a store is selected
     void loadReports();
-  }, [loadReports, selectedStore]);
+  }, [loadReports]);
 
   useEffect(() => {
     if (!selectedStore) { setLiveProgress(null); return; }
@@ -390,6 +390,9 @@ export default function ReportsPage() {
   useEffect(() => {
     setReportView(reportBucket === "main" ? "summary" : "image_scans");
   }, [reportBucket]);
+
+  // Reset to page 0 whenever the view or store changes
+  useEffect(() => { setPage(0); }, [reportView, selectedStore]);
 
   const reportChoices = reportBucket === "main"
     ? [
@@ -416,7 +419,8 @@ export default function ReportsPage() {
     }
   }, [reportView, summaryRows, walkinRows, scanRows, validationRows]);
 
-  const visibleReportRows = activeRows.slice(0, visibleRows);
+  const totalPages = Math.ceil(activeRows.length / pageSize);
+  const visibleReportRows = activeRows.slice(page * pageSize, (page + 1) * pageSize);
 
   async function refreshReportData() {
     await loadReports();
@@ -505,16 +509,8 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* Empty state */}
-      {!selectedStore && !loading && (
-        <Card className="p-12 text-center space-y-2">
-          <p className="text-slate-500 text-sm font-medium">Select a store to load report data.</p>
-          <p className="text-slate-400 text-xs">Use the store selector above to choose a store and view walk-in reports, image scans, and validation data.</p>
-        </Card>
-      )}
-
-      {/* KPI cards + report table (only shown when store selected) */}
-      {selectedStore && <><div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* KPI cards + report table */}
+      <><div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card decoration="top" decorationColor="blue">
           <Text>Total Walk-ins In View</Text>
           <Metric>{loading ? "—" : totalWalkins.toLocaleString()}</Metric>
@@ -555,15 +551,16 @@ export default function ReportsPage() {
             </select>
           </div>
           <div>
-            <label className="iris-label">Rows In UI</label>
+            <label className="iris-label">Rows Per Page</label>
             <select
               className="iris-select"
-              value={visibleRows}
-              onChange={(e) => setVisibleRows(Number(e.target.value))}
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
             >
               <option value={10}>10 rows</option>
+              <option value={20}>20 rows</option>
+              <option value={50}>50 rows</option>
               <option value={100}>100 rows</option>
-              <option value={500}>500 rows</option>
             </select>
           </div>
         </div>
@@ -575,11 +572,29 @@ export default function ReportsPage() {
             </p>
             <p className="text-xs text-slate-400">
               {reportView === "validation"
-                ? `${validationRows.length.toLocaleString()} rows — scrollable, virtualized. Download includes all.`
-                : `Showing top ${Math.min(visibleRows, activeRows.length)} of ${activeRows.length.toLocaleString()} rows in UI. Download always includes all available rows.`}
+                ? `${validationRows.length.toLocaleString()} rows — scrollable, virtualized.`
+                : activeRows.length > 0
+                  ? `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, activeRows.length)} of ${activeRows.length.toLocaleString()} rows`
+                  : loading ? "Loading…" : "No data"}
             </p>
           </div>
-          <div className="flex justify-end">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Pagination controls */}
+            {reportView !== "validation" && activeRows.length > pageSize && (
+              <div className="flex items-center gap-1 text-sm">
+                <button
+                  disabled={page === 0}
+                  onClick={() => setPage(p => p - 1)}
+                  className="px-3 py-1.5 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+                >← Prev</button>
+                <span className="text-xs text-slate-500 px-1">Page {page + 1} / {totalPages}</span>
+                <button
+                  disabled={page >= totalPages - 1}
+                  onClick={() => setPage(p => p + 1)}
+                  className="px-3 py-1.5 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
+                >Next →</button>
+              </div>
+            )}
             {reportView === "summary" && <DownloadBtn label="Download CSV" onClick={downloadSummary} />}
             {reportView === "walkins" && <DownloadBtn label="Download CSV" onClick={downloadWalkins} />}
             {reportView === "image_scans" && <DownloadBtn label="Download CSV" onClick={downloadScans} />}
@@ -614,7 +629,7 @@ export default function ReportsPage() {
           {!loading && reportView === "validation" ? <ValidationTable rows={validationRows} storeMap={storeMap} /> : null}
         </Card>
       </Card>
-      </> }
+      </>
     </div>
   );
 }

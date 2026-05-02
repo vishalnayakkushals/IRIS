@@ -28,6 +28,7 @@ from backend.app.db.session import AsyncSessionLocal
 from iris.onfly_pipeline import GDriveClient, LocalClient, SourceImage, parse_drive_folder_id
 router = APIRouter(prefix="/qa", tags=["qa"])
 _bearer = HTTPBearer(auto_error=False)
+_indexes_ensured = False
 
 
 def _now() -> datetime:
@@ -64,6 +65,24 @@ def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _ensure_qa_indexes(db_path: Path) -> None:
+    """Add missing performance indexes for QA queries. Safe to call repeatedly."""
+    if not db_path.exists():
+        return
+    conn = _sqlite_connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store ON onfly_image_state(store_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_seen ON onfly_image_state(store_id, last_seen_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_date ON onfly_image_state(store_id, date_display, date_source)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_image ON onfly_walkin_sessions(store_id, image_id)")
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
 
 
 def _row_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
@@ -297,7 +316,12 @@ async def review_queue(
     review_status: str | None = None,
     limit: int = 200,
     _: str = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> list[dict[str, Any]]:
+    global _indexes_ensured
+    if not _indexes_ensured:
+        _ensure_qa_indexes(settings.db_path_obj)
+        _indexes_ensured = True
     feedback_map = await _latest_frame_feedback_map(store_id)
     rows = _review_queue_rows(store_id=store_id, business_date=business_date, limit=limit)
     out: list[dict[str, Any]] = []
@@ -397,7 +421,7 @@ async def serve_runtime_frame_image(
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     image_bytes, media_type, image_name = _fetch_frame_bytes(store_id, image_id)
-    headers = {"Cache-Control": "private, max-age=60", "Content-Disposition": f'inline; filename="{image_name}"'}
+    headers = {"Cache-Control": "private, max-age=3600", "Content-Disposition": f'inline; filename="{image_name}"'}
     return Response(content=image_bytes, media_type=media_type, headers=headers)
 
 

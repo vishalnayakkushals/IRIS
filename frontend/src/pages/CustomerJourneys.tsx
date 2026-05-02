@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { reportsWalkins } from "../api/client";
-import { Card, Title, Text, Badge, Select, SelectItem } from "@tremor/react";
+import { Card, Title, Text, Badge } from "@tremor/react";
 import { useStore } from "../context/StoreContext";
 
 function roleBadge(role: string) {
@@ -15,7 +15,8 @@ function entryBadge(et: string) {
   const e = (et || "").toUpperCase();
   if (e === "BILLING") return <Badge color="violet">Billing</Badge>;
   if (e === "BROWSING") return <Badge color="amber">Browsing</Badge>;
-  return <Badge color="slate">{et || "—"}</Badge>;
+  if (!et) return null;
+  return <Badge color="slate">{et}</Badge>;
 }
 
 function JourneyCard({ session }: { session: any }) {
@@ -60,60 +61,83 @@ function JourneyCard({ session }: { session: any }) {
 }
 
 export default function CustomerJourneys() {
-  const { storeId: selectedStore } = useStore();
+  const { storeId: selectedStore, storeName } = useStore();
   const [sessions, setSessions] = useState<any[]>([]);
   const [roleFilter, setRoleFilter] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Always load — empty selectedStore means all stores (backend returns everything)
   useEffect(() => {
-    if (!selectedStore) return;
     setLoading(true);
-    reportsWalkins(selectedStore, undefined, 300)
-      .then((r) => setSessions(r.data))
+    setSessions([]);
+    const limit = selectedStore ? 500 : 1000;
+    reportsWalkins(selectedStore || undefined, undefined, limit)
+      .then((r) => setSessions(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setSessions([]))
       .finally(() => setLoading(false));
   }, [selectedStore]);
 
-  const filtered = roleFilter
-    ? sessions.filter((s) => (s.role || "").toUpperCase() === roleFilter.toUpperCase())
-    : sessions;
+  // Only sessions with a known role are meaningful (GPT-analyzed)
+  const meaningful = sessions.filter((s) => (s.role || "").trim() !== "");
 
-  const customers = sessions.filter((s) => (s.role || "").toUpperCase() === "CUSTOMER").length;
-  const staff = sessions.filter((s) => (s.role || "").toUpperCase() === "STAFF").length;
-  const billing = sessions.filter((s) => (s.entry_type || "").toUpperCase() === "BILLING").length;
+  const roleFiltered = roleFilter
+    ? meaningful.filter((s) => (s.role || "").toUpperCase() === roleFilter.toUpperCase())
+    : meaningful;
+
+  const customers = meaningful.filter((s) => (s.role || "").toUpperCase() === "CUSTOMER").length;
+  const staff = meaningful.filter((s) => (s.role || "").toUpperCase() === "STAFF").length;
+  const billing = meaningful.filter((s) => (s.entry_type || "").toUpperCase() === "BILLING").length;
+
+  const subtitle = selectedStore
+    ? storeName || selectedStore
+    : "All Stores";
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <Title>Customer Journeys</Title>
-          <Text>Individual session details — demographics, engagement, and behavior.</Text>
+          <Text>Individual session details — {subtitle}</Text>
         </div>
         <div className="flex gap-2">
-          <div className="w-36">
-            <Select value={roleFilter} onValueChange={setRoleFilter} placeholder="All Roles">
-              <SelectItem value="">All Roles</SelectItem>
-              <SelectItem value="CUSTOMER">Customer</SelectItem>
-              <SelectItem value="STAFF">Staff</SelectItem>
-            </Select>
-          </div>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="h-9 pl-3 pr-8 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 appearance-none cursor-pointer"
+          >
+            <option value="">All Roles</option>
+            <option value="CUSTOMER">Customer</option>
+            <option value="STAFF">Staff</option>
+          </select>
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Customers</Text><p className="text-2xl font-bold mt-1">{customers}</p></Card>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Staff</Text><p className="text-2xl font-bold mt-1">{staff}</p></Card>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Billing</Text><p className="text-2xl font-bold mt-1">{billing}</p></Card>
+        <Card className="p-4">
+          <Text className="text-xs uppercase tracking-wide text-slate-400">Customers</Text>
+          <p className="text-2xl font-bold mt-1">{loading ? "—" : customers}</p>
+        </Card>
+        <Card className="p-4">
+          <Text className="text-xs uppercase tracking-wide text-slate-400">Staff</Text>
+          <p className="text-2xl font-bold mt-1">{loading ? "—" : staff}</p>
+        </Card>
+        <Card className="p-4">
+          <Text className="text-xs uppercase tracking-wide text-slate-400">Billing</Text>
+          <p className="text-2xl font-bold mt-1">{loading ? "—" : billing}</p>
+        </Card>
       </div>
 
-      {!selectedStore ? (
-        <div className="text-center py-16 text-gray-400 text-sm">Select a store in the top navigation bar to view customer journeys.</div>
-      ) : loading ? (
+      {loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Loading sessions…</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400 text-sm">No sessions found for the selected store.</div>
+      ) : roleFiltered.length === 0 ? (
+        <div className="text-center py-16 text-gray-400 text-sm">
+          {meaningful.length === 0
+            ? "No analysed sessions found. Run a GPT pipeline cycle to populate data."
+            : "No sessions match the selected role filter."}
+        </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((s) => <JourneyCard key={s.id} session={s} />)}
+          {roleFiltered.map((s) => <JourneyCard key={s.id || s.image_id} session={s} />)}
         </div>
       )}
     </div>

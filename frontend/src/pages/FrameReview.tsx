@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   qaReviewQueue,
   qaCreateFeedback,
@@ -12,6 +13,33 @@ import { useStore } from "../context/StoreContext";
 
 const LABELS = ["customer", "staff", "banner", "pedestrian", "unknown", "no_human"];
 const PAGE_SIZE = 24;
+
+function HoverPreview({ src, rect }: { src: string; rect: DOMRect }) {
+  const PREVIEW_W = 320;
+  const PREVIEW_H = 240;
+  const margin = 12;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // Try to place preview to the right; fall back to left; then above/below
+  let left = rect.right + margin;
+  let top = rect.top + rect.height / 2 - PREVIEW_H / 2;
+  if (left + PREVIEW_W > vw - margin) left = rect.left - PREVIEW_W - margin;
+  if (top < margin) top = margin;
+  if (top + PREVIEW_H > vh - margin) top = vh - PREVIEW_H - margin;
+
+  return createPortal(
+    <div
+      className="fixed z-[9999] rounded-xl overflow-hidden shadow-2xl border-2 border-white pointer-events-none"
+      style={{ left, top, width: PREVIEW_W, height: PREVIEW_H,
+        transition: "opacity 0.15s ease", opacity: 1,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.35)" }}
+    >
+      <img src={src} alt="preview" className="w-full h-full object-cover" />
+    </div>,
+    document.body,
+  );
+}
 
 function statusColor(s: string) {
   if (s === "confirmed") return "emerald";
@@ -50,6 +78,8 @@ function FeedbackCard({
   const [comment, setComment] = useState(row.comment || "");
   const [saving, setSaving] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setCorrected(row.corrected_label || row.predicted_label || "");
@@ -92,13 +122,22 @@ function FeedbackCard({
     onDelete(row.image_id);
   }
 
+  const imgSrc = qaFrameImageUrl(row.store_id, row.image_id);
+
   if (row.auto_approved) {
     return (
       <div className="border border-emerald-200 rounded-2xl bg-emerald-50/40 overflow-hidden">
-        <div className="bg-slate-100 flex items-center justify-center h-44 overflow-hidden">
+        {hoverRect && !imgError && <HoverPreview src={imgSrc} rect={hoverRect} />}
+        <div
+          ref={thumbRef}
+          className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
+          onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
+          onMouseLeave={() => setHoverRect(null)}
+        >
           {!imgError ? (
-            <img src={qaFrameImageUrl(row.store_id, row.image_id)} alt={row.filename}
-              className="object-cover h-full w-full" loading="lazy" onError={() => setImgError(true)} />
+            <img src={imgSrc} alt={row.filename}
+              className="object-cover h-full w-full transition-transform duration-200 hover:scale-105"
+              loading="lazy" onError={() => setImgError(true)} />
           ) : (
             <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
           )}
@@ -122,12 +161,18 @@ function FeedbackCard({
 
   return (
     <div className={`border rounded-2xl bg-white overflow-hidden hover:shadow-md transition-shadow ${row.review_status === "confirmed" ? "border-emerald-200" : row.review_status === "rejected" ? "border-rose-200" : "border-slate-200"}`}>
-      <div className="bg-slate-100 flex items-center justify-center h-44 overflow-hidden">
+      {hoverRect && !imgError && <HoverPreview src={imgSrc} rect={hoverRect} />}
+      <div
+        ref={thumbRef}
+        className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
+        onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
+        onMouseLeave={() => setHoverRect(null)}
+      >
         {!imgError ? (
           <img
-            src={qaFrameImageUrl(row.store_id, row.image_id)}
+            src={imgSrc}
             alt={row.filename}
-            className="object-cover h-full w-full"
+            className="object-cover h-full w-full transition-transform duration-200 hover:scale-105"
             loading="lazy"
             onError={() => setImgError(true)}
           />

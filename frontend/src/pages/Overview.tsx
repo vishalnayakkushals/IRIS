@@ -161,7 +161,7 @@ export default function Overview() {
   }, [storeFilter, days, groupBy]);
 
   useEffect(() => {
-    if (storeFilter) load();
+    load();
   }, [load]);
 
   const trendData = useMemo(() => trend.map((p) => ({
@@ -205,16 +205,8 @@ export default function Overview() {
         </div>
       </div>
 
-      {/* Empty state — shown until user picks a specific store */}
-      {!storeFilter && (
-        <Card className="p-12 text-center space-y-2">
-          <p className="text-slate-500 text-sm font-medium">Select a store to view analytics.</p>
-          <p className="text-slate-400 text-xs">Choose a store from the selector above. Data loads only after selection.</p>
-        </Card>
-      )}
-
-      {/* KPI cards, charts, leaderboard — shown only after store is selected */}
-      {storeFilter && <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
+      {/* KPI cards, charts, leaderboard */}
+      <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
         <Card decoration="top" decorationColor="blue">
           <div className="flex items-start justify-between">
             <Text>Walk-ins</Text>
@@ -407,7 +399,7 @@ export default function Overview() {
           </div>
         </Card>
       )}
-      </> }
+      </>
     </div>
   );
 }
