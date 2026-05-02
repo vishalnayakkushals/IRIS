@@ -11,7 +11,7 @@ import { Card, Title, Text, Badge } from "@tremor/react";
 import { Check, X, Trash2, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Zap } from "lucide-react";
 import StoreSelect from "../components/StoreSelect";
 
-const LABELS = ["customer", "staff", "banner", "pedestrian", "unknown"];
+const LABELS = ["customer", "staff", "banner", "pedestrian", "unknown", "no_human"];
 const PAGE_SIZE = 24;
 
 function statusColor(s: string) {
@@ -40,12 +40,12 @@ function MetricPill({ label, value }: { label: string; value: string | number })
 
 function FeedbackCard({
   row,
-  onUpdate,
+  onSaved,
   onDelete,
 }: {
   row: any;
-  onUpdate: () => void;
-  onDelete: () => void;
+  onSaved: (updated: any) => void;
+  onDelete: (imageId: string) => void;
 }) {
   const [corrected, setCorrected] = useState(row.corrected_label || row.predicted_label || "");
   const [comment, setComment] = useState(row.comment || "");
@@ -56,7 +56,7 @@ function FeedbackCard({
     setCorrected(row.corrected_label || row.predicted_label || "");
     setComment(row.comment || "");
     setImgError(false);
-  }, [row]);
+  }, [row.image_id]);
 
   async function save(reviewStatus: "confirmed" | "rejected") {
     setSaving(true);
@@ -79,17 +79,18 @@ function FeedbackCard({
           comment,
         });
       }
-      onUpdate();
+      // Optimistic: update local row immediately — no full reload
+      onSaved({ ...row, review_status: reviewStatus, corrected_label: corrected, comment });
     } finally {
       setSaving(false);
     }
   }
 
   async function remove() {
-    if (!row.feedback_id) { onDelete(); return; }
+    if (!row.feedback_id) { onDelete(row.image_id); return; }
     if (!confirm("Delete this review row?")) return;
     await qaDeleteFeedback(row.feedback_id);
-    onDelete();
+    onDelete(row.image_id);
   }
 
   if (row.auto_approved) {
@@ -223,6 +224,7 @@ export default function FrameReview() {
   const [stores, setStores] = useState<any[]>([]);
   const [storeId, setStoreId] = useState("");
   const [statusFilter, setStatusFilter] = useState("pending");
+  const [gptFilter, setGptFilter] = useState("");
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
@@ -235,16 +237,14 @@ export default function FrameReview() {
   }
 
   useEffect(() => {
-    adminListStores().then((r) => {
-      setStores(r.data);
-    });
+    adminListStores().then((r) => setStores(r.data));
   }, []);
 
   async function load() {
     if (!storeId) return;
     setLoading(true);
     setPage(0);
-    qaReviewQueue(storeId, statusFilter || undefined, dateFilter || undefined, 300)
+    qaReviewQueue(storeId, statusFilter || undefined, dateFilter || undefined, 400)
       .then((r) => setRows(r.data))
       .finally(() => setLoading(false));
   }
@@ -253,17 +253,33 @@ export default function FrameReview() {
     if (storeId) void load();
   }, [storeId, statusFilter, dateFilter]);
 
+  function handleSaved(updated: any) {
+    flash("Review saved");
+    setRows((prev) => prev.map((r) => r.image_id === updated.image_id ? updated : r));
+  }
+
+  function handleDeleted(imageId: string) {
+    flash("Review removed");
+    setRows((prev) => prev.filter((r) => r.image_id !== imageId));
+  }
+
   const dateOptions = useMemo(
     () => Array.from(new Set(rows.map((r) => r.capture_date).filter(Boolean))).sort().reverse(),
     [rows],
   );
 
+  const filteredRows = useMemo(() => {
+    if (!gptFilter) return rows;
+    return rows.filter((r) => (r.gpt_status || "pending") === gptFilter);
+  }, [rows, gptFilter]);
+
   const pending   = rows.filter((r) => (r.review_status || "pending") === "pending").length;
   const confirmed = rows.filter((r) => r.review_status === "confirmed").length;
   const rejected  = rows.filter((r) => r.review_status === "rejected").length;
+  const gptFailed = rows.filter((r) => r.gpt_status === "failed").length;
 
-  const totalPages = Math.ceil(rows.length / PAGE_SIZE);
-  const pageRows   = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.ceil(filteredRows.length / PAGE_SIZE);
+  const pageRows   = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   return (
     <div className="space-y-6">
@@ -300,17 +316,37 @@ export default function FrameReview() {
               {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
+          <div>
+            <select
+              value={gptFilter}
+              onChange={(e) => { setGptFilter(e.target.value); setPage(0); }}
+              className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              <option value="">All GPT Status</option>
+              <option value="failed">GPT Failed ⚠</option>
+              <option value="done">GPT Done</option>
+              <option value="pending">GPT Pending</option>
+            </select>
+          </div>
           <button onClick={() => void load()} className="p-2 rounded border text-slate-500 hover:text-blue-600 hover:border-blue-400">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Pending</Text><p className="text-2xl font-bold mt-1 text-amber-600">{pending}</p></Card>
         <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Confirmed</Text><p className="text-2xl font-bold mt-1 text-emerald-600">{confirmed}</p></Card>
         <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Rejected</Text><p className="text-2xl font-bold mt-1 text-rose-600">{rejected}</p></Card>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Total Loaded</Text><p className="text-2xl font-bold mt-1 text-slate-700">{rows.length}</p></Card>
+        <button
+          className="text-left p-4 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 cursor-pointer transition-colors"
+          onClick={() => { setGptFilter(gptFilter === "failed" ? "" : "failed"); setPage(0); }}
+        >
+          <Text className="text-xs uppercase tracking-wide text-rose-400">GPT Failed</Text>
+          <p className="text-2xl font-bold mt-1 text-rose-600">{gptFailed}</p>
+          <p className="text-[10px] text-rose-400 mt-0.5">{gptFilter === "failed" ? "▸ Filtering" : "Click to filter"}</p>
+        </button>
+        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Total</Text><p className="text-2xl font-bold mt-1 text-slate-700">{rows.length}</p></Card>
       </div>
 
       <Card className="p-5 bg-slate-50">
@@ -337,7 +373,7 @@ export default function FrameReview() {
         <>
           {/* Pagination bar */}
           <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, rows.length)} of {rows.length} frames</span>
+            <span>Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredRows.length)} of {filteredRows.length}{gptFilter ? ` (filtered)` : ""} frames</span>
             <div className="flex items-center gap-2">
               <button
                 disabled={page === 0}
@@ -362,8 +398,8 @@ export default function FrameReview() {
               <FeedbackCard
                 key={`${r.store_id}:${r.image_id}`}
                 row={r}
-                onUpdate={() => { flash("Review saved"); void load(); }}
-                onDelete={() => { flash("Review updated"); void load(); }}
+                onSaved={handleSaved}
+                onDelete={handleDeleted}
               />
             ))}
           </div>

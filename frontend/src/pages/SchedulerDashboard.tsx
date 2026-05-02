@@ -210,11 +210,16 @@ export default function SchedulerDashboard() {
     } catch { showToast("Cleanup failed"); }
   }
 
-  function downloadRuns() {
-    if (!runs.length) return;
+  async function downloadRuns() {
+    // Always fetch ALL runs for download — not limited by the UI row selector
     const escape = (v: any) => { const s = String(v ?? ""); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; };
     const headers = ["Job", "Store", "Status", "Remarks", "Triggered By", "Started At", "Completed At"];
-    const csvRows = runs.map((r) => [
+    let allRuns: RunRecord[] = [];
+    try {
+      const res = await getRuns(10000);
+      allRuns = res.data?.runs ?? [];
+    } catch { allRuns = runs; }
+    const csvRows = allRuns.map((r) => [
       r.job_name, storeNameById[r.store_id] || r.store_id, r.status, r.remarks || "",
       r.triggered_by,
       r.started_at ? new Date(r.started_at).toLocaleString("en-IN") : "",
@@ -223,7 +228,7 @@ export default function SchedulerDashboard() {
     const csv = [headers.join(","), ...csvRows].join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a"); a.href = url;
-    a.download = `execution_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `execution_history_all_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   }
 
@@ -650,7 +655,14 @@ export default function SchedulerDashboard() {
                         {r.status}
                       </Badge>
                     </td>
-                    <td className="px-5 py-3 text-slate-500 max-w-xs truncate">{r.remarks || "—"}</td>
+                    <td className="px-5 py-3 max-w-sm">
+                      <span
+                        className={`text-xs break-words ${r.status === "failed" ? "text-rose-600 font-medium" : "text-slate-500"}`}
+                        title={r.remarks || ""}
+                      >
+                        {r.remarks || "—"}
+                      </span>
+                    </td>
                     <td className="px-5 py-3 text-slate-400 text-xs">{r.triggered_by}</td>
                     <td className="px-5 py-3 text-slate-400 text-xs">
                       {r.started_at ? new Date(r.started_at).toLocaleString("en-IN", { hour12: true }) : "—"}
