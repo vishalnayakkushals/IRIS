@@ -599,11 +599,30 @@ async def update_settings(body: dict[str, str], actor: str = Depends(get_current
 @router.post("/settings/logo")
 async def upload_logo(file: UploadFile, actor: str = Depends(get_current_user)) -> dict:
     content = await file.read()
-    if len(content) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Logo too large (max 2 MB)")
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Logo too large (max 5 MB)")
     ext = (file.filename or "png").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "png"
     media_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "svg": "image/svg+xml"}
     media = media_map.get(ext, "image/png")
+
+    # Auto-resize to 500px wide (preserving aspect ratio) for non-SVG images
+    if ext != "svg":
+        try:
+            from PIL import Image as PILImage
+            img = PILImage.open(io.BytesIO(content))
+            orig_w, orig_h = img.size
+            if orig_w > 500:
+                new_h = max(1, round(orig_h * 500 / orig_w))
+                img = img.resize((500, new_h), PILImage.LANCZOS)
+            pil_fmt = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}.get(ext, "PNG")
+            if pil_fmt == "JPEG" and img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format=pil_fmt, optimize=True)
+            content = buf.getvalue()
+        except Exception:
+            pass  # Fall back to storing original if resize fails
+
     data_url = f"data:{media};base64,{base64.b64encode(content).decode()}"
     now = _now()
     async with AsyncSessionLocal() as session:

@@ -116,8 +116,6 @@ export default function QualityFeedback() {
   const getCamera = (s: any) => s.camera_id || "";
   const getFirstSeen = (s: any) => s.first_seen_time || "";
   const getLastSeen  = (s: any) => s.last_seen_time  || "";
-  const getSourceImg = (s: any) => s.source_image_name || "";
-
   // Annotate rows with review state
   const annotated = useMemo(() => rows.map((s) => ({
     s,
