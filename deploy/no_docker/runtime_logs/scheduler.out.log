@@ -1,0 +1,1 @@
+[iris-scheduler] env=C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\deploy\no_docker\.env.local db=C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\data\store_registry.db root=C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\data\stores out=C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS\data\exports\current poll=10

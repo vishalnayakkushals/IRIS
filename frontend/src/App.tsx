@@ -2,6 +2,7 @@ import { ReactNode, Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "./components/layout/AppLayout";
+import { StoreProvider } from "./context/StoreContext";
 import { getMe } from "./api/client";
 
 const Login = lazy(() => import("./pages/Login"));
@@ -70,7 +71,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
   if (status === "checking") return <AuthLoading />;
   if (status === "unauthenticated") return <Navigate to="/login" replace />;
-  return <AppLayout>{children}</AppLayout>;
+  return <StoreProvider><AppLayout>{children}</AppLayout></StoreProvider>;
 }
 
 function LoginRoute() {

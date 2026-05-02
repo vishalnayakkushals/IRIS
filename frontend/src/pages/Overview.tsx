@@ -4,10 +4,9 @@ import {
 } from "@tremor/react";
 import {
   fetchAnalytics, fetchTrend, fetchLeaderboard, fetchDelta,
-  listStores, StoreOption,
   AnalyticsData, TrendPoint, LeaderboardRow, DeltaData,
 } from "../api/client";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 
 const GENDER_HEX = ["#6366f1", "#ec4899", "#f59e0b", "#94a3b8"];
 
@@ -132,8 +131,7 @@ function DeltaBadge({ pct }: { pct: number }) {
 }
 
 export default function Overview() {
-  const [stores, setStores] = useState<StoreOption[]>([]);
-  const [storeFilter, setStoreFilter] = useState("");
+  const { storeId: storeFilter } = useStore();
   const [days, setDays] = useState(30);
   const [groupBy, setGroupBy] = useState("day");
 
@@ -142,12 +140,6 @@ export default function Overview() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [delta, setDelta] = useState<DeltaData | null>(null);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    listStores()
-      .then((res) => setStores(res.data?.stores ?? []))
-      .catch(() => {});
-  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -210,16 +202,6 @@ export default function Overview() {
               </button>
             ))}
           </div>
-          {stores.length > 0 && (
-            <StoreSelect
-              stores={stores}
-              value={storeFilter}
-              onChange={(v) => { setStoreFilter(v); }}
-              includeAll={false}
-              placeholder="Select a store to load…"
-              className="w-52"
-            />
-          )}
         </div>
       </div>
 

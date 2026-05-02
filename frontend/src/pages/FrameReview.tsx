@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  adminListStores,
   qaReviewQueue,
   qaCreateFeedback,
   qaUpdateFeedback,
@@ -9,7 +8,7 @@ import {
 } from "../api/client";
 import { Card, Title, Text, Badge } from "@tremor/react";
 import { Check, X, Trash2, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Zap } from "lucide-react";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 
 const LABELS = ["customer", "staff", "banner", "pedestrian", "unknown", "no_human"];
 const PAGE_SIZE = 24;
@@ -221,8 +220,7 @@ function FeedbackCard({
 }
 
 export default function FrameReview() {
-  const [stores, setStores] = useState<any[]>([]);
-  const [storeId, setStoreId] = useState("");
+  const { storeId } = useStore();
   const [statusFilter, setStatusFilter] = useState("pending");
   const [gptFilter, setGptFilter] = useState("");
   const [rows, setRows] = useState<any[]>([]);
@@ -236,9 +234,6 @@ export default function FrameReview() {
     setTimeout(() => setToast(""), 3000);
   }
 
-  useEffect(() => {
-    adminListStores().then((r) => setStores(r.data));
-  }, []);
 
   async function load() {
     if (!storeId) return;
@@ -291,9 +286,6 @@ export default function FrameReview() {
           <Text>Review frame thumbnails, confirm customer/staff/banner/pedestrian labels, feed decisions into correction memory.</Text>
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <div className="w-72">
-            <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Filter review by store" />
-          </div>
           <div>
             <select
               value={statusFilter}
@@ -361,7 +353,7 @@ export default function FrameReview() {
       {!storeId ? (
         <div className="text-center py-20 text-slate-400 text-sm">
           <p className="text-base font-medium text-slate-500 mb-2">Select a store to begin reviewing</p>
-          <p>Use the store selector above to load frames for review.</p>
+          <p>Use the store selector in the top navigation bar to choose a store.</p>
         </div>
       ) : loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Loading frames…</div>

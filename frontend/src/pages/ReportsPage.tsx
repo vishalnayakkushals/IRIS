@@ -9,11 +9,10 @@ import {
   reportsDownloadWalkins,
   reportsDownloadImageScans,
   reportsDownloadValidationMap,
-  adminListStores,
   onFlyLiveProgress,
 } from "../api/client";
 import { Card, Title, Text, Badge, Metric } from "@tremor/react";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 import { Download, RefreshCw } from "lucide-react";
 
 // ── Download helpers ──────────────────────────────────────────────────────────
@@ -332,8 +331,7 @@ function ValidationTable({ rows, storeMap }: { rows: any[]; storeMap: Record<str
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
-  const [stores, setStores] = useState<any[]>([]);
-  const [selectedStore, setSelectedStore] = useState("");
+  const { storeId: selectedStore } = useStore();
   const [reportBucket, setReportBucket] = useState<"main" | "validation">("main");
   const [reportView, setReportView] = useState("summary");
   const [visibleRows, setVisibleRows] = useState(10);
@@ -344,9 +342,9 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [liveProgress, setLiveProgress] = useState<any>(null);
 
-  const storeMap = useMemo(
-    () => Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id])),
-    [stores],
+  const storeMap = useMemo<Record<string, string>>(
+    () => ({}),
+    [],
   );
   const totalWalkins = useMemo(
     () => summaryRows.reduce((s, r) => s + Number(r.walkins || 0), 0),
@@ -377,7 +375,6 @@ export default function ReportsPage() {
   }, [selectedStore]);
 
   useEffect(() => {
-    adminListStores().then((r) => setStores(r.data));
   }, []);
 
   useEffect(() => {
@@ -501,7 +498,6 @@ export default function ReportsPage() {
           )}
         </div>
         <div className="w-full sm:w-80 flex flex-col gap-2">
-          <StoreSelect stores={stores} value={selectedStore} onChange={setSelectedStore} includeAll allLabel="All Stores" placeholder="Filter reports by store" />
           <button onClick={() => void refreshReportData()} className="iris-btn-secondary justify-center">
             <RefreshCw size={14} />
             Refresh Report Data

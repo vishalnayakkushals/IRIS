@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wc -l tests/*.py)"
+      "Bash(wc -l tests/*.py)",
+      "Bash(docker compose *)",
+      "Bash(rm -rf backend/app/static/*)",
+      "Bash(cp -r frontend/dist/* backend/app/static/)"
     ]
   }
 }

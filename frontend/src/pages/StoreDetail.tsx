@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Title, Text, Metric, Card, Grid, Badge } from "@tremor/react";
-import { listStores, fetchStoreMetrics, fetchWalkins, StoreOption, WalkinSession } from "../api/client";
-import StoreSelect from "../components/StoreSelect";
+import { fetchStoreMetrics, fetchWalkins, WalkinSession } from "../api/client";
+import { useStore } from "../context/StoreContext";
 
 const ROLE_COLOR: Record<string, "rose" | "blue" | "gray"> = {
   CUSTOMER: "blue",
@@ -14,24 +14,13 @@ const ENTRY_COLOR: Record<string, "emerald" | "gray"> = {
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
 
 export default function StoreDetail() {
-  const [stores, setStores] = useState<StoreOption[]>([]);
-  const [storeId, setStoreId] = useState("");
+  const { storeId, stores } = useStore();
   const [metrics, setMetrics] = useState({ footfall: 0, bounce_rate: "0%", dwell_time: "0 min", status: "" });
   const [sessions, setSessions] = useState<WalkinSession[]>([]);
   const [sessionPage, setSessionPage] = useState(1);
   const [sessionPageSize, setSessionPageSize] = useState(10);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
-
-  useEffect(() => {
-    listStores()
-      .then((res) => {
-        const list = res.data?.stores ?? [];
-        setStores(list);
-        if (list.length > 0) setStoreId(list[0].store_id);
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (!storeId) return;
@@ -59,15 +48,6 @@ export default function StoreDetail() {
           <Title>Store Detail</Title>
           <Text>{selectedStore?.store_name ?? "Select a store to view analytics"}</Text>
         </div>
-        {stores.length > 0 && (
-          <StoreSelect
-            stores={stores}
-            value={storeId}
-            onChange={setStoreId}
-            placeholder="Select store"
-            className="w-full sm:w-80"
-          />
-        )}
       </div>
 
       <Grid numItemsSm={1} numItemsLg={3} className="gap-6">
