@@ -70,29 +70,18 @@ export function Sidebar() {
     setOpenGroups((prev) => ({ ...prev, [name]: !prev[name] }));
   }
 
-  const appName = branding.app_name?.trim() || "IRIS";
-  const orgName = branding.org_name?.trim() || "Retail Intelligence";
-  const brandPrimary = branding.brand_color_primary?.trim() || "#2563EB";
-  const logoPath = branding.logo_path?.trim() || "";
+  const logoUrl = branding.logo_url?.trim() || "";
 
   return (
     <aside className="w-64 border-r bg-background min-h-screen hidden md:flex flex-col select-none">
-      <div className="border-b flex-shrink-0 px-5 py-4">
-        <div className="flex items-center gap-3">
-          {logoPath ? (
-            <img src={logoPath} alt={appName} className="h-8 w-8 rounded-lg border object-contain bg-white p-1" />
-          ) : (
-            <div className="h-8 w-8 rounded-lg text-white flex items-center justify-center text-xs font-bold" style={{ backgroundColor: brandPrimary }}>
-              {appName.slice(0, 1).toUpperCase()}
-            </div>
-          )}
-          <div className="min-w-0">
-            <h1 className="text-base font-bold tracking-tight truncate" style={{ color: brandPrimary }}>
-              {appName}
-            </h1>
-            <p className="text-xs text-muted-foreground truncate">{orgName}</p>
+      <div className="border-b flex-shrink-0 px-5 py-4 flex items-center justify-center">
+        {logoUrl ? (
+          <img src={logoUrl} alt="Logo" className="h-10 w-10 rounded-xl border object-contain bg-white p-1 shadow-sm" />
+        ) : (
+          <div className="h-10 w-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm">
+            <span className="text-white text-sm font-bold">IR</span>
           </div>
-        </div>
+        )}
       </div>
       <nav className="p-3 space-y-0.5 flex-1 overflow-y-auto">
         {menu.map((item) => {

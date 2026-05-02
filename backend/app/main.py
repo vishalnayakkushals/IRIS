@@ -100,7 +100,14 @@ def _cleanup_zombie_runs(cfg) -> None:
                 error_message='Process died — API restarted while run was active',
                 ended_at=?, updated_at=?
             WHERE status='running'
-              AND last_heartbeat_at < datetime('now', '-5 minutes')
+              AND (
+                last_heartbeat_at IS NULL
+                OR last_heartbeat_at < datetime('now', '-5 minutes')
+              )
+              AND (
+                started_at IS NULL
+                OR started_at < datetime('now', '-3 minutes')
+              )
             """,
             (now, now),
         )

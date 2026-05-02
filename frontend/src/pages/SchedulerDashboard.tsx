@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   adminListStores, getRuns, onFlyListStores, onFlySync,
-  onFlyLiveProgress, onFlyDateReport,
+  onFlyLiveProgress, onFlyDateReport, adminCleanupZombieRuns,
 } from "../api/client";
 import type { RunRecord } from "../api/client";
 import { Play, RefreshCw, AlertCircle, Download } from "lucide-react";
@@ -201,6 +201,14 @@ export default function SchedulerDashboard() {
   const progressPct = liveProgress && liveProgress.images_discovered > 0
     ? Math.round((liveProgress.images_processed / liveProgress.images_discovered) * 100)
     : 0;
+
+  async function handleCleanupZombies() {
+    try {
+      const res = await adminCleanupZombieRuns();
+      showToast(`Cleaned ${res.data.cleaned} stuck run(s)`);
+      loadRuns();
+    } catch { showToast("Cleanup failed"); }
+  }
 
   function downloadRuns() {
     if (!runs.length) return;
@@ -608,6 +616,9 @@ export default function SchedulerDashboard() {
             <option value={50}>50 rows</option>
             <option value={100}>100 rows</option>
           </select>
+          <button onClick={handleCleanupZombies} className="iris-btn-secondary text-xs px-3 py-1.5" title="Mark all stuck 'running' runs as abandoned">
+            <RefreshCw size={12} /> Clean Stuck Runs
+          </button>
           <button onClick={downloadRuns} disabled={!runs.length} className="iris-btn-secondary text-xs px-3 py-1.5">
             <Download size={12} /> Download CSV
           </button>

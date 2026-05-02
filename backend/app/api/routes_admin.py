@@ -1169,6 +1169,42 @@ async def normalize_store_master_text(actor: str = Depends(get_current_user)) ->
     return {"updated": updated}
 
 
+@router.post("/cleanup-zombie-runs")
+async def cleanup_zombie_runs(actor: str = Depends(get_current_user)) -> dict:
+    """Mark any 'running' pipeline run that has no heartbeat (or stale heartbeat) as abandoned."""
+    import sqlite3
+    from backend.app.config import get_settings
+    cfg = get_settings()
+    db_path = cfg.db_path_obj
+    if not db_path.exists():
+        return {"cleaned": 0}
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(db_path), timeout=10)
+    result = conn.execute(
+        """
+        UPDATE onfly_pipeline_runs
+        SET status='abandoned',
+            error_message='Manually cleaned — run was stuck in running state',
+            ended_at=?, updated_at=?
+        WHERE status='running'
+          AND (
+            last_heartbeat_at IS NULL
+            OR last_heartbeat_at < datetime('now', '-5 minutes')
+          )
+          AND (
+            started_at IS NULL
+            OR started_at < datetime('now', '-3 minutes')
+          )
+        """,
+        (now, now),
+    )
+    cleaned = result.rowcount
+    conn.commit()
+    conn.close()
+    await _log_activity(actor, "admin.cleanup_zombie_runs", "all", {"cleaned": cleaned})
+    return {"cleaned": cleaned}
+
+
 @router.delete("/store-master/{store_id}")
 async def delete_store_master_row(store_id: str, actor: str = Depends(get_current_user)) -> dict:
     async with AsyncSessionLocal() as session:
