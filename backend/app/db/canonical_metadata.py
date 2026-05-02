@@ -115,6 +115,7 @@ users = Table(
     Column("email", String(255), nullable=False, unique=True),
     Column("full_name", String(255), nullable=False),
     Column("password_hash", Text, nullable=False),
+    Column("password_hint", String(255), nullable=True, server_default=""),
     Column("is_active", Boolean, nullable=False, server_default="1"),
     Column("store_id", String(64), ForeignKey("stores.store_id"), nullable=False, server_default=""),
     Column("created_at", DateTime(timezone=True), nullable=False),

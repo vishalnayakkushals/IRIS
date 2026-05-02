@@ -202,6 +202,8 @@ export const adminUpdateUser = (email: string, body: any) => api.put(`/admin/use
 export const adminDeleteUser = (email: string) => api.delete(`/admin/users/${encodeURIComponent(email)}`);
 export const adminResetPassword = (email: string, new_password: string) =>
   api.post(`/admin/users/${encodeURIComponent(email)}/password`, { new_password });
+export const adminBulkResetPassword = (new_password = "user12345") =>
+  api.post("/admin/users/bulk-reset-password", { new_password });
 
 // ── Admin — Roles ─────────────────────────────────────────────────────────────
 export const adminListRoles = () => api.get<any[]>("/admin/roles");

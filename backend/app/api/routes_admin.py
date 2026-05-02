@@ -323,6 +323,7 @@ async def list_users(_: str = Depends(get_current_user)) -> list[dict]:
                 users.c.is_active,
                 users.c.store_id,
                 users.c.created_at,
+                users.c.password_hint,
             ).order_by(users.c.email)
         )
         result = await session.execute(stmt)
@@ -356,6 +357,7 @@ async def create_user(body: UserIn, actor: str = Depends(get_current_user)) -> d
                 email=body.email,
                 full_name=body.full_name,
                 password_hash=_hash_password(body.password),
+                password_hint=body.password,
                 is_active=body.is_active,
                 store_id=body.store_id,
                 created_at=now,
@@ -372,6 +374,15 @@ async def create_user(body: UserIn, actor: str = Depends(get_current_user)) -> d
                 await session.execute(
                     insert(user_roles).values(user_id=user_id, role_id=role_row[0])
                 )
+
+        # Auto-grant access to assigned store
+        if body.store_id:
+            await session.execute(
+                insert(user_store_access)
+                .values(user_id=user_id, store_id=body.store_id, created_at=now)
+                .on_conflict_do_nothing()
+            )
+
         await session.commit()
     await _log_activity(actor, "user.create", body.store_id, {"email": body.email})
     return {"user_id": user_id, "email": body.email, "created": True}
@@ -417,13 +428,31 @@ async def reset_password(email: str, body: PasswordReset, actor: str = Depends(g
         result = await session.execute(
             update(users)
             .where(func.lower(users.c.email) == email.lower())
-            .values(password_hash=_hash_password(body.new_password))
+            .values(password_hash=_hash_password(body.new_password), password_hint=body.new_password)
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="User not found")
         await session.commit()
     await _log_activity(actor, "user.password_reset", "", {"email": email})
     return {"email": email, "reset": True}
+
+
+class BulkPasswordReset(BaseModel):
+    new_password: str = "user12345"
+
+
+@router.post("/users/bulk-reset-password")
+async def bulk_reset_password(body: BulkPasswordReset, actor: str = Depends(get_current_user)) -> dict:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            update(users).values(
+                password_hash=_hash_password(body.new_password),
+                password_hint=body.new_password,
+            )
+        )
+        await session.commit()
+    await _log_activity(actor, "user.bulk_password_reset", "", {"count": result.rowcount})
+    return {"reset": result.rowcount, "new_password": body.new_password}
 
 
 @router.delete("/users/{email}")

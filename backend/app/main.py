@@ -65,7 +65,23 @@ async def startup_checks() -> None:
         )
     # Clean up any zombie runs from a previous process that died mid-run
     _cleanup_zombie_runs(cfg)
+    await _run_migrations()
     asyncio.create_task(auto_sync_loop())
+
+
+async def _run_migrations() -> None:
+    """Apply additive schema migrations that are safe to run on every startup."""
+    from backend.app.db.session import engine
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hint VARCHAR(255) DEFAULT ''",
+    ]
+    async with engine.begin() as conn:
+        for sql in migrations:
+            try:
+                await conn.execute(text(sql))
+            except Exception as exc:
+                logger.warning("Migration skipped: %s — %s", sql[:60], exc)
 
 
 def _cleanup_zombie_runs(cfg) -> None:
