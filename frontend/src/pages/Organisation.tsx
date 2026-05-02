@@ -145,8 +145,8 @@ export default function Organisation() {
             />
           </div>
 
-          {/* App name inline edit */}
-          <div className="flex-1 min-w-0">
+          {/* App name + detail */}
+          <div className="flex-1 min-w-0 space-y-4">
             <p className="text-xs uppercase tracking-wide text-slate-400 mb-1">Application Name</p>
             {editingAppName ? (
               <div className="flex items-center gap-2">
@@ -176,7 +176,36 @@ export default function Organisation() {
                 </button>
               </div>
             )}
-            <p className="text-xs text-slate-400 mt-1">Shown in the browser tab and app header</p>
+            <p className="text-xs text-slate-400 mt-1">Shown in the browser tab and top navigation</p>
+
+            {/* App Detail / Tagline */}
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400 mb-1">App Detail / Tagline</p>
+              <div className="flex items-center gap-2">
+                <input
+                  value={settings.app_detail || ""}
+                  onChange={(e) => set("app_detail", e.target.value)}
+                  placeholder="e.g. Footfall Analysis"
+                  className="iris-input text-sm flex-1"
+                />
+                <button
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      await adminUpdateSettings({ app_detail: settings.app_detail || "" });
+                      flash("App detail updated");
+                    } catch { flash("Save failed"); }
+                    finally { setSaving(false); }
+                  }}
+                  disabled={saving}
+                  className="iris-btn-primary shrink-0"
+                >
+                  <Save size={14} />
+                  Save
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Subtitle shown below the app name in the navigation bar</p>
+            </div>
           </div>
         </div>
       </Card>

@@ -38,24 +38,26 @@ export function TopNav() {
     ? user.full_name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2)
     : <User size={16} />;
   const appName = branding.app_name?.trim() || "IRIS";
-  const orgName = branding.org_name?.trim() || "";
+  const appDetail = branding.app_detail?.trim() || "Footfall Analysis";
   const logoUrl = branding.logo_url?.trim() || "";
 
   return (
-    <header className="h-16 border-b bg-background flex items-center justify-between px-6 sticky top-0 z-10 w-full select-none">
-      {/* Left: logo + org name */}
-      <div className="flex items-center gap-3 min-w-0">
+    <header className="h-16 border-b bg-background flex items-center px-6 sticky top-0 z-10 w-full select-none">
+      {/* Left: logo only */}
+      <div className="flex items-center shrink-0 w-12">
         {logoUrl ? (
-          <img src={logoUrl} alt="Logo" className="h-8 w-8 object-contain rounded-lg" />
+          <img src={logoUrl} alt="Logo" className="h-9 w-9 object-contain rounded-lg" />
         ) : (
-          <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center">
+          <div className="h-9 w-9 rounded-lg bg-blue-600 flex items-center justify-center">
             <span className="text-white text-xs font-bold">IR</span>
           </div>
         )}
-        <div className="min-w-0">
-          <p className="text-sm font-bold text-foreground truncate">{orgName || appName}</p>
-          {orgName && <p className="text-xs text-muted-foreground truncate">{appName}</p>}
-        </div>
+      </div>
+
+      {/* Center: app name + detail */}
+      <div className="flex-1 flex flex-col items-center justify-center leading-tight">
+        <p className="text-sm font-bold text-foreground tracking-wide">{appName}</p>
+        <p className="text-xs text-muted-foreground">{appDetail}</p>
       </div>
 
       {/* Right: profile dropdown */}
