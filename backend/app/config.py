@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # Comma-separated allowed CORS origins; defaults cover local dev only
     cors_origins: str = "http://localhost:3000,http://localhost:8767,http://127.0.0.1:8767"
 
-    model_config = {"env_prefix": "", "case_sensitive": False}
+    model_config = {"env_prefix": "", "case_sensitive": False, "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property
     def cors_origins_list(self) -> list[str]:

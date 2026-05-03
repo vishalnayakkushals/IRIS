@@ -436,6 +436,7 @@ def _run_pipeline_sync(
             gpt_enabled=gpt_enabled,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
+            google_api_key=settings.google_api_key,
             pipeline_version="onfly_v2",
             use_tracker=use_tracker,
             force_reprocess=force_reprocess,

@@ -273,6 +273,7 @@ class OnFlyConfig:
     tracker_max_age: int = 5
     tracker_min_hits: int = 2
     gpt_parallel_workers: int = 5
+    google_api_key: str = ""
 
 
 class SourceClient(Protocol):
@@ -517,9 +518,10 @@ class GDriveClient:
         raise RuntimeError(f"Drive fetch failed for {item.image_name} ({fid}): {last_error}")
 
 
-def build_source_client(source_uri: str) -> SourceClient:
+def build_source_client(source_uri: str, google_api_key: str = "") -> SourceClient:
     if parse_drive_folder_id(source_uri):
-        return GDriveClient(source_uri, os.getenv("GOOGLE_API_KEY", ""))
+        key = google_api_key or os.getenv("GOOGLE_API_KEY", "")
+        return GDriveClient(source_uri, key)
     if parse_s3_location(source_uri) is not None:
         raise RuntimeError("S3 on-the-fly adapter is configured for future use; enable in next phase.")
     return LocalClient(source_uri)
@@ -952,7 +954,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     started_at = _now()
     run_id = str(cfg.run_id or "").strip() or f"{cfg.store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     perf0 = time.perf_counter()
-    client = build_source_client(cfg.source_uri)
+    client = build_source_client(cfg.source_uri, cfg.google_api_key)
     detector = None
     detector_warning = ""
     timings = {"list_ms": 0.0, "detector_init_ms": 0.0, "download_ms": 0.0, "yolo_ms": 0.0, "gpt_ms": 0.0, "report_ms": 0.0}
@@ -1038,7 +1040,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             now = _now()
             row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             if row is None:
-                conn.execute("INSERT INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id, item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, now, cfg.pipeline_version, "", ""))
+                conn.execute("INSERT OR IGNORE INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id, item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, now, cfg.pipeline_version, "", ""))
                 row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             else:
                 conn.execute("UPDATE onfly_image_state SET source_url=?,image_name=?,relative_path=?,date_source=?,date_display=?,camera_id=?,timestamp_hint=?,last_seen_at=? WHERE store_id=? AND image_id=?", (item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display, item.camera_id, item.timestamp_hint, now, cfg.store_id, item.image_id))

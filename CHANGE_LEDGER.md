@@ -11,6 +11,97 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+---
+
+## AI Handoff Guide
+
+### What IRIS Is
+IRIS is a retail intelligence platform. It ingests timestamped camera snapshots from Google Drive, runs YOLO person-detection + GPT semantic analysis, and surfaces footfall, dwell, and conversion metrics in a React dashboard (port 8766) backed by a FastAPI + PostgreSQL API.
+
+### Stack at a Glance
+| Layer | Tech | Entry Point |
+|---|---|---|
+| Frontend | React + Vite + Tailwind + Tremor | `frontend/src/` → built to `backend/app/static/` |
+| API | FastAPI (Python 3.11) | `backend/app/main.py` — port 8766 |
+| DB | PostgreSQL 17 (local) | `iris_db` / user `iris_user` |
+| Pipeline | Python — `src/iris/onfly_pipeline.py` | Called via `routes_onfly.py` thread pool |
+| Auth | JWT (python-jose) | `backend/app/auth/` |
+| Config | pydantic-settings reads `.env` in repo root | `backend/app/config.py` |
+
+### Local Start (No Docker)
+```powershell
+# Terminal 1 — API server
+$env:PYTHONPATH = "C:\IRIS\src;C:\IRIS"
+.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8766
+```
+PID is written to `deploy/no_docker/runtime_logs/pids/web.pid`.
+
+### Environment Variables (`.env` in repo root — never commit)
+| Variable | Required | Purpose |
+|---|---|---|
+| `GOOGLE_API_KEY` | **Yes** | Google Simple API Key (prefix `AIzaSy…`) for Drive API v3 listing/download |
+| `OPENAI_API_KEY` | For GPT | OpenAI key for GPT-4.1-mini vision analysis |
+| `IRIS_JWT_SECRET` | Yes | JWT signing secret — change before any shared deploy |
+| `OPENAI_MODEL` | Optional | Defaults to `gpt-4.1-mini` |
+
+The `GOOGLE_API_KEY` is a **Simple API Key** (not a service account JSON, not OAuth). Generate or find it in Google Cloud Console → APIs & Services → Credentials → API Keys. It must have **Google Drive API** enabled.
+
+### Key Files to Know
+| File | What it does |
+|---|---|
+| `src/iris/onfly_pipeline.py` | Core pipeline: list → skip-check → download → YOLO → GPT → report |
+| `backend/app/api/routes_onfly.py` | HTTP triggers for pipeline runs; thread-pool executor |
+| `backend/app/api/routes_admin.py` | User/store/employee/role CRUD |
+| `backend/app/api/routes_reports.py` | Footfall, walkins, QA, date-wise reports |
+| `backend/app/config.py` | All settings via pydantic-settings (reads `.env`) |
+| `frontend/src/context/StoreContext.tsx` | Global store selector — single source of truth for all pages |
+| `frontend/src/api/client.ts` | All Axios API calls with Bearer token interceptor |
+| `AGENTS.md` | Module registry and workflow rules for AI agents |
+| `release-notes/` | One `.md` per release date |
+
+### Known Recurring Issues
+| Error | Root Cause | Fix |
+|---|---|---|
+| `GOOGLE_API_KEY is required for Drive on-the-fly ingestion` | `.env` missing or `GOOGLE_API_KEY=` empty | Create `.env` with the `AIzaSy…` key; restart server |
+| `UNIQUE constraint failed: onfly_image_state` | Two concurrent pipeline runs inserting same image | Fixed 2026-05-03: `INSERT OR IGNORE` applied |
+| `No module named 'iris'` | Server started without `src/` on `PYTHONPATH` | Set `PYTHONPATH=<repo>/src;<repo>` before starting uvicorn |
+| `getaddrinfo failed` | Machine has no internet when scheduler fires | Transient network failure — run will auto-retry next cycle |
+| Runs stuck in `running` state | Server was killed mid-run | These are zombie rows; safe to ignore or manually mark `failed` in DB |
+
+### Build & Deploy Sequence
+```powershell
+# 1. Build frontend
+cd frontend && npm run build
+# 2. Copy to backend static
+cp -r dist/. ../backend/app/static/
+# 3. Kill old server PID and restart
+Stop-Process -Id (Get-Content deploy\no_docker\runtime_logs\pids\web.pid)
+# 4. Start (always set PYTHONPATH)
+$env:PYTHONPATH = "$pwd\src;$pwd"
+.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8766
+```
+
+### What NOT to Change Without Review
+- `src/iris/onfly_pipeline.py` Phase 3 session write logic — tightly coupled to `gpt_result_map` ordering
+- `backend/app/auth/` — JWT flows are tested; breaking changes log users out
+- `deploy/docker-compose.yml` — port 8765 (Streamlit) must remain untouched alongside 8766
+
+---
+
+### 2026-05-03 - Fix GOOGLE_API_KEY Not Reaching Pipeline, Fix UNIQUE Constraint Crash
+
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/config.py`
+  - `.env` (created locally — gitignored, never committed)
+- Summary:
+  - **Root cause**: `pydantic_settings` had no `env_file` configured, so `.env` was never read. `GOOGLE_API_KEY` defaulted to `""` in `Settings`, but `onfly_pipeline.py` was reading it directly from `os.getenv()` which also returned `""` since the OS environment had no such variable when the server was started by a script that didn't export it.
+  - **Fix 1 — env_file**: Added `"env_file": ".env"` and `"env_file_encoding": "utf-8"` to `Settings.model_config` so pydantic-settings auto-reads `.env` from repo root on startup.
+  - **Fix 2 — key threading**: Added `google_api_key: str = ""` field to `OnFlyConfig`. `build_source_client()` now accepts `google_api_key` param — prefers it over `os.getenv()`. `_run_pipeline_sync()` in `routes_onfly.py` passes `settings.google_api_key` into the config. No more reliance on ambient OS environment.
+  - **Fix 3 — UNIQUE constraint**: Changed `INSERT INTO onfly_image_state` to `INSERT OR IGNORE` — concurrent pipeline runs (two scheduler triggers firing before the first finishes) could both pass the `SELECT` check and then both attempt the same insert. `OR IGNORE` makes the second insert a no-op instead of a crash.
+  - **Key type clarification**: The `GOOGLE_API_KEY` (`AIzaSy…`) is a Google Simple API Key (not a service account JSON, not OAuth). It is the correct key type for Drive API v3 with `?key=` query parameter. No other key type is needed.
+
 ### 2026-05-03 - Remove Default Store Field From Users Form
 
 - Changed paths:
