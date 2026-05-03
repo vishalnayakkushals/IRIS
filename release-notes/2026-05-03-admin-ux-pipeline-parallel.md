@@ -1,9 +1,18 @@
 # Release Notes - 2026-05-03
 
 ## Feature Name
-- IRIS Admin UX Overhaul, Pipeline Parallel Execution & User Management Improvements
+- IRIS Admin UX Overhaul, Pipeline Parallel Execution, User Management Improvements & Critical Pipeline Bug Fixes
 
 ## What's New
+
+### CRITICAL FIX — GOOGLE_API_KEY Not Reaching Pipeline
+- **Problem**: The scheduler was failing with `GOOGLE_API_KEY is required for Drive on-the-fly ingestion` even though the key existed in the key file. Root cause: `pydantic_settings` was not configured with `env_file`, so `.env` was never read on startup. `onfly_pipeline.py` was also reading the key from `os.getenv()` directly — bypassing Settings entirely.
+- **Fix**: Added `env_file=".env"` to `Settings.model_config` in `config.py`. Added `google_api_key` field to `OnFlyConfig`. `build_source_client()` now receives the key directly from config rather than from the ambient OS environment. `routes_onfly.py` passes `settings.google_api_key` into the pipeline config.
+- **Key type**: The `GOOGLE_API_KEY` (`AIzaSy…`) is a **Google Simple API Key** — the correct key type for Drive API v3. No service account JSON or OAuth credentials are needed. Enable "Google Drive API" on the key in Google Cloud Console → APIs & Services → Credentials.
+
+### CRITICAL FIX — Pipeline Crash on Duplicate Image Insert
+- **Problem**: When two pipeline runs triggered close together (scheduler fires while a previous run is still processing), both runs would pass the `SELECT` existence check and then both attempt `INSERT INTO onfly_image_state` for the same `(store_id, image_id)`, causing a `UNIQUE constraint failed` crash that killed the second run entirely.
+- **Fix**: Changed `INSERT INTO` to `INSERT OR IGNORE`. The second concurrent insert for an already-existing row is now a silent no-op instead of a fatal error.
 
 ### Store Access — Dual Listbox
 - Replaced the old checkbox grid with a professional dual-panel listbox.
