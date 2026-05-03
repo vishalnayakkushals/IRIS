@@ -7,6 +7,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
   const navigate = useNavigate();
 
   async function handleSubmit(e: FormEvent) {
@@ -74,7 +75,28 @@ export default function Login() {
           >
             {loading ? "Signing in…" : "Sign In"}
           </button>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => setShowForgot((p) => !p)}
+              className="text-xs text-slate-400 hover:text-blue-600 transition-colors"
+            >
+              Forgot password?
+            </button>
+          </div>
         </form>
+
+        {showForgot && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800">
+            <p className="font-semibold mb-1">Password Reset</p>
+            <p className="text-xs leading-relaxed">
+              Contact your IRIS administrator to reset your password.
+              Your admin can set a new password from the{" "}
+              <span className="font-medium">Users</span> page and share it with you directly.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

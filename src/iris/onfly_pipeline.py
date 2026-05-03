@@ -1010,6 +1010,29 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_quota_error = ""
         gpt_work_list: list[tuple] = []
         bytes_cache: dict[str, bytes] = {}
+        gpt_result_map: dict[str, tuple] = {}
+
+        def _run_gpt(work: tuple) -> tuple:  # noqa: E306
+            _item, _img_bytes = work
+            _g0 = time.perf_counter()
+            try:
+                _out = _openai_eval(cfg, _img_bytes, _item.image_name)
+                return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
+            except Exception as _exc:
+                _gerr = str(_exc)
+                _gstatus = "quota_pending_retry" if _is_gpt_quota_error(_gerr) else "failed"
+                return (
+                    _item.image_id,
+                    {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
+                    _gstatus, _gerr, round((time.perf_counter() - _g0) * 1000.0, 2),
+                )
+
+        _max_w = max(1, int(cfg.gpt_parallel_workers))
+        _gpt_pool: concurrent.futures.ThreadPoolExecutor | None = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=_max_w) if cfg.gpt_enabled else None
+        )
+        _gpt_ordered: list[tuple] = []  # (item, image_bytes, future) — in YOLO submission order
+
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
             now = _now()
@@ -1205,6 +1228,9 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="GPT analysis queued for parallel processing",
                 )
                 gpt_work_list.append((item, image_bytes))
+                if _gpt_pool is not None:
+                    _fut = _gpt_pool.submit(_run_gpt, (item, image_bytes))
+                    _gpt_ordered.append((item, image_bytes, _fut))
             elif relevant == 1 and cfg.gpt_enabled and not gpt_needed:
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="skipped_version")
                 _append_pipeline_event(
@@ -1231,6 +1257,21 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="GPT skipped",
                     payload={"reason": status},
                 )
+            # Drain completed GPT futures so live progress reflects GPT counts during YOLO
+            if _gpt_pool is not None:
+                for _pi, _, _pf in _gpt_ordered:
+                    if _pf.done() and _pi.image_id not in gpt_result_map:
+                        try:
+                            _r = _pf.result()
+                            gpt_result_map[_r[0]] = _r[1:]
+                            gpt_done += int(_r[2] == "done")
+                            gpt_failed += int(_r[2] != "done")
+                        except Exception as _pe:
+                            gpt_result_map[_pi.image_id] = (
+                                {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
+                                "failed", str(_pe), 0.0,
+                            )
+                            gpt_failed += 1
             _update_pipeline_run(
                 conn,
                 run_id,
@@ -1242,39 +1283,24 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 gpt_failed_count=gpt_failed,
             )
             conn.commit()
-        # Phase 2: parallel GPT — all OpenAI calls run concurrently (pure I/O-bound HTTP).
-        gpt_result_map: dict[str, tuple] = {}
-        if gpt_work_list and cfg.gpt_enabled:
-            def _run_gpt(work: tuple) -> tuple:
-                _item, _img_bytes = work
-                _g0 = time.perf_counter()
-                try:
-                    _out = _openai_eval(cfg, _img_bytes, _item.image_name)
-                    return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
-                except Exception as _exc:
-                    _gerr = str(_exc)
-                    _gstatus = "quota_pending_retry" if _is_gpt_quota_error(_gerr) else "failed"
-                    return (
-                        _item.image_id,
-                        {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
-                        _gstatus,
-                        _gerr,
-                        round((time.perf_counter() - _g0) * 1000.0, 2),
-                    )
-
-            _max_w = max(1, int(cfg.gpt_parallel_workers))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_w) as _pool:
-                _futs = {_pool.submit(_run_gpt, w): w for w in gpt_work_list}
-                for _fut in concurrent.futures.as_completed(_futs):
+        # Phase 2: wait for any GPT futures still in flight (submitted during YOLO pass above)
+        if _gpt_pool is not None:
+            for _pi, _, _pf in _gpt_ordered:
+                if _pi.image_id not in gpt_result_map:
                     try:
-                        _img_id, _gpt_out, _gstatus, _gerr, _elapsed = _fut.result()
-                        gpt_result_map[_img_id] = (_gpt_out, _gstatus, _gerr, _elapsed)
-                    except Exception as _exc2:
-                        _wk = _futs[_fut]
-                        gpt_result_map[_wk[0].image_id] = (
+                        _r = _pf.result()
+                        gpt_result_map[_r[0]] = _r[1:]
+                        gpt_done += int(_r[2] == "done")
+                        gpt_failed += int(_r[2] != "done")
+                    except Exception as _pe:
+                        gpt_result_map[_pi.image_id] = (
                             {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
-                            "failed", str(_exc2), 0.0,
+                            "failed", str(_pe), 0.0,
                         )
+                        gpt_failed += 1
+            _gpt_pool.shutdown(wait=True)
+            _update_pipeline_run(conn, run_id, gpt_success_count=gpt_done, gpt_failed_count=gpt_failed)
+            conn.commit()
 
         # Phase 3: sequential session writes — preserves event-time ordering for Re-ID state machine.
         if gpt_work_list:

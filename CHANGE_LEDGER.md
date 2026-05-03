@@ -11,6 +11,20 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-05-03 - Store Access Dual Listbox, YOLO+GPT Parallel, Login Forgot Password, User Password Change
+
+- Changed paths:
+  - `frontend/src/pages/StoreAccess.tsx` (complete rewrite)
+  - `frontend/src/pages/Login.tsx`
+  - `frontend/src/pages/UsersPage.tsx`
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Store Access dual listbox**: Replaced the old grid toggle UI with a professional dual-panel listbox. Left panel = Available stores, right panel = Granted Access. Panels have search, "Select all/Deselect all", click-to-highlight, double-click-to-move instantly. Arrow buttons move selected or all filtered. State/Zone cascading filter dropdowns. "Grant All Stores" toggle button. Store metadata (city/state/zone) merged from `adminListStoreMaster()` for filtering.
+  - **YOLO+GPT parallel execution**: Moved `_gpt_pool` creation before the YOLO loop so GPT futures are submitted immediately for each relevant image as YOLO processes it. Live progress now reflects GPT completions during the YOLO scan (drain loop checks `_pf.done()` per iteration). Phase 2 waits for any remaining in-flight futures. Thread-safe: SQLite writes remain on main thread only; `_run_gpt` calls only OpenAI HTTP (no DB).
+  - **Login forgot password**: Added "Forgot password?" link below Sign In button. Expands an amber info box: "Contact your IRIS administrator to reset your password from the Users page."
+  - **User password change in edit form**: Edit form (non-new user) now shows optional "Change Password" field with show/hide toggle. If filled, `adminResetPassword` is called after update. New password is displayed prominently in a green banner toast (10-second display with manual dismiss) so admin can share it with the user.
+
 ### 2026-05-03 - Delete CTO Bot, Admin UX Overhaul, QA Accuracy Optimisation
 
 - Changed paths:

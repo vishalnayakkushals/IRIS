@@ -56,12 +56,14 @@ function UserForm({
     email: initial.email || "",
     full_name: initial.full_name || "",
     password: isNew ? DEFAULT_PASSWORD : "",
+    newPassword: "",
     store_id: initial.store_id || "",
     is_active: initial.is_active !== false,
     role_names: initial.roles || [],
   });
   const [saving, setSaving] = useState(false);
   const [showPw, setShowPw] = useState(true);
+  const [showNewPw, setShowNewPw] = useState(false);
 
   function toggleRole(r: string) {
     setV((prev) => ({
@@ -92,7 +94,7 @@ function UserForm({
           <label className="iris-label">Full Name *</label>
           <input required className="iris-input" value={v.full_name} onChange={(e) => setV({ ...v, full_name: e.target.value })} />
         </div>
-        {isNew && (
+        {isNew ? (
           <div>
             <label className="iris-label">Password *</label>
             <div className="relative">
@@ -112,6 +114,29 @@ function UserForm({
               </button>
             </div>
             <p className="text-xs text-slate-400 mt-1">Default: {DEFAULT_PASSWORD}</p>
+          </div>
+        ) : (
+          <div>
+            <label className="iris-label">Change Password <span className="text-slate-400 font-normal">(optional)</span></label>
+            <div className="relative">
+              <input
+                type={showNewPw ? "text" : "password"}
+                className="iris-input pr-10"
+                placeholder="Leave blank to keep current password"
+                value={v.newPassword}
+                onChange={(e) => setV({ ...v, newPassword: e.target.value })}
+              />
+              <button
+                type="button"
+                onClick={() => setShowNewPw((p) => !p)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showNewPw ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+            {v.newPassword && (
+              <p className="text-xs text-blue-600 mt-1 font-medium">New password will be: <span className="font-mono">{v.newPassword}</span></p>
+            )}
           </div>
         )}
         <div>
@@ -191,8 +216,10 @@ export default function UsersPage() {
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [importantToast, setImportantToast] = useState("");
 
   function flash(msg: string) { setToast(msg); setTimeout(() => setToast(""), 3000); }
+  function flashImportant(msg: string) { setImportantToast(msg); setTimeout(() => setImportantToast(""), 10000); }
 
   async function load() {
     const [u, r, s] = await Promise.all([adminListUsers(), adminListRoles(), adminListStores()]);
@@ -221,8 +248,13 @@ export default function UsersPage() {
   async function handleUpdate(v: any) {
     try {
       await adminUpdateUser(v.email, v);
+      if (v.newPassword) {
+        await adminResetPassword(v.email, v.newPassword);
+        flashImportant(`Password changed for ${v.email} · New password: ${v.newPassword}`);
+      } else {
+        flash("User updated");
+      }
       setEditing(null);
-      flash("User updated");
       load();
     } catch (e: any) {
       flash(e?.response?.data?.detail || "Update failed");
@@ -264,6 +296,18 @@ export default function UsersPage() {
   return (
     <div className="space-y-6">
       {toast && <div className="iris-toast">{toast}</div>}
+      {importantToast && (
+        <div className="bg-emerald-50 border border-emerald-300 rounded-xl px-5 py-4 flex items-start justify-between gap-4 shadow-sm">
+          <div>
+            <p className="text-sm font-semibold text-emerald-800">Password Changed</p>
+            <p className="text-xs text-emerald-700 mt-0.5 font-mono">{importantToast.split("· ")[1]}</p>
+            <p className="text-xs text-emerald-600 mt-1">Share this password securely with the user. This message will disappear in 10 seconds.</p>
+          </div>
+          <button onClick={() => setImportantToast("")} className="text-emerald-400 hover:text-emerald-600 mt-0.5">
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><Title>Users</Title><Text>Manage user accounts, roles, and store assignments.</Text></div>
