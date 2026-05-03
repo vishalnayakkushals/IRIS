@@ -102,27 +102,6 @@ Copy-Item .env.example .env
 SOP checklist status for this repo:
 - `docs/process/b2b_projects_sop_status.md`
 
-## Optional CTO Performance Observer (Isolated)
-
-- Path: `CTO/`
-- Main log: `CTO/logs/perf_events.jsonl`
-- Analyzer output:
-  - `CTO/reports/latest_perf_report.md`
-  - `CTO/reports/perf_regression_report.csv`
-
-Run one cycle with probes:
-
-```powershell
-python CTO/scripts/perf_cycle.py --note "post-fix check" --url "http://localhost:8765/?module=Reports" --url "http://localhost:8765/?module=Access&section=Config"
-python CTO/scripts/perf_analyze.py
-```
-
-Optional continuous watch (Ctrl+C to stop):
-
-```powershell
-python CTO/scripts/perf_watch.py --note "browse-watch" --interval-seconds 30 --url "http://localhost:8765/?module=Reports"
-```
-
 ## Run Batch Analysis
 
 ```powershell
