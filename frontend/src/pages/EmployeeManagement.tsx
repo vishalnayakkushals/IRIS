@@ -1,30 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { adminListStores, adminListEmployees, adminDeleteEmployee, api } from "../api/client";
-import { Card, Title, Text, Button } from "@tremor/react";
+import { adminListEmployees, adminListAllEmployees, adminDeleteEmployee, api } from "../api/client";
+import { Card, Title, Text, Button, Badge } from "@tremor/react";
 import { Upload, Trash2, UserCircle } from "lucide-react";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 
 export default function EmployeeManagement() {
-  const [stores, setStores] = useState<any[]>([]);
-  const [storeId, setStoreId] = useState("");
+  const { storeId, storeName } = useStore();
   const [employees, setEmployees] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const allStores = !storeId;
 
   function flash(msg: string) { setToast(msg); setTimeout(() => setToast(""), 3000); }
 
   useEffect(() => {
-    adminListStores().then((r) => {
-      setStores(r.data);
-      if (r.data.length) setStoreId(r.data[0].store_id);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!storeId) return;
-    adminListEmployees(storeId).then((r) => setEmployees(r.data));
-  }, [storeId]);
+    if (allStores) {
+      adminListAllEmployees().then((r) => setEmployees(r.data)).catch(() => setEmployees([]));
+    } else {
+      adminListEmployees(storeId).then((r) => setEmployees(r.data)).catch(() => setEmployees([]));
+    }
+  }, [storeId, allStores]);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -48,10 +44,14 @@ export default function EmployeeManagement() {
     }
   }
 
-  async function handleDelete(id: number, name: string) {
+  async function handleDelete(id: number, name: string, empStoreId: string) {
     if (!confirm(`Remove employee "${name}"?`)) return;
-    await adminDeleteEmployee(storeId, id);
-    adminListEmployees(storeId).then((r) => setEmployees(r.data));
+    await adminDeleteEmployee(empStoreId, id);
+    if (allStores) {
+      adminListAllEmployees().then((r) => setEmployees(r.data));
+    } else {
+      adminListEmployees(storeId).then((r) => setEmployees(r.data));
+    }
     flash("Removed");
   }
 
@@ -65,27 +65,25 @@ export default function EmployeeManagement() {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <Title>Employee Management</Title>
-          <Text>Upload employee photos for staff recognition during pipeline runs.</Text>
+          <Text>
+            {allStores
+              ? "Showing employees across all stores."
+              : `Upload employee photos for staff recognition — ${storeName || storeId}.`}
+          </Text>
         </div>
-        <div className="flex gap-3 items-center">
-          <div className="w-72">
-            <StoreSelect
-              stores={stores}
-              value={storeId}
-              onChange={setStoreId}
-              placeholder="Select store"
-            />
+        {!allStores && (
+          <div className="flex gap-3 items-center">
+            <Button
+              size="sm"
+              icon={Upload}
+              loading={uploading}
+              onClick={() => fileRef.current?.click()}
+            >
+              Upload Photos
+            </Button>
+            <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
           </div>
-          <Button
-            size="sm"
-            icon={Upload}
-            loading={uploading}
-            onClick={() => fileRef.current?.click()}
-          >
-            Upload Photos
-          </Button>
-          <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
-        </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -95,7 +93,7 @@ export default function EmployeeManagement() {
 
       {employees.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm">
-          No employees for this store. Upload photos above.
+          {allStores ? "No employees across any stores." : "No employees for this store. Upload photos above."}
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
@@ -105,9 +103,12 @@ export default function EmployeeManagement() {
                 <UserCircle size={40} className="text-slate-300" />
               </div>
               <p className="text-sm font-medium text-slate-700 text-center leading-tight">{emp.employee_name}</p>
+              {allStores && (
+                <Badge color="slate" className="text-[10px]">{emp.store_id}</Badge>
+              )}
               <p className="text-xs text-slate-400">{emp.is_active ? "Active" : "Inactive"}</p>
               <button
-                onClick={() => handleDelete(emp.id, emp.employee_name)}
+                onClick={() => handleDelete(emp.id, emp.employee_name, emp.store_id)}
                 className="text-xs text-slate-400 hover:text-rose-600 flex items-center gap-1 mt-1"
               >
                 <Trash2 size={12} /> Remove

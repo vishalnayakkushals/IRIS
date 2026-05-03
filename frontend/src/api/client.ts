@@ -224,6 +224,7 @@ export const adminUploadLogo = (file: File) => {
 
 // ── Admin — Employees ─────────────────────────────────────────────────────────
 export const adminListEmployees = (storeId: string) => api.get<any[]>(`/admin/employees/${storeId}`);
+export const adminListAllEmployees = () => api.get<any[]>(`/admin/employees`);
 export const adminDeleteEmployee = (storeId: string, id: number) =>
   api.delete(`/admin/employees/${storeId}/${id}`);
 

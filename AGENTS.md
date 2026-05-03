@@ -19,6 +19,21 @@
 - Commit only intended files with clear commit messages.
 - Push each completed change set to `origin/main` so local and GitHub remain aligned.
 
+## Deleted / Removed Modules
+
+| Module/File | Reason |
+|---|---|
+| `CTO/` (entire directory) | Standalone Streamlit HTTP response-time observer (perf_cycle.py etc). No production dependency. Deleted 2026-05-03. |
+| `tools/cto_bot/` (entire directory) | Health-check bot running pytest + py_compile + pip --version, logging JSON reports. No production dependency. Deleted 2026-05-03. |
+
+## Admin Pages — Global Store Context
+
+All admin pages (`CameraZones`, `EmployeeManagement`, `ModelFeedback`) now use `useStore()` from `frontend/src/context/StoreContext.tsx` instead of their own per-page store fetching. The TopNav store dropdown is the single source of truth for store selection. Pages that require a specific store (Camera Zones) show a prompt when "All Stores" is active. Pages that can aggregate (Employee Management) show cross-store data when "All Stores" is active.
+
+## Pipeline — GPT Triggering Notes
+
+GPT runs in a **batch phase after YOLO completes** — not interleaved per-image. The pipeline first YOLO-scans all images, collects the relevant ones into `gpt_work_list`, then runs GPT in parallel on the full list. GPT Done = 0 while YOLO stage is still running is expected. Ensure the "GPT analysis" checkbox is checked before triggering sync (now defaults to ON). The scheduler (`scripts/onfly_scheduler.py`) reads `cfg_onfly_scheduler_enable_gpt` from settings (defaults True).
+
 ## New Phase 1 Modules (React + FastAPI + Celery)
 
 | Module/File | Responsibility |
@@ -38,7 +53,7 @@
 | `backend/app/celery_app/tasks/report.py` | report_task: wraps run_stage1_report() to generate final store report CSV. |
 | `backend/Dockerfile` | Multi-stage: Node 20 builds React → Python 3.11-slim runs FastAPI with static React embedded. |
 | `frontend/src/pages/Login.tsx` | JWT login form → stores token in localStorage. |
-| `frontend/src/pages/SchedulerDashboard.tsx` | Main scheduler dashboard: Manual Sync tab + Run History tab, polls /api/jobs every 5s. |
+| `frontend/src/pages/SchedulerDashboard.tsx` | Main scheduler dashboard: live progress, date-wise scan report, run history. GPT defaults ON. |
 | `frontend/src/components/JobTable.tsx` | Pipeline jobs table with status badges and trigger buttons. |
 | `frontend/src/components/StatusBadge.tsx` | Color-coded status: running=orange, queued=pink, done=green, failed=red, idle=gray. |
 | `frontend/src/api/client.ts` | Axios instance with Bearer token interceptor and 401 auto-logout. |

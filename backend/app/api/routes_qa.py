@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import requests
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import case, delete, func, insert, select, update
 
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from backend.app.auth.dependencies import get_current_user
@@ -579,21 +579,44 @@ async def get_feedback_accuracy(
     _: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(qa_feedback).where(qa_feedback.c.store_id == store_id)
+        stmt = (
+            select(
+                func.count().label("total"),
+                func.sum(case((qa_feedback.c.review_status == "confirmed", 1), else_=0)).label("confirmed"),
+                func.sum(case((qa_feedback.c.review_status == "rejected", 1), else_=0)).label("rejected"),
+                func.sum(case((qa_feedback.c.review_status == "pending", 1), else_=0)).label("pending"),
+                func.sum(
+                    case(
+                        (
+                            (qa_feedback.c.corrected_label != None)  # noqa: E711
+                            & (qa_feedback.c.corrected_label != "")
+                            & (qa_feedback.c.predicted_label == qa_feedback.c.corrected_label),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("matched"),
+                func.sum(
+                    case(
+                        (
+                            (qa_feedback.c.corrected_label != None)  # noqa: E711
+                            & (qa_feedback.c.corrected_label != ""),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("scored"),
+            )
+            .where(qa_feedback.c.store_id == store_id)
         )
-        rows = [dict(r) for r in result.mappings().all()]
+        row = (await session.execute(stmt)).mappings().one()
 
-    total = len(rows)
-    confirmed = sum(1 for r in rows if r.get("review_status") == "confirmed")
-    rejected = sum(1 for r in rows if r.get("review_status") == "rejected")
-    pending = sum(1 for r in rows if r.get("review_status") == "pending")
-
-    matched = sum(
-        1 for r in rows
-        if r.get("corrected_label") and r.get("predicted_label") == r.get("corrected_label")
-    )
-    scored = sum(1 for r in rows if r.get("corrected_label"))
+    total = row["total"] or 0
+    confirmed = row["confirmed"] or 0
+    rejected = row["rejected"] or 0
+    pending = row["pending"] or 0
+    matched = row["matched"] or 0
+    scored = row["scored"] or 0
     accuracy = round((matched / scored * 100), 2) if scored else 0.0
 
     return {

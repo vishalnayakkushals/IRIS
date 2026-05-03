@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  adminListStores,
   adminListCameras,
   adminUpsertCamera,
   adminDeleteCamera,
@@ -10,7 +9,7 @@ import {
 } from "../api/client";
 import { Card, Title, Text, Button, TabGroup, TabList, Tab, TabPanels, TabPanel } from "@tremor/react";
 import { Plus, Trash2, Check, X } from "lucide-react";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 
 const CAM_ROLES = ["INSIDE", "ENTRY", "EXIT", "OUTSIDE"];
 const DIRECTIONS = ["OUTSIDE_TO_INSIDE", "INSIDE_TO_OUTSIDE"];
@@ -92,8 +91,7 @@ function LocationForm({ storeId, onSave, onCancel }: { storeId: string; onSave: 
 }
 
 export default function CameraZones() {
-  const [stores, setStores] = useState<any[]>([]);
-  const [storeId, setStoreId] = useState("");
+  const { storeId } = useStore();
   const [cameras, setCameras] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [showCamForm, setShowCamForm] = useState(false);
@@ -101,8 +99,6 @@ export default function CameraZones() {
   const [toast, setToast] = useState("");
 
   function flash(msg: string) { setToast(msg); setTimeout(() => setToast(""), 3000); }
-
-  useEffect(() => { adminListStores().then((r) => { setStores(r.data); if (r.data.length) setStoreId(r.data[0].store_id); }); }, []);
 
   useEffect(() => {
     if (!storeId) return;
@@ -124,15 +120,23 @@ export default function CameraZones() {
     adminListLocations(storeId).then((r) => setLocations(r.data));
   }
 
+  if (!storeId) {
+    return (
+      <div className="space-y-4">
+        <div><Title>Camera Zones</Title><Text>Configure cameras and store location master.</Text></div>
+        <div className="border rounded-xl p-10 text-center text-slate-400 text-sm bg-slate-50">
+          Select a specific store from the top navigation to manage camera zones.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {toast && <div className="fixed top-20 right-8 z-50 bg-slate-800 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg">{toast}</div>}
 
-      <div className="flex items-center justify-between">
-        <div><Title>Camera Zones</Title><Text>Configure cameras and store location master.</Text></div>
-        <div className="w-full sm:w-80">
-          <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Select store" />
-        </div>
+      <div>
+        <Title>Camera Zones</Title><Text>Configure cameras and store location master for <strong>{storeId}</strong>.</Text>
       </div>
 
       <TabGroup>

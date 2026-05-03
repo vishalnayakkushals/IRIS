@@ -56,7 +56,7 @@ export default function SchedulerDashboard() {
   const [stores, setStores] = useState<any[]>([]);
   const [adminStores, setAdminStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState(globalStoreId);
-  const [gptEnabled, setGptEnabled] = useState(false);
+  const [gptEnabled, setGptEnabled] = useState(true);
   const [manualSource, setManualSource] = useState("");
   const [maxImages, setMaxImages] = useState(10000);
   const [forceReprocess, setForceReprocess] = useState(false);
@@ -69,8 +69,8 @@ export default function SchedulerDashboard() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollCountRef = useRef(0);
 
-  // Sync with global store if user has not locally changed it
-  useEffect(() => { if (globalStoreId) setSelectedStore(globalStoreId); }, [globalStoreId]);
+  // Always sync with global store selection (including "All Stores" = "")
+  useEffect(() => { setSelectedStore(globalStoreId); }, [globalStoreId]);
 
   const loadRuns = useCallback(async () => {
     try { const { data } = await getRuns(runLimit); setRuns(data.runs); } catch {}

@@ -38,6 +38,9 @@ export default function StoreAccess() {
     );
   }
 
+  function selectAll() { setAccess(stores.map((s) => s.store_id)); }
+  function deselectAll() { setAccess([]); }
+
   async function save() {
     if (!selectedEmail) return;
     setSaving(true);
@@ -88,7 +91,25 @@ export default function StoreAccess() {
         {selectedEmail && (
           <>
             <div>
-              <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-semibold">Store Access</p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs text-slate-500 uppercase tracking-wide font-semibold">Store Access</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAll}
+                    className="text-xs px-2.5 py-1 rounded-md border border-blue-300 text-blue-600 hover:bg-blue-50 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={deselectAll}
+                    className="text-xs px-2.5 py-1 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50 transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                 {stores.map((s) => {
                   const checked = access.includes(s.store_id);

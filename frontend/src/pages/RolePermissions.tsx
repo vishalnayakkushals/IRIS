@@ -34,10 +34,20 @@ function PermissionMatrix({
     );
   }
 
+  function toggleAll(field: "can_read" | "can_write") {
+    const allOn = perms.every((p) => p[field]);
+    setPerms((prev) => prev.map((p) => ({ ...p, [field]: !allOn })));
+  }
+
   async function save() {
     setSaving(true);
     try { await onSave(perms.filter((p) => p.can_read || p.can_write)); } finally { setSaving(false); }
   }
+
+  const allRead = perms.length > 0 && perms.every((p) => p.can_read);
+  const allWrite = perms.length > 0 && perms.every((p) => p.can_write);
+  const someRead = perms.some((p) => p.can_read);
+  const someWrite = perms.some((p) => p.can_write);
 
   return (
     <div className="space-y-3">
@@ -46,8 +56,32 @@ function PermissionMatrix({
           <thead>
             <tr className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider font-semibold">
               <th className="px-4 py-2">Permission</th>
-              <th className="px-4 py-2 text-center">Read</th>
-              <th className="px-4 py-2 text-center">Write</th>
+              <th className="px-4 py-2 text-center">
+                <div className="flex flex-col items-center gap-1">
+                  <span>Read</span>
+                  <input
+                    type="checkbox"
+                    checked={allRead}
+                    ref={(el) => { if (el) el.indeterminate = !allRead && someRead; }}
+                    onChange={() => toggleAll("can_read")}
+                    className="cursor-pointer"
+                    title="Select all read"
+                  />
+                </div>
+              </th>
+              <th className="px-4 py-2 text-center">
+                <div className="flex flex-col items-center gap-1">
+                  <span>Write</span>
+                  <input
+                    type="checkbox"
+                    checked={allWrite}
+                    ref={(el) => { if (el) el.indeterminate = !allWrite && someWrite; }}
+                    onChange={() => toggleAll("can_write")}
+                    className="cursor-pointer"
+                    title="Select all write"
+                  />
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">

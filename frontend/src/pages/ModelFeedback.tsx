@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
-import { adminListStores, qaAccuracy, qaRetrain, reportsModelAccuracy } from "../api/client";
+import { qaAccuracy, qaRetrain, reportsModelAccuracy } from "../api/client";
 import { Card, Title, Text, Badge, Button } from "@tremor/react";
 import { Zap } from "lucide-react";
-import StoreSelect from "../components/StoreSelect";
+import { useStore } from "../context/StoreContext";
 
 export default function ModelFeedback() {
-  const [stores, setStores] = useState<any[]>([]);
-  const [storeId, setStoreId] = useState("");
+  const { storeId } = useStore();
   const [accuracy, setAccuracy] = useState<any>(null);
   const [modelVersions, setModelVersions] = useState<any[]>([]);
   const [retraining, setRetraining] = useState(false);
@@ -15,10 +14,6 @@ export default function ModelFeedback() {
   function flash(msg: string) { setToast(msg); setTimeout(() => setToast(""), 4000); }
 
   useEffect(() => {
-    adminListStores().then((r) => {
-      setStores(r.data);
-      if (r.data.length) setStoreId(r.data[0].store_id);
-    });
     reportsModelAccuracy().then((r) => setModelVersions(r.data));
   }, []);
 
@@ -58,9 +53,6 @@ export default function ModelFeedback() {
           <Text>Generate rule files from confirmed QA feedback to improve label accuracy.</Text>
         </div>
         <div className="flex gap-2 items-center">
-          <div className="w-72">
-            <StoreSelect stores={stores} value={storeId} onChange={setStoreId} placeholder="Select store" />
-          </div>
           <Button icon={Zap} loading={retraining} onClick={handleRetrain} color="violet">
             Generate Rule File
           </Button>

@@ -11,6 +11,35 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-05-03 - Delete CTO Bot, Admin UX Overhaul, QA Accuracy Optimisation
+
+- Changed paths:
+  - `CTO/` (deleted — all files)
+  - `tools/cto_bot/` (deleted — all files)
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/api/routes_qa.py`
+  - `backend/app/api/routes_reports.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/EmployeeManagement.tsx`
+  - `frontend/src/pages/ModelFeedback.tsx`
+  - `frontend/src/pages/RolePermissions.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/StoreAccess.tsx`
+- Summary:
+  - **Deleted CTO bot entirely**: `CTO/` (perf_cycle, perf_analyze, perf_watch, perf_run, perf_common + batch scripts) and `tools/cto_bot/` (cto_bot.py, workflow template). Confirmed zero imports or references across all .py/.ts/.tsx/.json/.yml project files. CTO bot was a standalone HTTP response-time observer for Streamlit on port 8765 — no production dependency.
+  - **Admin pages use global store**: CameraZones, EmployeeManagement, and ModelFeedback now use `useStore()` context (TopNav global selector) instead of their own `adminListStores()` + `<StoreSelect>` per-page. Store selection is now single-point from the top navigation.
+  - **CameraZones "All Stores" guard**: Renders a "select a specific store" prompt instead of an empty table when no store is active.
+  - **EmployeeManagement "All Stores" view**: When global store is empty, calls new `GET /admin/employees` endpoint (no filter) and shows all employees across all stores with a store-ID badge on each card. Upload button is hidden in All Stores mode.
+  - **New backend endpoint**: `GET /admin/employees` returns all employees across all stores ordered by store then name.
+  - **Store Access bulk toggle**: Added "Select All" and "Clear All" buttons to the store-access grid so admins can grant a user access to all stores in one click.
+  - **Roles & Permissions bulk checkboxes**: `PermissionMatrix` header now has a master checkbox per column (Read / Write) that selects or clears all rows. Supports indeterminate state when some but not all rows are checked.
+  - **Scheduler GPT default ON**: `gptEnabled` state in SchedulerDashboard now defaults to `true`. Previously defaulted to `false`, silently disabling GPT on every manual sync unless the user remembered to tick the box.
+  - **Scheduler always tracks global store**: Removed the `if (globalStoreId)` guard on the sync effect — now switches to "All Stores" (empty) correctly when the TopNav selector is cleared.
+  - **QA accuracy endpoint optimised**: `GET /qa/accuracy/:store_id` replaced Python-side row-by-row counting with a single SQL `COUNT + SUM(CASE ...)` aggregate query — eliminates loading every feedback row into memory for stats computation.
+  - **ModelFeedback redundant call removed**: `reportsModelAccuracy()` was called twice (on mount and after retrain); now called only on mount and after retrain separately.
+  - **Reports date-mismatch fix** (routes_reports.py): `_image_only_dates()` helper appends placeholder rows for dates with images but no GPT sessions into both Footfall Detail and Validation downloads. `walkins-qa` endpoint now LEFT JOINs `onfly_image_state` by `(store, date, camera_id)` to return real `gdrive:` image IDs for QA Review thumbnails.
+
 ### 2026-05-01 - UX: Blank-first load, single filter, CSV dedup, run history controls
 - Changed paths:
   - `frontend/src/pages/Overview.tsx`

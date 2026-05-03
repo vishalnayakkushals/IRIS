@@ -262,6 +262,55 @@ def _enrich_walkin_rows(
     return enriched
 
 
+def _image_only_dates(
+    conn: Any,
+    store_id: str | None,
+    business_date: str | None,
+    exclude_keys: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Return image-state summary for dates that have images but no sessions."""
+    img_params: list[Any] = []
+    img_where: list[str] = ["date_display != ''"]
+    if store_id:
+        img_where.append("store_id = ?")
+        img_params.append(store_id)
+    if business_date:
+        img_where.append(
+            "(date_display = ? OR "
+            "(date_display GLOB '??-??-????' AND "
+            "SUBSTR(date_display,7,4)||'-'||SUBSTR(date_display,4,2)||'-'||SUBSTR(date_display,1,2) = ?))"
+        )
+        img_params.extend([business_date, business_date])
+    img_where_sql = " AND ".join(img_where)
+    cur = conn.execute(
+        f"""
+        SELECT
+            store_id,
+            CASE WHEN date_display GLOB '??-??-????' THEN
+                SUBSTR(date_display,7,4)||'-'||SUBSTR(date_display,4,2)||'-'||SUBSTR(date_display,1,2)
+            ELSE date_display END AS iso_date,
+            COUNT(*) AS total_images,
+            SUM(CASE WHEN COALESCE(yolo_relevant, 0) = 1 THEN 1 ELSE 0 END) AS relevant_images
+        FROM onfly_image_state
+        WHERE {img_where_sql}
+        GROUP BY store_id, date_display
+        ORDER BY iso_date DESC
+        """,
+        tuple(img_params),
+    )
+    result = []
+    for row in _row_dicts(cur):
+        key = (str(row.get("store_id") or ""), str(row.get("iso_date") or ""))
+        if key not in exclude_keys:
+            result.append({
+                "store_id": key[0],
+                "iso_date": key[1],
+                "total_images": int(row.get("total_images") or 0),
+                "relevant_images": int(row.get("relevant_images") or 0),
+            })
+    return result
+
+
 def _sqlite_runtime_summary(store_id: str | None = None, limit: int = 90) -> list[dict[str, Any]]:
     db_path = get_settings().db_path_obj
     if not db_path.exists():
@@ -409,7 +458,45 @@ def _sqlite_runtime_walkins(
             tuple(params + [max(1, int(limit))]),
         )
         rows = _row_dicts(cur)
-        return _enrich_walkin_rows(conn, rows)
+        enriched = _enrich_walkin_rows(conn, rows)
+
+        # Add placeholder rows for dates that have images but no sessions,
+        # so Footfall Detail covers the same date range as Store Summary.
+        session_keys = {(str(r.get("store_id") or ""), str(r.get("Date") or "")) for r in enriched}
+        for img in _image_only_dates(conn, store_id, business_date, session_keys):
+            total, relevant = img["total_images"], img["relevant_images"]
+            enriched.append({
+                "store_id": img["store_id"],
+                "Date": img["iso_date"],
+                "business_date": img["iso_date"],
+                "Walk-in ID": "—",
+                "Group ID": "—",
+                "Role": "—",
+                "Entry Time": "—",
+                "Exit Time": "—",
+                "Time Spent (mins)": "—",
+                "Session Status": "—",
+                "Entry Type": "—",
+                "Gender": "—",
+                "Age Band": "—",
+                "Attire / Visual Marker": "—",
+                "Primary Clothing": "—",
+                "Jewellery Load": "—",
+                "Bag Type": "—",
+                "Primary Clothing Style Archetype": "—",
+                "Engagement Type": "—",
+                "Engagement Depth": "—",
+                "Purchase Signal (Bag)": "—",
+                "Included in Analytics": "—",
+                "Source Image": f"[{total} images scanned, {relevant} YOLO-relevant — 0 GPT sessions]",
+                "Drive Actual Image Name": "—",
+                "Drive Folder Name": "—",
+                "Drive Image Link": "",
+                "Drive Relative Path": "",
+                "Seeded Data": "No",
+            })
+        enriched.sort(key=lambda r: str(r.get("Date") or ""), reverse=True)
+        return enriched
     finally:
         conn.close()
 
@@ -518,30 +605,48 @@ async def get_walkins_for_qa(
             where.append("store_id = ?")
             params.append(store_id)
         where_sql = f"WHERE {' AND '.join(where)}"
+        # Prefix walkin columns with w. to avoid ambiguity in the JOIN
+        w_where = " AND ".join(f"w.{c}" if c.startswith("store_id") else c for c in where)
+        w_params = params.copy()
+        if store_id:
+            # replace bare store_id param with w.store_id
+            w_where = w_where.replace("store_id = ?", "w.store_id = ?")
         cur = conn.execute(
             f"""
+            WITH cam_images AS (
+                -- Pick one representative image per (store, date, camera) for thumbnail
+                SELECT store_id, date_source, camera_id, MIN(image_id) AS rep_image_id
+                FROM onfly_image_state
+                GROUP BY store_id, date_source, camera_id
+            )
             SELECT
-                store_id,
-                image_id,
-                walkin_id,
-                COALESCE(business_date, date, '') AS date,
-                role,
-                COALESCE(entry_time, '') AS entry_time,
-                COALESCE(exit_time, '') AS exit_time,
-                COALESCE(time_spent_mins, '') AS time_spent_mins,
-                COALESCE(gender, '') AS gender,
-                COALESCE(age_band, '') AS age_band,
-                COALESCE(camera_id, '') AS camera_id,
-                COALESCE(first_seen_time, '') AS first_seen_time,
-                COALESCE(last_seen_time, '') AS last_seen_time,
-                COALESCE(included_in_analytics, '') AS included_in_analytics,
-                COALESCE(source_image_name, '') AS source_image_name
-            FROM onfly_walkin_sessions
-            {where_sql}
-            ORDER BY business_date DESC, entry_time ASC
+                w.store_id,
+                -- Prefer a real image_state image_id; fall back to session's own image_id
+                COALESCE(ci.rep_image_id, w.image_id, '') AS image_id,
+                w.walkin_id,
+                COALESCE(w.business_date, w.date, '') AS date,
+                w.role,
+                COALESCE(w.entry_time, '') AS entry_time,
+                COALESCE(w.exit_time, '') AS exit_time,
+                COALESCE(w.time_spent_mins, '') AS time_spent_mins,
+                COALESCE(w.gender, '') AS gender,
+                COALESCE(w.age_band, '') AS age_band,
+                COALESCE(w.camera_id, '') AS camera_id,
+                COALESCE(w.first_seen_time, '') AS first_seen_time,
+                COALESCE(w.last_seen_time, '') AS last_seen_time,
+                COALESCE(w.included_in_analytics, '') AS included_in_analytics,
+                COALESCE(w.source_image_name, '') AS source_image_name
+            FROM onfly_walkin_sessions w
+            LEFT JOIN cam_images ci
+              ON ci.store_id = w.store_id
+             AND ci.date_source = COALESCE(w.business_date, w.date, '')
+             AND ci.camera_id = w.camera_id
+            WHERE TRIM(COALESCE(w.role,'')) != ''
+            {"AND w.store_id = ?" if store_id else ""}
+            ORDER BY w.business_date DESC, w.entry_time ASC
             LIMIT ?
             """,
-            tuple(params + [max(1, int(limit))]),
+            tuple(([store_id] if store_id else []) + [max(1, int(limit))]),
         )
         return _row_dicts(cur)
     finally:
@@ -801,6 +906,41 @@ def _sqlite_walkin_image_map(
                         "GPT Status": str(match.get("gpt_status") or ""),
                     }
                 )
+        # Add rows for dates that have images but no sessions, so Validation
+        # covers the same date range as Store Summary.
+        session_keys = {(r["store_id"], r["Date"]) for r in mapped_rows}
+        for img in _image_only_dates(conn, store_id, business_date, session_keys):
+            total, relevant = img["total_images"], img["relevant_images"]
+            mapped_rows.append({
+                "store_id": img["store_id"],
+                "Date": img["iso_date"],
+                "Walk-in ID": "—",
+                "Group ID": "—",
+                "Role": "—",
+                "Gender": "—",
+                "Age Band": "—",
+                "Entry Time": "—",
+                "Exit Time": "—",
+                "Dwell (mins)": "—",
+                "In Analytics": "—",
+                "Purchase Signal": "—",
+                "Session Camera": "—",
+                "Session Source Image": f"{total} images scanned, {relevant} YOLO-relevant",
+                "Session Drive Folder": "—",
+                "Seeded Data": "No",
+                "Image Filename": "—",
+                "Drive Folder": "—",
+                "Drive Link": "",
+                "Image Camera": "—",
+                "Camera Match": "No sessions generated for this date",
+                "Image Time": "—",
+                "YOLO Relevant": f"{relevant}/{total}",
+                "YOLO People": 0,
+                "GPT Customers": 0,
+                "GPT Staff": 0,
+                "GPT Status": "skipped",
+            })
+        mapped_rows.sort(key=lambda r: str(r.get("Date") or ""), reverse=True)
         return mapped_rows
     finally:
         conn.close()

@@ -647,6 +647,15 @@ async def upload_logo(file: UploadFile, actor: str = Depends(get_current_user)) 
 # Employees
 # ---------------------------------------------------------------------------
 
+@router.get("/employees")
+async def list_all_employees_endpoint(_: str = Depends(get_current_user)) -> list[dict]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(employees).order_by(employees.c.store_id, employees.c.employee_name)
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
 @router.get("/employees/{store_id}")
 async def list_employees_endpoint(store_id: str, _: str = Depends(get_current_user)) -> list[dict]:
     async with AsyncSessionLocal() as session:
