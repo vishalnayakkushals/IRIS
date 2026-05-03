@@ -7,7 +7,6 @@ import {
   adminResetPassword,
   adminBulkResetPassword,
   adminListRoles,
-  adminListStores,
   adminReplaceStoreAccess,
 } from "../api/client";
 import { Card, Title, Text, Badge } from "@tremor/react";
@@ -15,42 +14,10 @@ import { Plus, Pencil, Trash2, X, Check, Eye, EyeOff, RefreshCw } from "lucide-r
 
 const DEFAULT_PASSWORD = "user12345";
 
-function StoreSearchSelect({ stores, value, onChange }: {
-  stores: any[]; value: string; onChange: (v: string) => void;
-}) {
-  const [search, setSearch] = useState("");
-  const filtered = stores.filter((s) =>
-    !search || `${s.store_id} ${s.store_name}`.toLowerCase().includes(search.toLowerCase())
-  );
-  return (
-    <div className="space-y-1">
-      <input
-        className="iris-input text-xs"
-        placeholder="Search store…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-      <select
-        className="iris-select"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        size={Math.min(5, filtered.length + 1)}
-      >
-        <option value="">— none —</option>
-        {filtered.map((s) => (
-          <option key={s.store_id} value={s.store_id}>
-            {s.store_id} — {s.store_name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 function UserForm({
-  initial, roles, stores, onSave, onCancel, isNew,
+  initial, roles, onSave, onCancel, isNew,
 }: {
-  initial: any; roles: any[]; stores: any[]; onSave: (v: any) => Promise<void>; onCancel: () => void; isNew: boolean;
+  initial: any; roles: any[]; onSave: (v: any) => Promise<void>; onCancel: () => void; isNew: boolean;
 }) {
   const [v, setV] = useState({
     email: initial.email || "",
@@ -139,10 +106,6 @@ function UserForm({
             )}
           </div>
         )}
-        <div>
-          <label className="iris-label">Default Store</label>
-          <StoreSearchSelect stores={stores} value={v.store_id} onChange={(val) => setV({ ...v, store_id: val })} />
-        </div>
         <div className="flex items-center gap-2 pt-2">
           <input type="checkbox" id="active" checked={v.is_active} onChange={(e) => setV({ ...v, is_active: e.target.checked })} className="rounded border-slate-300 text-blue-600" />
           <label htmlFor="active" className="text-sm text-slate-600">Active</label>
@@ -212,7 +175,6 @@ function PasswordCell({ hint, email, onReset }: { hint: string; email: string; o
 export default function UsersPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
-  const [stores, setStores] = useState<any[]>([]);
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [toast, setToast] = useState("");
@@ -222,10 +184,9 @@ export default function UsersPage() {
   function flashImportant(msg: string) { setImportantToast(msg); setTimeout(() => setImportantToast(""), 10000); }
 
   async function load() {
-    const [u, r, s] = await Promise.all([adminListUsers(), adminListRoles(), adminListStores()]);
+    const [u, r] = await Promise.all([adminListUsers(), adminListRoles()]);
     setUsers(u.data);
     setRoles(r.data);
-    setStores(s.data);
   }
 
   useEffect(() => { load(); }, []);
@@ -322,7 +283,7 @@ export default function UsersPage() {
       </div>
 
       {showNew && (
-        <UserForm initial={{ is_active: true }} roles={roles} stores={stores} onSave={handleCreate} onCancel={() => setShowNew(false)} isNew />
+        <UserForm initial={{ is_active: true }} roles={roles} onSave={handleCreate} onCancel={() => setShowNew(false)} isNew />
       )}
 
       <Card className="p-0 overflow-hidden">
@@ -368,7 +329,7 @@ export default function UsersPage() {
                   {editing === u.email && (
                     <tr key={`edit-${u.email}`}>
                       <td colSpan={7} className="px-5 py-3">
-                        <UserForm initial={u} roles={roles} stores={stores} onSave={handleUpdate} onCancel={() => setEditing(null)} isNew={false} />
+                        <UserForm initial={u} roles={roles} onSave={handleUpdate} onCancel={() => setEditing(null)} isNew={false} />
                       </td>
                     </tr>
                   )}
