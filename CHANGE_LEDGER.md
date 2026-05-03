@@ -11,6 +11,14 @@ It records what changed, where it changed, and why.
 4. Always list exact changed paths (relative paths).
 5. Keep summaries short, factual, and implementation-focused.
 
+### 2026-05-03 - Remove Default Store Field From Users Form
+
+- Changed paths:
+  - `frontend/src/pages/UsersPage.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Default Store field removed from Users form**: The store-assignment dropdown (`StoreSearchSelect`) was removed from both the Add User and Edit User forms. Store access is now managed exclusively via the Store Access page (dual listbox). Removed `StoreSearchSelect` component, `stores` state, `adminListStores()` call, and the `stores` prop from `UserForm`. The `store_id` value is preserved in the database for existing users and still sent to the API on update; it is simply no longer editable from this page.
+
 ### 2026-05-03 - Store Access Dual Listbox, YOLO+GPT Parallel, Login Forgot Password, User Password Change
 
 - Changed paths:
