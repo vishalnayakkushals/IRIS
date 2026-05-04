@@ -88,6 +88,26 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-04 - Storage Optimization (Zero Waste, 7-Day Retention, S3 Config Toggle)
+
+- Changed paths:
+  - ackend/app/config.py
+  - ackend/app/celery_app/worker.py
+  - ackend/app/celery_app/tasks/drive_sync.py
+  - ackend/app/celery_app/tasks/cleanup.py (new)
+  - src/iris/onfly_pipeline.py
+  - src/iris/drive_delta_sync.py
+  - scripts/yolo_relevance_scan.py
+  - docs/AI_HANDOVER_STORAGE.md (new)
+- Summary:
+  - **Zero Waste Policy**: onfly_pipeline.py and yolo_relevance_scan.py now instantly delete the local image file (Path.unlink()) if YOLO detects no people (
+elevant == 0).
+  - **Drive Sync Redownload Guard**: drive_delta_sync.py was updated to check the store_source_file_index database table for source_file_id. It now skips downloading files that have already been tracked, preventing the sync from endlessly redownloading images deleted by the Zero Waste policy.
+  - **7-Day Retention Policy**: Added cleanup_old_images_task to celery_app/tasks/cleanup.py and scheduled it to run daily at 2:00 AM via Celery beat. It sweeps data/stores/ and permanently deletes any images older than 7 days.
+  - **S3 Config Toggle**: Added enable_s3_storage to config.py (defaults to False). The Google Drive pipeline is maintained as the primary source. Setting the S3 flag to True bypasses Drive sync and logs an S3 stub, ready for IT integration.
+  - **AI Handover**: Created docs/AI_HANDOVER_STORAGE.md explaining the storage rules and S3 transition strategy for future agents.
+
+
 ### 2026-05-03 - Fix GOOGLE_API_KEY Not Reaching Pipeline, Fix UNIQUE Constraint Crash
 
 - Changed paths:

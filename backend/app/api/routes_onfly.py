@@ -762,6 +762,7 @@ async def _check_and_trigger_auto_syncs() -> None:
                 stores.c.store_id,
                 stores.c.drive_folder_url,
                 stores.c.sync_interval_hours,
+                stores.c.gpt_enabled,
             ).where(
                 stores.c.sync_enabled.is_(True),
                 stores.c.drive_folder_url.isnot(None),
@@ -804,7 +805,7 @@ async def _check_and_trigger_auto_syncs() -> None:
             store_id,
             s["drive_folder_url"],
             "scheduler",
-            False,
+            bool(s.get("gpt_enabled", True)),
             False,
             get_settings().max_images,
             False,
