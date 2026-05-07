@@ -1,21 +1,4 @@
 services:
-  iris:
-    image: iris-app:latest
-    build:
-      context: ${IRIS_BUILD_CONTEXT:-..}
-      dockerfile: ${IRIS_DOCKERFILE:-deploy/Dockerfile}
-      args:
-        IRIS_ENABLE_YOLO: ${IRIS_ENABLE_YOLO:-1}
-        IRIS_ENABLE_DEEPFACE: ${IRIS_ENABLE_DEEPFACE:-0}
-    ports:
-      - "8765:8765"
-    restart: unless-stopped
-    volumes:
-      - ${IRIS_DATA_DIR:-../data}:/app/data
-    environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-    command: ["streamlit", "run", "src/run_dashboard.py", "--server.address=0.0.0.0", "--server.port=8765", "--browser.serverAddress=localhost"]
-
   iris-scheduler:
     image: iris-app:latest
     restart: unless-stopped
@@ -178,8 +161,6 @@ services:
         "--workers",
         "${IRIS_SYNC_WORKERS:-6}"
       ]
-
-  # ── New Phase 1 services: React + FastAPI + Celery + Redis ─────────────────
 
   redis:
     image: redis:7-alpine

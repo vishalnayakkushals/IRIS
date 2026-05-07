@@ -108,6 +108,19 @@ elevant == 0).
   - **AI Handover**: Created docs/AI_HANDOVER_STORAGE.md explaining the storage rules and S3 transition strategy for future agents.
 
 
+### 2026-05-04 - Fix GPT Disabled: Scheduler Hardcoded gpt_enabled=False
+
+- Changed paths:
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/db/canonical_metadata.py`
+  - `data/store_registry.db` (data fix — 6,625 rows reset, not committed)
+- Summary:
+  - **Root cause from data**: `_check_and_trigger_auto_syncs()` passed hardcoded `False` as `gpt_enabled` to every scheduled run, marking all YOLO-relevant images as `gpt_status='disabled'`. Evidence: 6,622 disabled images vs 11 GPT-done (the one manual run on 2026-05-01 where user ticked GPT ON in UI).
+  - **Fix — scheduler**: Changed hardcoded `False` to `bool(s.get("gpt_enabled", True))`. Added `stores.c.gpt_enabled` to the scheduler SELECT query.
+  - **Fix — DB schema**: Added `gpt_enabled BOOLEAN DEFAULT true` to `stores` in `canonical_metadata.py`. Ran `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration on Postgres. BLRRRN confirmed `gpt_enabled=True`.
+  - **Data fix**: Reset 6,625 `gpt_status='disabled'` images (where `yolo_relevant=1`) to `gpt_status='pending'` in SQLite — queued for GPT on next run.
+  - **Remaining blocker**: `OPENAI_API_KEY` must be set in `.env` for GPT to execute. Add `OPENAI_API_KEY=sk-...` to `.env` and restart the server.
+
 ### 2026-05-03 - Fix GOOGLE_API_KEY Not Reaching Pipeline, Fix UNIQUE Constraint Crash
 
 - Changed paths:
@@ -859,6 +872,38 @@ Use this template for each new change:
 ```
 
 ## Change Entries
+
+### 2026-05-07 | Streamlit fully retired — React + FastAPI is now the only UI
+
+- Summary:
+  - Deleted `src/iris/iris_dashboard.py` (8,410-line Streamlit dashboard — fully superseded by React).
+  - Deleted `src/run_dashboard.py` (Streamlit entrypoint wrapper).
+  - Deleted `scripts/start_web_app.py` (Streamlit port-8765 launcher).
+  - Deleted `deploy/Dockerfile` (legacy Streamlit container build).
+  - Deleted `deploy/requirements.docker.txt` (Streamlit-only dependency list).
+  - Deleted `fix_login.py` and `patch.py` from repo root (one-time throwaway scripts).
+  - Removed `streamlit>=1.40,<2.0` and `plotly>=5.24,<6.0` and `pyarrow>=15.0,<16.0` from `requirements.txt` (Streamlit-only deps, unused in pipeline or API).
+  - Removed `iris` service (Streamlit, port 8765) from `deploy/docker-compose.yml`.
+  - Removed stale "New Phase 1 services" comment from `docker-compose.yml`.
+  - Rewrote `README.md` from scratch — now describes the current React + FastAPI architecture, run commands, project structure, and pipeline flow. Old README was entirely about Streamlit.
+  - Updated `AGENTS.md`: added all deleted files to Deleted/Removed Modules table; replaced Docker Build Mode section with clean local/Docker start commands.
+  - Built React frontend (`npm run build`) — zero TypeScript errors, zero warnings. All 20 pages and 3,884 modules compiled cleanly.
+  - Copied fresh build to `backend/app/static/`.
+- Touched paths:
+  - `src/iris/iris_dashboard.py` — DELETED
+  - `src/run_dashboard.py` — DELETED
+  - `scripts/start_web_app.py` — DELETED
+  - `deploy/Dockerfile` — DELETED
+  - `deploy/requirements.docker.txt` — DELETED
+  - `fix_login.py` — DELETED
+  - `patch.py` — DELETED
+  - `requirements.txt` — removed streamlit, plotly, pyarrow
+  - `deploy/docker-compose.yml` — removed iris service
+  - `README.md` — full rewrite
+  - `AGENTS.md` — deleted modules table updated, deploy commands updated
+  - `backend/app/static/` — refreshed with new React build
+  - `docs/deployment/scaling-analysis-150-stores.md` — DELETED (superseded by IRIS-Server-Requirement-150-Stores.md)
+  - `docs/deployment/IRIS-Server-Requirement-150-Stores.md` — NEW (AWS EC2 spec for 150-store production)
 
 ### 2026-04-28 | Port consolidation + AI handoff guide + auto-sync toggle + config cleanup
 - Summary:

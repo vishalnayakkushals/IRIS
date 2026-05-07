@@ -23,8 +23,15 @@
 
 | Module/File | Reason |
 |---|---|
-| `CTO/` (entire directory) | Standalone Streamlit HTTP response-time observer (perf_cycle.py etc). No production dependency. Deleted 2026-05-03. |
-| `tools/cto_bot/` (entire directory) | Health-check bot running pytest + py_compile + pip --version, logging JSON reports. No production dependency. Deleted 2026-05-03. |
+| `src/iris/iris_dashboard.py` | Streamlit dashboard (8,410 lines). Fully replaced by React + FastAPI. Deleted 2026-05-07. |
+| `src/run_dashboard.py` | Streamlit entrypoint wrapper. No longer needed. Deleted 2026-05-07. |
+| `scripts/start_web_app.py` | Streamlit local launcher (port 8765). Replaced by `scripts/start_api_server.py`. Deleted 2026-05-07. |
+| `deploy/Dockerfile` | Legacy Streamlit container build. FastAPI uses `backend/Dockerfile`. Deleted 2026-05-07. |
+| `deploy/requirements.docker.txt` | Streamlit-only dependency list. Deleted 2026-05-07. |
+| `fix_login.py` | One-time password reset script left in root. Deleted 2026-05-07. |
+| `patch.py` | One-time drive_delta_sync patch script. Deleted 2026-05-07. |
+| `CTO/` (entire directory) | Standalone Streamlit HTTP response-time observer. Deleted 2026-05-03. |
+| `tools/cto_bot/` (entire directory) | Health-check bot. No production dependency. Deleted 2026-05-03. |
 
 ## Admin Pages — Global Store Context
 
@@ -61,20 +68,14 @@ GPT runs in a **batch phase after YOLO completes** — not interleaved per-image
 ## Standard Local Deploy Commands
 
 ```powershell
+# No-Docker (development, port 8767)
+cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
+python scripts/start_api_server.py
+
+# Docker (port 8766)
 cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
 git pull origin main
 docker compose -f deploy/docker-compose.yml down
-docker compose -f deploy/docker-compose.yml build
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-## Docker Build Mode
-
-- Default: lightweight build (`IRIS_ENABLE_YOLO=0`) for faster startup.
-- Full YOLO build when needed:
-
-```powershell
-$env:IRIS_ENABLE_YOLO="1"
 docker compose -f deploy/docker-compose.yml build
 docker compose -f deploy/docker-compose.yml up -d
 ```
