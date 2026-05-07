@@ -819,6 +819,10 @@ def init_onfly_tables(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_seen ON onfly_image_state(store_id, last_seen_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_date ON onfly_image_state(store_id, date_display, date_source)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_image ON onfly_walkin_sessions(store_id, image_id)")
+        # Covering indexes for the summary GROUP BY query (store_id + date + yolo_relevant avoids
+        # a full table scan when computing daily walkin/conversion/dwell rollups).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_summary_cover ON onfly_image_state(store_id, date_display, yolo_relevant)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_bizdate ON onfly_walkin_sessions(store_id, business_date)")
         existing_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(onfly_walkin_sessions)").fetchall()}
         for col_name, col_def in [
             ("source_image_name", "TEXT NOT NULL DEFAULT ''"),

@@ -317,6 +317,16 @@ export const reportsDownloadValidationMap = (storeId?: string, date?: string, li
   if (date) params.set("business_date", date);
   return api.get(`/reports/download/walkin-image-map?${params}`, { responseType: "blob" });
 };
+export const reportsExportStart = (exportType: string, storeId?: string, businessDate?: string) => {
+  const params = new URLSearchParams({ export_type: exportType });
+  if (storeId) params.set("store_id", storeId);
+  if (businessDate) params.set("business_date", businessDate);
+  return api.post<{ job_id: string }>(`/reports/export/start?${params}`);
+};
+export const reportsExportStatus = (jobId: string) =>
+  api.get<{ status: string; filename: string; error: string }>(`/reports/export/status/${jobId}`);
+export const reportsExportDownload = (jobId: string) =>
+  api.get(`/reports/export/download/${jobId}`, { responseType: "blob" });
 
 // ── On-fly pipeline (no Celery) ───────────────────────────────────────────────
 export const onFlyListStores = () => api.get<any[]>("/onfly/stores");

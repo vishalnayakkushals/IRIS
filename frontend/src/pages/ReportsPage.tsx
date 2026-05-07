@@ -5,11 +5,10 @@ import {
   reportsWalkins,
   reportsImageScans,
   reportsValidationMap,
-  reportsDownloadSummary,
-  reportsDownloadWalkins,
-  reportsDownloadImageScans,
-  reportsDownloadValidationMap,
   onFlyLiveProgress,
+  reportsExportStart,
+  reportsExportStatus,
+  reportsExportDownload,
 } from "../api/client";
 import { Card, Title, Text, Badge, Metric } from "@tremor/react";
 import { useStore } from "../context/StoreContext";
@@ -28,30 +27,41 @@ function triggerDownload(filename: string, blob: Blob) {
   URL.revokeObjectURL(url);
 }
 
-function toCSV(rows: any[], cols?: string[]): string {
-  if (!rows.length) return "";
-  const keys = cols ?? Object.keys(rows[0]);
-  const escape = (v: any) => {
-    const s = String(v ?? "");
-    return s.includes(",") || s.includes('"') || s.includes("\n")
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  return [keys.join(","), ...rows.map((r) => keys.map((k) => escape(r[k])).join(","))].join("\n");
-}
-
-function csvFallback(filename: string, rows: any[], cols?: string[]) {
-  triggerDownload(filename, new Blob([toCSV(rows, cols)], { type: "text/csv;charset=utf-8;" }));
-}
-
-function DownloadBtn({ label, onClick }: { label: string; onClick: () => void }) {
+function DownloadBtn({ label, onClick, loading }: { label: string; onClick: () => void; loading?: boolean }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition"
+      disabled={loading}
+      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition disabled:opacity-50 disabled:cursor-wait"
     >
-      <Download size={13} />
-      {label}
+      <Download size={13} className={loading ? "animate-bounce" : ""} />
+      {loading ? "Preparing…" : label}
     </button>
+  );
+}
+
+type ToastItem = { id: number; msg: string; type: "loading" | "success" | "error" };
+
+function ToastStack({ toasts }: { toasts: ToastItem[] }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="fixed bottom-6 right-6 z-[500] flex flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium text-white transition-all ${
+            t.type === "loading" ? "bg-blue-600" :
+            t.type === "success" ? "bg-emerald-600" : "bg-rose-600"
+          }`}
+        >
+          {t.type === "loading" && <Download size={14} className="animate-bounce shrink-0" />}
+          {t.type === "success" && <Download size={14} className="shrink-0" />}
+          {t.type === "error"   && <span className="shrink-0 font-bold">!</span>}
+          {t.msg}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -362,6 +372,8 @@ export default function ReportsPage() {
   const [validationRows, setValidationRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [liveProgress, setLiveProgress] = useState<any>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [exportingTab, setExportingTab] = useState<string | null>(null);
   // Tracks which tabs have already been fetched for the current store selection.
   // Switching tabs reuses cached data; store change clears everything.
   const [fetchedTabs, setFetchedTabs] = useState<Set<string>>(new Set());
@@ -487,49 +499,33 @@ export default function ReportsPage() {
     }
   }
 
-  function downloadSummary() {
-    reportsDownloadSummary(selectedStore || undefined)
-      .then(({ data }) => triggerDownload(`summary_${tag}_${todayTag}.csv`, data as Blob))
-      .catch(() => csvFallback(`summary_${tag}_${todayTag}.csv`, summaryRows.map(r => ({
-        Store: storeMap[r.store_id] || r.store_id,
-        Date: r.business_date,
-        "Walk-ins": r.walkins,
-        Conversions: r.conversions,
-        "Conv. Rate %": (r.conversion_rate * 100).toFixed(1),
-        "Avg Dwell (mins)": r.avg_dwell_mins?.toFixed(1),
-        "Relevant Images": r.relevant_images,
-        "Raw Images": r.raw_images,
-      }))));
-  }
-
-  function downloadWalkins() {
-    reportsDownloadWalkins(selectedStore || undefined)
-      .then(({ data }) => triggerDownload(`walkins_${tag}_${todayTag}.csv`, data as Blob))
-      .catch(() => csvFallback(`walkins_${tag}_${todayTag}.csv`, walkinRows.map(r => ({
-        Store: storeMap[r.store_id] || r.store_id,
-        ...Object.fromEntries(WALKIN_COLS.map(c => [c.label, r[c.key] ?? ""])),
-      }))));
-  }
-
-  function downloadScans() {
-    reportsDownloadImageScans(selectedStore || undefined)
-      .then(({ data }) => triggerDownload(`image_scans_${tag}_${todayTag}.csv`, data as Blob))
-      .catch(() => csvFallback(`image_scans_${tag}_${todayTag}.csv`, scanRows.map(r => ({
-        Store: storeMap[r.store_id] || r.store_id,
-        Image: r.image_name, Date: r.business_date, Camera: r.camera_id || "",
-        "YOLO Relevant": r.yolo_relevant ? "Yes" : "No",
-        "Person Count": r.person_count, "GPT Status": r.gpt_status || "",
-        Customers: r.customer_count, Staff: r.staff_count,
-      }))));
-  }
-
-  function downloadValidation() {
-    reportsDownloadValidationMap(selectedStore || undefined)
-      .then(({ data }) => triggerDownload(`validation_${tag}_${todayTag}.csv`, data as Blob))
-      .catch(() => csvFallback(`validation_${tag}_${todayTag}.csv`, validationRows.map(r => ({
-        Store: storeMap[r.store_id] || r.store_id,
-        ...Object.fromEntries([...SESSION_COLS, ...IMAGE_COLS].map((c: {key: string; label: string}) => [c.label, r[c.key] ?? ""])),
-      }))));
+  async function startExport(exportType: string) {
+    if (exportingTab) return;
+    setExportingTab(exportType);
+    const toastId = Date.now();
+    setToasts((prev) => [...prev, { id: toastId, msg: "Preparing download…", type: "loading" }]);
+    try {
+      const { data: job } = await reportsExportStart(exportType, selectedStore || undefined);
+      const jobId = job.job_id;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const { data: status } = await reportsExportStatus(jobId);
+        if (status.status === "ready") {
+          const { data: blob } = await reportsExportDownload(jobId);
+          triggerDownload(status.filename || `${exportType}_${tag}_${todayTag}.csv`, blob as Blob);
+          setToasts((prev) => prev.map((t) => t.id === toastId ? { ...t, msg: "Download ready!", type: "success" } : t));
+          setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== toastId)), 3000);
+          return;
+        }
+        if (status.status === "failed") throw new Error(status.error || "Export failed");
+      }
+      throw new Error("Export timed out after 60 seconds");
+    } catch (err: any) {
+      setToasts((prev) => prev.map((t) => t.id === toastId ? { ...t, msg: err?.message || "Export failed", type: "error" } : t));
+      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== toastId)), 5000);
+    } finally {
+      setExportingTab(null);
+    }
   }
 
   return (
@@ -609,6 +605,7 @@ export default function ReportsPage() {
             <label className="iris-label">Rows Per Page</label>
             <select
               className="iris-select"
+              title="Rows Per Page"
               value={pageSize}
               onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
             >
@@ -652,10 +649,11 @@ export default function ReportsPage() {
                 >Next →</button>
               </div>
             )}
-            {reportView === "summary" && <DownloadBtn label="Download CSV" onClick={downloadSummary} />}
-            {reportView === "walkins" && <DownloadBtn label="Download CSV" onClick={downloadWalkins} />}
-            {reportView === "image_scans" && <DownloadBtn label="Download CSV" onClick={downloadScans} />}
-            {reportView === "validation" && <DownloadBtn label="Download CSV" onClick={downloadValidation} />}
+            <DownloadBtn
+              label="Download CSV"
+              loading={exportingTab === reportView}
+              onClick={() => void startExport(reportView)}
+            />
           </div>
         </div>
 
@@ -687,6 +685,7 @@ export default function ReportsPage() {
         </Card>
       </Card>
       </>
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

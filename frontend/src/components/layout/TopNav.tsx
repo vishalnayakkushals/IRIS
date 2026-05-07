@@ -1,8 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { User, LogOut, ChevronDown, Search, Store } from "lucide-react";
-import { adminGetSettings, getMe } from "../../api/client";
+import { adminGetSettings, getMe, reportsSummary } from "../../api/client";
 import { useStore } from "../../context/StoreContext";
+
+const PREFETCH_DELAY_MS = 200;
+const PREFETCH_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function prefetchStoreSummary(storeId: string) {
+  const key = `rp-v1:${storeId}:summary`;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      const { ts } = JSON.parse(raw) as { ts: number };
+      if (Date.now() - ts < PREFETCH_CACHE_TTL_MS) return; // still warm
+    }
+  } catch { /* ignore */ }
+  reportsSummary(storeId, 180)
+    .then((r) => {
+      try { sessionStorage.setItem(key, JSON.stringify({ rows: r.data, ts: Date.now() })); } catch { /* quota */ }
+    })
+    .catch(() => { /* silent — prefetch is best-effort */ });
+}
 
 function StoreDropdown() {
   const { storeId, setStoreId, stores } = useStore();
@@ -10,6 +29,7 @@ function StoreDropdown() {
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const prefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Prefer stores with Drive link + sync enabled; fall back to all stores if none qualify
   const syncReady = stores.filter((s) => s.sync_enabled && s.drive_folder_url?.trim());
@@ -47,10 +67,21 @@ function StoreDropdown() {
     setQuery("");
   }
 
+  function handleStoreHover(id: string) {
+    if (!id) return;
+    if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
+    prefetchTimer.current = setTimeout(() => prefetchStoreSummary(id), PREFETCH_DELAY_MS);
+  }
+
+  function handleStoreLeave() {
+    if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
+  }
+
   return (
     <div ref={ref} className="relative flex-1 flex items-center justify-center">
       {/* Trigger button */}
       <button
+        type="button"
         onClick={openDropdown}
         className="flex items-center gap-2 h-9 px-3 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium shadow-sm hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-colors min-w-[200px] max-w-[320px] w-full sm:w-auto"
       >
@@ -89,6 +120,7 @@ function StoreDropdown() {
             {/* Always-visible All Stores option */}
             {!query.trim() && (
               <button
+                type="button"
                 onClick={() => select("")}
                 className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-blue-50 transition-colors border-b border-slate-100 ${
                   !storeId ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500"
@@ -103,8 +135,11 @@ function StoreDropdown() {
             ) : (
               filtered.map((s) => (
                 <button
+                  type="button"
                   key={s.store_id}
                   onClick={() => select(s.store_id)}
+                  onMouseEnter={() => handleStoreHover(s.store_id)}
+                  onMouseLeave={handleStoreLeave}
                   className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-blue-50 transition-colors ${
                     s.store_id === storeId ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-700"
                   }`}
@@ -176,6 +211,7 @@ export function TopNav() {
       {/* Profile dropdown */}
       <div className="shrink-0" ref={profileRef}>
         <button
+          type="button"
           onClick={() => setProfileOpen((o) => !o)}
           className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-muted transition-colors"
         >
@@ -200,6 +236,7 @@ export function TopNav() {
             )}
             <div className="py-1">
               <button
+                type="button"
                 onClick={logout}
                 className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-medium text-rose-600 hover:bg-rose-50 active:bg-rose-100 transition-colors rounded-b-xl"
               >

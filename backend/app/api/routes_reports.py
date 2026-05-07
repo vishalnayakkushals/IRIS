@@ -6,11 +6,13 @@ import csv
 import io
 import re
 import sqlite3
+import threading
+import uuid
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -786,6 +788,117 @@ async def download_image_scans(
     tag = store_id or "all"
     date_tag = business_date or "all_dates"
     return _rows_to_csv_response(rows, f"image_scans_{tag}_{date_tag}.csv")
+
+
+# ---------------------------------------------------------------------------
+# Background CSV export — no Redis, no Celery, no extra infrastructure.
+# Jobs are held in-process memory (dict). Files stay as bytes. Auto-purged
+# after 10 minutes. UUID job IDs are unguessable so no extra auth needed on
+# the download endpoint beyond the standard JWT check.
+# ---------------------------------------------------------------------------
+
+_export_jobs: dict[str, dict[str, Any]] = {}
+_export_jobs_lock = threading.Lock()
+_EXPORT_TTL_SECONDS = 600  # 10 min
+
+
+def _cleanup_old_export_jobs() -> None:
+    cutoff = datetime.utcnow().timestamp() - _EXPORT_TTL_SECONDS
+    with _export_jobs_lock:
+        stale = [jid for jid, j in _export_jobs.items() if j["ts"] < cutoff]
+        for jid in stale:
+            _export_jobs.pop(jid, None)
+
+
+def _run_export_job(
+    job_id: str,
+    export_type: str,
+    store_id: str | None,
+    business_date: str | None,
+) -> None:
+    try:
+        if export_type == "summary":
+            rows = _sqlite_runtime_summary(store_id=store_id, limit=100_000)
+            filename = f"summary_{store_id or 'all'}.csv"
+        elif export_type == "walkins":
+            rows = _sqlite_runtime_walkins(store_id=store_id, business_date=business_date, limit=100_000)
+            filename = f"walkins_{store_id or 'all'}.csv"
+        elif export_type == "image_scans":
+            rows = _sqlite_runtime_image_scans(store_id=store_id, business_date=business_date, limit=100_000)
+            filename = f"image_scans_{store_id or 'all'}.csv"
+        elif export_type == "validation":
+            rows = _sqlite_walkin_image_map(store_id=store_id, business_date=business_date, limit=100_000)
+            filename = f"validation_{store_id or 'all'}.csv"
+        else:
+            raise ValueError(f"Unknown export type: {export_type}")
+
+        cols = list(rows[0].keys()) if rows else []
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=cols)
+        if cols:
+            writer.writeheader()
+            writer.writerows(rows)
+        data = buf.getvalue().encode("utf-8")
+
+        with _export_jobs_lock:
+            _export_jobs[job_id].update({"status": "ready", "data": data, "filename": filename})
+    except Exception as exc:
+        with _export_jobs_lock:
+            if job_id in _export_jobs:
+                _export_jobs[job_id].update({"status": "failed", "error": str(exc)})
+
+
+@router.post("/export/start")
+async def start_export(
+    export_type: str,
+    store_id: str | None = None,
+    business_date: str | None = None,
+    _: str = Depends(get_current_user),
+) -> dict[str, str]:
+    _cleanup_old_export_jobs()
+    job_id = uuid.uuid4().hex[:20]
+    with _export_jobs_lock:
+        _export_jobs[job_id] = {
+            "status": "pending",
+            "data": None,
+            "filename": "",
+            "ts": datetime.utcnow().timestamp(),
+        }
+    threading.Thread(
+        target=_run_export_job,
+        args=(job_id, export_type, store_id, business_date),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id}
+
+
+@router.get("/export/status/{job_id}")
+async def export_status(
+    job_id: str,
+    _: str = Depends(get_current_user),
+) -> dict[str, str]:
+    job = _export_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Export job not found or expired")
+    return {
+        "status": job["status"],
+        "filename": job.get("filename", ""),
+        "error": job.get("error", ""),
+    }
+
+
+@router.get("/export/download/{job_id}")
+async def export_download(
+    job_id: str,
+    _: str = Depends(get_current_user),
+) -> StreamingResponse:
+    job = _export_jobs.get(job_id)
+    if not job or job["status"] != "ready" or not job.get("data"):
+        raise HTTPException(status_code=404, detail="Export not ready or expired")
+    data: bytes = job["data"]
+    filename = job.get("filename", "export.csv")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8", headers=headers)
 
 
 # ---------------------------------------------------------------------------
