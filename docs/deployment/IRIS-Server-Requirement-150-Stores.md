@@ -19,7 +19,7 @@ This document provides the AWS infrastructure specification required to deploy I
 | Step | What Happens | Where It Runs |
 |---|---|---|
 | Image Sync | Downloads new camera snapshots from Google Drive | Celery Worker (EC2) |
-| YOLO Scan | AI scans each image — does it contain a person? Yes/No | Celery Worker (EC2) — CPU only |
+| ONNX Scan | AI scans each image — does it contain a person? Yes/No. Runs `yolov8s.onnx` via ONNX Runtime (no PyTorch). | Celery Worker (EC2) — CPU only |
 | GPT Analysis | Relevant images sent to OpenAI for customer/staff classification | OpenAI API (external) |
 | Report Storage | Only text results saved — counts, roles, timestamps | RDS PostgreSQL |
 | Dashboard | React web app served to store managers / analysts | App Server (EC2) |
@@ -76,7 +76,9 @@ This is the primary compute instance. YOLO AI inference runs on CPU and requires
 > t3 instances are "burstable" — they run at reduced CPU when credit runs out. YOLO inference is a sustained workload running 24×7. A c6i gives consistent, full CPU performance at all times and avoids pipeline slowdowns during peak hours.
 
 > **Why not a GPU instance?**
-> The YOLO model used (YOLOv8 nano) is specifically designed for CPU inference. A GPU instance (g4dn) costs 2.5× more and provides minimal speed improvement for this task. Not recommended.
+> The YOLO model used (YOLOv8s, served via ONNX Runtime) is designed for CPU inference. A GPU instance (g4dn) costs 2.5× more and provides minimal speed improvement for this task. Not recommended.
+>
+> **Inference library update (2026-05-07):** PyTorch and ultralytics have been replaced with ONNX Runtime on the server. The model (`yolov8s.onnx`) is identical weights, but ONNX Runtime has no PyTorch dependency. This reduces the server Python environment from ~420 MB to ~175 MB and inference time by 2×. The `c6i.2xlarge` recommendation is unchanged — the workload is still sustained CPU inference.
 
 ---
 

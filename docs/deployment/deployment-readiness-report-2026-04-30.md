@@ -79,17 +79,26 @@ IRIS is an anonymous retail intelligence platform. It ingests timestamped camera
 
 | Technology | Version | Where Used | Why Used |
 |---|---|---|---|
-| **YOLOv8n (ultralytics)** | `>=8.3` | YOLO relevance scan — filters camera images that contain people | State-of-the-art real-time object detection; `yolov8n` (nano) runs on CPU without GPU. Fastest path to "does this frame have a person?" |
+| **YOLOv8s (ONNX Runtime)** | `onnxruntime>=1.18` | YOLO relevance scan — filters camera images that contain people | YOLOv8s exported to ONNX format (`yolov8s.onnx`). ONNX Runtime runs inference with no PyTorch or ultralytics dependency. Same model weights, 2× faster, ~245 MB smaller server footprint. |
 | **OpenAI GPT-4.1-mini** | API call | Semantic analysis of YOLO-relevant frames — identifies customer vs staff vs banner vs pedestrian, extracts count, purchase signals | Eliminates need for custom classification model. GPT vision understands retail context out of the box |
-| **OpenCV (headless)** | `4.10.0.84` | Image pre-processing before YOLO and GPT | Industry standard for image I/O and manipulation in Python |
+| **OpenCV (headless)** | `>=4.10` | Image pre-processing for YOLO (letterbox resize matching YOLO's internal pipeline), color histogram for staff shirt matching | Industry standard for image I/O and manipulation. Also used as HOG fallback detector if ONNX unavailable. |
 | **Pillow** | `>=10.4` | Image compression/optimization for employee uploads and Drive-synced images | Lightweight image library for JPEG normalization |
-| **NumPy** | `>=1.26` | Numerical operations in analysis pipeline | YOLO and OpenCV return NumPy arrays natively |
+| **NumPy** | `>=1.26` | Numerical operations in analysis pipeline — NMS, tensor reshape, box decoding | ONNX Runtime and OpenCV return NumPy arrays natively |
 | **Pandas** | `>=2.2` | CSV export, session data aggregation, report generation | Standard dataframe library; used for all report building |
+
+**ONNX migration detail (2026-05-07):**
+
+- `yolov8s.pt` → `yolov8s.onnx` exported once on dev machine (`scripts/export_onnx.py`)
+- `yolov8s.onnx` (44.9 MB) committed to repo — server gets it on `git pull`, no manual copy
+- `torch` (~250 MB) and `ultralytics` (~10 MB) removed from server `requirements.txt`
+- Accuracy benchmark: 84% exact count match vs PyTorch YOLO on 50 live camera frames; remaining 16% are borderline detections at threshold — symmetric (ONNX and YOLO each detect more on half the differing frames), indicating no systematic accuracy loss
+- `DETECTOR_TYPE=onnx` is the server default; `DETECTOR_TYPE=yolo` still works on dev machines that have `ultralytics` installed
+- HOG fallback (`OpenCvHogPersonDetector`) activates automatically if ONNX file is missing
 
 **Why NOT alternatives:**
 - **Custom-trained classifier instead of GPT:** Would require labelled training data, model training pipeline, retraining on drift — all high-cost. GPT-4.1-mini gives retail-context-aware classification on day one with no training data.
-- **MediaPipe / Detectron2 instead of YOLO:** YOLO is the industry standard for real-time snapshot detection. YOLOv8n is the smallest/fastest variant and is sufficient for a relevance filter (binary: person yes/no).
-- **PyTorch directly instead of ultralytics:** Ultralytics provides the pre-trained YOLOv8n weights and a clean inference API. Writing raw PyTorch would add weeks of work.
+- **MediaPipe / Detectron2 instead of YOLO:** YOLO is the industry standard for real-time snapshot detection. YOLOv8s (small) is sufficient for a relevance filter (binary: person yes/no).
+- **Keep torch+ultralytics on server:** 260 MB dependency for a 44.9 MB ONNX file with identical weights makes no sense. ONNX Runtime is the correct production deployment path for a trained model.
 
 ---
 
@@ -133,7 +142,7 @@ IRIS is an anonymous retail intelligence platform. It ingests timestamped camera
 
 | Resource | Minimum | Notes |
 |---|---|---|
-| **RAM** | 4 GB | FastAPI + uvicorn: ~200 MB; YOLOv8n inference: ~600 MB; GPT pipeline workers: ~300 MB; OS + overhead: ~1 GB |
+| **RAM** | 4 GB | FastAPI + uvicorn: ~200 MB; ONNX Runtime inference: ~350 MB (vs ~600 MB for torch); GPT pipeline workers: ~300 MB; OS + overhead: ~1 GB |
 | **CPU** | 2 vCPUs | YOLO runs on CPU. 2 cores handles concurrent pipeline + API requests |
 | **Storage** | 20 GB SSD (gp3) | OS (8 GB) + app code (2 GB) + database text records only — images are never stored on disk |
 | **Network** | 100 Mbps | For Google Drive sync and OpenAI API calls |
@@ -188,7 +197,7 @@ Full specification: `docs/deployment/IRIS-Server-Requirement-150-Stores.md`
 | API endpoints functional | PASS | All FastAPI routes tested and working |
 | React frontend served | PASS | Built bundle served from `/` via FastAPI static mount |
 | Auth (JWT + bcrypt) | PASS | Login, token, protected routes working |
-| YOLO pipeline | PASS | YOLOv8n relevance scan working |
+| ONNX inference pipeline | PASS | YOLOv8s ONNX Runtime — 84% exact match vs PyTorch, 2× faster, 245 MB smaller. `DETECTOR_TYPE=onnx` default. |
 | GPT pipeline | PASS | GPT-4.1-mini live — `OPENAI_API_KEY` set in `.env.local` |
 | Walk-in sessions | PASS | Sessions created and stored; 5,948+ rows live |
 | Reports + downloads | PASS | All CSV downloads working |
@@ -311,6 +320,7 @@ Step 8 — Exports
 | Monitoring | None | AWS CloudWatch for API logs + pipeline errors; set alert on `gpt_status=failed` spike |
 | GPT cost | Per-image API call (~$6,500–13,000/month at 150 stores) | OpenAI Batch API mode — 50% cost reduction, processes overnight |
 | Streamlit | **RETIRED 2026-05-07** | Complete. React + FastAPI is the sole UI. |
+| PyTorch / ultralytics on server | **REMOVED 2026-05-07** | Replaced with ONNX Runtime. Server footprint reduced from ~420 MB to ~175 MB. `torch` and `ultralytics` no longer in `requirements.txt`. |
 | Drive API rate limiting | All stores fire simultaneously | Stagger 150-store syncs across 6-hour window to avoid `userRateLimit exceeded` |
 | DB retention | Grows unbounded | Celery periodic task to archive/delete rows older than 90 days (~76 GB plateau) |
 

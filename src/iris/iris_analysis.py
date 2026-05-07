@@ -394,23 +394,30 @@ class OnnxPersonDetector:
         return keep
 
     @staticmethod
-    def _letterbox(img: "Image.Image", size: int) -> np.ndarray:
-        """Resize with padding to maintain aspect ratio — matches YOLO's preprocessing exactly."""
-        iw, ih = img.size
+    def _letterbox_cv2(image_path: Path, size: int) -> np.ndarray:
+        """Load and letterbox using OpenCV — matches YOLO's internal preprocessing exactly.
+
+        YOLO uses cv2.imread + cv2.INTER_LINEAR internally. Using Pillow produces
+        slightly different pixel values (different interpolation sampling), which can
+        flip borderline detections. OpenCV eliminates that gap.
+        """
+        bgr = cv2.imread(str(image_path))
+        if bgr is None:
+            raise OSError(f"cv2.imread failed: {image_path}")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        ih, iw = rgb.shape[:2]
         scale = size / max(iw, ih)
         nw, nh = int(round(iw * scale)), int(round(ih * scale))
-        resized = img.resize((nw, nh), Image.BILINEAR)
+        resized = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
         canvas = np.full((size, size, 3), 114, dtype=np.uint8)
         pad_x, pad_y = (size - nw) // 2, (size - nh) // 2
-        canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = np.array(resized)
+        canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = resized
         return canvas
 
     def detect(self, image_path: Path) -> DetectionResult:
         S = self._INPUT_SIZE
         try:
-            with Image.open(image_path) as img:
-                rgb = img.convert("RGB")
-            lb = self._letterbox(rgb, S)
+            lb = self._letterbox_cv2(image_path, S)
             arr = lb.astype(np.float32) / 255.0   # H,W,C
             arr = arr.transpose(2, 0, 1)[np.newaxis]         # 1,C,H,W
 
