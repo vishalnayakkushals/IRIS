@@ -9,6 +9,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -430,7 +431,7 @@ def _run_pipeline_sync(
             source_uri=source_url,
             db_path=settings.db_path_obj,
             out_dir=out_dir,
-            detector_type="yolo",
+            detector_type=os.getenv("DETECTOR_TYPE", "onnx"),
             conf_threshold=settings.yolo_conf,
             max_images=max_images,
             gpt_enabled=gpt_enabled,

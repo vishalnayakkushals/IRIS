@@ -1192,7 +1192,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 d0 = time.perf_counter()
                 detector, detector_warning = build_detector(cfg.detector_type, cfg.conf_threshold, use_cache=False)
                 timings["detector_init_ms"] = round((time.perf_counter() - d0) * 1000.0, 2)
-                if cfg.detector_type == "yolo" and detector_warning and "fallback active" in detector_warning.lower() and not cfg.allow_detector_fallback:
+                if cfg.detector_type in {"yolo", "onnx"} and detector_warning and "fallback active" in detector_warning.lower() and not cfg.allow_detector_fallback:
                     raise RuntimeError("YOLO unavailable and fallback detected. Fix runtime or allow fallback.")
             if yolo_needed:
                 stage = PIPELINE_STAGES[3]

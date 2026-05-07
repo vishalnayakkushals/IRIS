@@ -10,11 +10,14 @@ venv/
 # Local runtime/artifacts
 exports/
 employee_assets/
-data/
+data/*
+!data/models/
+data/models/*
+!data/models/yolov8s.onnx
 streamlit.out
 streamlit.err
 
-# Model weights
+# Model weights — .pt stays local (PyTorch); .onnx committed so server gets it on git pull
 *.pt
 
 # Local datasets / snapshots

@@ -333,6 +333,145 @@ class YoloPersonDetector:
             )
 
 
+class OnnxPersonDetector:
+    """YOLOv8 person detector via ONNX Runtime — no PyTorch or ultralytics required.
+
+    Accepts the same yolov8s.onnx produced by:
+        model.export(format='onnx', imgsz=640, simplify=True, opset=11)
+
+    Output tensor shape: [1, 84, 8400]
+        cols 0-3  : cx, cy, w, h  (pixel space of 640px input)
+        cols 4-83 : COCO class scores (class 0=person, class 26=handbag)
+    """
+
+    _INPUT_SIZE = 640
+    _PERSON_CLS = 0
+    _BAG_CLS = 26
+
+    def __init__(
+        self,
+        model_name: str = "data/models/yolov8s.onnx",
+        conf_threshold: float = 0.20,
+    ) -> None:
+        import onnxruntime as ort  # type: ignore
+
+        model_path = Path(model_name)
+        if not model_path.exists():
+            raise FileNotFoundError(f"ONNX model not found: {model_path}")
+        self.model_name = str(model_path)
+        self.conf_threshold = conf_threshold
+        self.device = "cpu"
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        self._session = ort.InferenceSession(
+            str(model_path),
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        self._input_name = self._session.get_inputs()[0].name
+
+    @staticmethod
+    def _nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.45) -> list[int]:
+        """Greedy NMS. boxes: [N,4] x1y1x2y2 normalised; scores: [N]."""
+        if len(boxes) == 0:
+            return []
+        order = scores.argsort()[::-1]
+        keep: list[int] = []
+        while order.size:
+            i = int(order[0])
+            keep.append(i)
+            if order.size == 1:
+                break
+            xx1 = np.maximum(boxes[i, 0], boxes[order[1:], 0])
+            yy1 = np.maximum(boxes[i, 1], boxes[order[1:], 1])
+            xx2 = np.minimum(boxes[i, 2], boxes[order[1:], 2])
+            yy2 = np.minimum(boxes[i, 3], boxes[order[1:], 3])
+            inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+            area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
+            area_r = (boxes[order[1:], 2] - boxes[order[1:], 0]) * (boxes[order[1:], 3] - boxes[order[1:], 1])
+            iou = inter / np.maximum(area_i + area_r - inter, 1e-6)
+            order = order[1:][iou <= iou_threshold]
+        return keep
+
+    @staticmethod
+    def _letterbox(img: "Image.Image", size: int) -> np.ndarray:
+        """Resize with padding to maintain aspect ratio — matches YOLO's preprocessing exactly."""
+        iw, ih = img.size
+        scale = size / max(iw, ih)
+        nw, nh = int(round(iw * scale)), int(round(ih * scale))
+        resized = img.resize((nw, nh), Image.BILINEAR)
+        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+        pad_x, pad_y = (size - nw) // 2, (size - nh) // 2
+        canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = np.array(resized)
+        return canvas
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        S = self._INPUT_SIZE
+        try:
+            with Image.open(image_path) as img:
+                rgb = img.convert("RGB")
+            lb = self._letterbox(rgb, S)
+            arr = lb.astype(np.float32) / 255.0   # H,W,C
+            arr = arr.transpose(2, 0, 1)[np.newaxis]         # 1,C,H,W
+
+            raw = self._session.run(None, {self._input_name: arr})[0]  # [1,84,8400]
+            preds = raw[0].T   # [8400, 84]
+
+            cx, cy, bw, bh = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
+            x1n = (cx - bw / 2) / S
+            y1n = (cy - bh / 2) / S
+            x2n = (cx + bw / 2) / S
+            y2n = (cy + bh / 2) / S
+
+            class_scores = preds[:, 4:]
+            person_scores = class_scores[:, self._PERSON_CLS]
+            bag_scores    = class_scores[:, self._BAG_CLS]
+
+            p_mask  = person_scores >= self.conf_threshold
+            p_boxes = np.stack([x1n, y1n, x2n, y2n], axis=1)[p_mask]
+            p_conf  = person_scores[p_mask]
+            keep    = self._nms(p_boxes, p_conf, iou_threshold=0.70)
+
+            person_boxes: list[tuple[float, float, float, float]] = []
+            person_centroids: list[tuple[float, float]] = []
+            person_conf: list[float] = []
+            for idx in keep:
+                bx = (
+                    float(np.clip(p_boxes[idx, 0], 0.0, 1.0)),
+                    float(np.clip(p_boxes[idx, 1], 0.0, 1.0)),
+                    float(np.clip(p_boxes[idx, 2], 0.0, 1.0)),
+                    float(np.clip(p_boxes[idx, 3], 0.0, 1.0)),
+                )
+                if not _is_reasonable_person_box(bx):
+                    continue
+                person_boxes.append(bx)
+                person_centroids.append(((bx[0] + bx[2]) / 2.0, (bx[1] + bx[3]) / 2.0))
+                person_conf.append(float(p_conf[idx]))
+
+            bag_count = int(np.sum(bag_scores >= self.conf_threshold))
+
+            if not person_conf:
+                return DetectionResult(
+                    person_count=0, max_person_conf=0.0, detection_error="",
+                    person_centroids=[], person_boxes=[], person_confidences=[],
+                    bag_count=bag_count,
+                )
+            return DetectionResult(
+                person_count=len(person_conf),
+                max_person_conf=float(max(person_conf)),
+                detection_error="",
+                person_centroids=person_centroids,
+                person_boxes=person_boxes,
+                person_confidences=person_conf,
+                bag_count=bag_count,
+            )
+        except Exception as exc:
+            return DetectionResult(
+                person_count=0, max_person_conf=0.0, detection_error=str(exc),
+                person_centroids=[], person_boxes=[], person_confidences=[], bag_count=0,
+            )
+
+
 class LegacyTfPersonDetector:
     """TensorFlow Faster-RCNN detector compatible with legacy frozen graph pipelines."""
 
@@ -520,7 +659,19 @@ def build_detector(detector_type: str = "yolo", conf_threshold: float = 0.20, us
         detector = MockPersonDetector(conf_threshold=conf_threshold)
     elif normalized in {"opencv_hog", "hog"}:
         detector = OpenCvHogPersonDetector(conf_threshold=conf_threshold)
-    elif normalized != "yolo":
+    elif normalized in {"onnx", "yolo_onnx"}:
+        model_path = os.getenv("YOLO_MODEL_PATH", "data/models/yolov8s.onnx")
+        try:
+            detector = OnnxPersonDetector(model_name=model_path, conf_threshold=conf_threshold)
+        except Exception as exc:
+            onnx_warning = f"ONNX detector unavailable: {exc}"
+            try:
+                detector = OpenCvHogPersonDetector(conf_threshold=conf_threshold)
+                warning = f"{onnx_warning}. Fallback active: OpenCV HOG."
+            except Exception as hog_exc:
+                warning = f"{onnx_warning}. OpenCV HOG fallback unavailable: {hog_exc}"
+                detector = UnavailableDetector(warning)
+    elif normalized not in {"yolo"}:
         warning = f"Unsupported detector_type='{detector_type}', using unavailable detector fallback."
         detector = UnavailableDetector(warning)
     else:

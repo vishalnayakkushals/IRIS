@@ -8,7 +8,11 @@ requests>=2.32,<3.0
 
 # Computer vision
 opencv-python-headless>=4.10,<5.0
-ultralytics>=8.3,<9.0
+onnxruntime>=1.18,<2.0
+
+# Dev-only: ultralytics + torch are NOT installed on the server.
+# To re-export the ONNX model on a dev machine run:
+#   pip install ultralytics && python scripts/export_onnx.py
 
 # Schema validation (pipeline config models)
 pydantic>=2.0,<3.0
