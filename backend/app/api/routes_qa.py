@@ -425,6 +425,67 @@ async def serve_runtime_frame_image(
     return Response(content=image_bytes, media_type=media_type, headers=headers)
 
 
+@router.get("/frame-image/{store_id}/{image_id}/annotated")
+async def serve_annotated_frame_image(
+    store_id: str,
+    image_id: str,
+    token: str | None = None,
+    _: str | None = Depends(_bearer),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """Return the frame with ONNX detection boxes drawn on it (green/orange/red by confidence)."""
+    import cv2 as _cv2
+    import numpy as _np
+    from iris.iris_analysis import OnnxPersonDetector
+
+    raw_token: str | None = None
+    if _ and _.credentials:
+        raw_token = _.credentials
+    elif token:
+        raw_token = token
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        verify_token(raw_token, settings.jwt_secret)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    image_bytes, _, image_name = _fetch_frame_bytes(store_id, image_id)
+
+    try:
+        model_path = settings.data_root_obj / "models" / "yolov8s.onnx"
+        detector = OnnxPersonDetector(str(model_path), conf_threshold=settings.yolo_conf)
+        result = detector.detect_bytes(image_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Detection failed: {exc}") from exc
+
+    # Decode raw bytes to BGR for annotation
+    arr = _np.frombuffer(image_bytes, dtype=_np.uint8)
+    bgr = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=422, detail="Cannot decode image for annotation")
+
+    h, w = bgr.shape[:2]
+    # Draw detection boxes
+    for box, conf in zip(result.person_boxes, result.person_confidences):
+        x1, y1 = int(box[0] * w), int(box[1] * h)
+        x2, y2 = int(box[2] * w), int(box[3] * h)
+        color = (0, 200, 0) if conf >= 0.60 else (0, 165, 255) if conf >= 0.30 else (0, 0, 220)
+        _cv2.rectangle(bgr, (x1, y1), (x2, y2), color, 2)
+        _cv2.putText(bgr, f"{conf:.2f}", (x1 + 4, y1 + 18), _cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+    # Banner strip
+    label = f"Persons: {result.person_count}  |  conf >= {settings.yolo_conf}"
+    _cv2.rectangle(bgr, (0, 0), (w, 30), (20, 20, 20), -1)
+    _cv2.putText(bgr, label, (8, 21), _cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+
+    ok, buf = _cv2.imencode(".jpg", bgr, [_cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not ok:
+        raise HTTPException(status_code=500, detail="JPEG encode failed")
+
+    headers = {"Cache-Control": "private, max-age=300", "Content-Disposition": f'inline; filename="ann_{image_name}"'}
+    return Response(content=buf.tobytes(), media_type="image/jpeg", headers=headers)
+
+
 @router.put("/feedback/{feedback_id}")
 async def update_feedback(
     feedback_id: int,

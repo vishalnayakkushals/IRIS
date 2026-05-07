@@ -88,6 +88,23 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-07 - In-App ONNX Detection Boxes + Visual Review Script
+
+- Changed paths:
+  - `src/iris/iris_analysis.py`
+  - `backend/app/api/routes_qa.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `scripts/review_detections.py` (new)
+- Summary:
+  - **Frame Review — annotated image toggle**: Each thumbnail card now has a `ScanSearch` toggle button (top-right corner). Click it to switch between the raw camera frame and the ONNX-annotated version with coloured bounding boxes drawn live (green ≥0.60 conf, orange 0.30–0.60, red <0.30). Click again to return to raw. The annotated image is generated on-demand by the backend, never cached to disk.
+  - **`GET /api/qa/frame-image/{store_id}/{image_id}/annotated`** (new endpoint): Fetches the image from Drive, runs `OnnxPersonDetector.detect_bytes()` in-process, draws boxes + person count banner with OpenCV, returns JPEG. No temp files written; Drive bytes go directly into numpy via `cv2.imdecode`. Cached in browser for 5 minutes.
+  - **`OnnxPersonDetector.detect_bytes(bytes)`** (new method): Accepts raw image bytes, runs the full letterbox + ONNX inference pipeline without writing to disk. Extracted `_run_inference(rgb)` as a shared private method so both `detect(path)` and `detect_bytes(bytes)` use identical inference logic.
+  - **`scripts/review_detections.py`** (new CLI tool): Visual review of live camera frames. Draws bounding boxes on the latest N frames from `data/stores/`, saves annotated JPEGs to `data/review/`, opens Explorer automatically. Flags: `--frames N`, `--store BLRJAY`, `--image path`, `--compare` (ONNX vs YOLO side-by-side), `--conf 0.20`.
+  - **Letterbox fix**: `_letterbox_cv2` now uses `cv2.copyMakeBorder` with `round(dh-0.1)/round(dh+0.1)` padding split — matches ultralytics internal implementation exactly. NMS IoU threshold 0.70 → 0.45 (ultralytics default).
+  - **Accuracy**: ONNX vs YOLO validation at 50 frames, conf=0.20: **86% exact match, 2.7× faster** (293 ms vs 790 ms per image). Remaining 14% are symmetric fp32 arithmetic differences — not a systematic accuracy loss.
+
 ### 2026-05-07 - GPT Prompt: White Shirt + Black Pants = Staff (not Manager)
 
 - Changed paths:

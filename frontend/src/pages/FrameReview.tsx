@@ -6,11 +6,12 @@ import {
   qaUpdateFeedback,
   qaDeleteFeedback,
   qaFrameImageUrl,
+  qaAnnotatedFrameImageUrl,
 } from "../api/client";
 import { Card, Title, Text, Badge } from "@tremor/react";
 import {
   Check, X, Trash2, RefreshCw, ExternalLink,
-  ChevronLeft, ChevronRight, Zap, Eye, Cpu,
+  ChevronLeft, ChevronRight, Zap, Eye, Cpu, ScanSearch,
 } from "lucide-react";
 import { useStore } from "../context/StoreContext";
 
@@ -103,6 +104,7 @@ function FeedbackCard({
   const [saving, setSaving] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
+  const [showAnnotated, setShowAnnotated] = useState(false);
   const thumbRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -145,25 +147,37 @@ function FeedbackCard({
     onDelete(row.image_id);
   }
 
-  const imgSrc = qaFrameImageUrl(row.store_id, row.image_id);
+  const rawSrc = qaFrameImageUrl(row.store_id, row.image_id);
+  const annSrc = qaAnnotatedFrameImageUrl(row.store_id, row.image_id);
+  const imgSrc = showAnnotated ? annSrc : rawSrc;
 
   if (row.auto_approved) {
     return (
       <div className="border border-emerald-200 rounded-2xl bg-emerald-50/40 overflow-hidden">
         {hoverRect && !imgError && <HoverPreview src={imgSrc} rect={hoverRect} />}
-        <div
-          ref={thumbRef}
-          className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
-          onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
-          onMouseLeave={() => setHoverRect(null)}
-        >
-          {!imgError ? (
-            <img src={imgSrc} alt={row.filename}
-              className="object-cover h-full w-full hover:scale-105 transition-transform duration-200"
-              loading="lazy" onError={() => setImgError(true)} />
-          ) : (
-            <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
-          )}
+        <div className="relative">
+          <div
+            ref={thumbRef}
+            className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
+            onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
+            onMouseLeave={() => setHoverRect(null)}
+          >
+            {!imgError ? (
+              <img src={imgSrc} alt={row.filename}
+                className="object-cover h-full w-full hover:scale-105 transition-transform duration-200"
+                loading="lazy" onError={() => setImgError(true)} />
+            ) : (
+              <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => { setShowAnnotated((v) => !v); setImgError(false); }}
+            title={showAnnotated ? "Show raw frame" : "Show ONNX detection boxes"}
+            className={`absolute top-1.5 right-1.5 p-1 rounded-md text-xs font-medium shadow transition-colors ${showAnnotated ? "bg-blue-600 text-white" : "bg-white/80 text-slate-600 hover:bg-blue-50"}`}
+          >
+            <ScanSearch size={13} />
+          </button>
         </div>
         <div className="p-3 space-y-2">
           <div className="flex items-start justify-between gap-2">
@@ -193,19 +207,29 @@ function FeedbackCard({
       : "border-slate-200"
     }`}>
       {hoverRect && !imgError && <HoverPreview src={imgSrc} rect={hoverRect} />}
-      <div
-        ref={thumbRef}
-        className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
-        onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
-        onMouseLeave={() => setHoverRect(null)}
-      >
-        {!imgError ? (
-          <img src={imgSrc} alt={row.filename}
-            className="object-cover h-full w-full hover:scale-105 transition-transform duration-200"
-            loading="lazy" onError={() => setImgError(true)} />
-        ) : (
-          <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
-        )}
+      <div className="relative">
+        <div
+          ref={thumbRef}
+          className="bg-slate-100 flex items-center justify-center h-36 overflow-hidden cursor-zoom-in"
+          onMouseEnter={() => setHoverRect(thumbRef.current?.getBoundingClientRect() ?? null)}
+          onMouseLeave={() => setHoverRect(null)}
+        >
+          {!imgError ? (
+            <img src={imgSrc} alt={row.filename}
+              className="object-cover h-full w-full hover:scale-105 transition-transform duration-200"
+              loading="lazy" onError={() => setImgError(true)} />
+          ) : (
+            <div className="text-slate-400 text-xs text-center px-3">Thumbnail unavailable</div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => { setShowAnnotated((v) => !v); setImgError(false); }}
+          title={showAnnotated ? "Show raw frame" : "Show ONNX detection boxes"}
+          className={`absolute top-1.5 right-1.5 p-1 rounded-md shadow transition-colors ${showAnnotated ? "bg-blue-600 text-white" : "bg-white/80 text-slate-600 hover:bg-blue-50"}`}
+        >
+          <ScanSearch size={13} />
+        </button>
       </div>
 
       <div className="p-3 space-y-2.5">

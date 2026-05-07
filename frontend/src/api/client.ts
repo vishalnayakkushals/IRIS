@@ -366,3 +366,9 @@ export const qaFrameImageUrl = (storeId: string, imageId: string) => {
   const token = localStorage.getItem("iris_token") ?? "";
   return `${base}/qa/frame-image/${encodeURIComponent(storeId)}/${encodeURIComponent(imageId)}?token=${encodeURIComponent(token)}`;
 };
+
+export const qaAnnotatedFrameImageUrl = (storeId: string, imageId: string) => {
+  const base = import.meta.env.VITE_API_URL ?? "/api";
+  const token = localStorage.getItem("iris_token") ?? "";
+  return `${base}/qa/frame-image/${encodeURIComponent(storeId)}/${encodeURIComponent(imageId)}/annotated?token=${encodeURIComponent(token)}`;
+};

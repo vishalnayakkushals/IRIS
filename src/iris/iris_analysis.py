@@ -417,64 +417,95 @@ class OnnxPersonDetector:
         rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
         return rgb
 
-    def detect(self, image_path: Path) -> DetectionResult:
+    def _run_inference(self, rgb: np.ndarray) -> DetectionResult:
+        """Run ONNX inference on a pre-letterboxed RGB array (H=W=640)."""
         S = self._INPUT_SIZE
-        try:
-            lb = self._letterbox_cv2(image_path, S)
-            arr = lb.astype(np.float32) / 255.0   # H,W,C
-            arr = arr.transpose(2, 0, 1)[np.newaxis]         # 1,C,H,W
+        arr = rgb.astype(np.float32) / 255.0
+        arr = arr.transpose(2, 0, 1)[np.newaxis]   # 1,C,H,W
 
-            raw = self._session.run(None, {self._input_name: arr})[0]  # [1,84,8400]
-            preds = raw[0].T   # [8400, 84]
+        raw = self._session.run(None, {self._input_name: arr})[0]  # [1,84,8400]
+        preds = raw[0].T   # [8400, 84]
 
-            cx, cy, bw, bh = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
-            x1n = (cx - bw / 2) / S
-            y1n = (cy - bh / 2) / S
-            x2n = (cx + bw / 2) / S
-            y2n = (cy + bh / 2) / S
+        cx, cy, bw, bh = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
+        x1n = (cx - bw / 2) / S
+        y1n = (cy - bh / 2) / S
+        x2n = (cx + bw / 2) / S
+        y2n = (cy + bh / 2) / S
 
-            class_scores = preds[:, 4:]
-            person_scores = class_scores[:, self._PERSON_CLS]
-            bag_scores    = class_scores[:, self._BAG_CLS]
+        class_scores  = preds[:, 4:]
+        person_scores = class_scores[:, self._PERSON_CLS]
+        bag_scores    = class_scores[:, self._BAG_CLS]
 
-            p_mask  = person_scores >= self.conf_threshold
-            p_boxes = np.stack([x1n, y1n, x2n, y2n], axis=1)[p_mask]
-            p_conf  = person_scores[p_mask]
-            keep    = self._nms(p_boxes, p_conf, iou_threshold=0.45)
+        p_mask  = person_scores >= self.conf_threshold
+        p_boxes = np.stack([x1n, y1n, x2n, y2n], axis=1)[p_mask]
+        p_conf  = person_scores[p_mask]
+        keep    = self._nms(p_boxes, p_conf, iou_threshold=0.45)
 
-            person_boxes: list[tuple[float, float, float, float]] = []
-            person_centroids: list[tuple[float, float]] = []
-            person_conf: list[float] = []
-            for idx in keep:
-                bx = (
-                    float(np.clip(p_boxes[idx, 0], 0.0, 1.0)),
-                    float(np.clip(p_boxes[idx, 1], 0.0, 1.0)),
-                    float(np.clip(p_boxes[idx, 2], 0.0, 1.0)),
-                    float(np.clip(p_boxes[idx, 3], 0.0, 1.0)),
-                )
-                if not _is_reasonable_person_box(bx):
-                    continue
-                person_boxes.append(bx)
-                person_centroids.append(((bx[0] + bx[2]) / 2.0, (bx[1] + bx[3]) / 2.0))
-                person_conf.append(float(p_conf[idx]))
+        person_boxes: list[tuple[float, float, float, float]] = []
+        person_centroids: list[tuple[float, float]] = []
+        person_conf: list[float] = []
+        for idx in keep:
+            bx = (
+                float(np.clip(p_boxes[idx, 0], 0.0, 1.0)),
+                float(np.clip(p_boxes[idx, 1], 0.0, 1.0)),
+                float(np.clip(p_boxes[idx, 2], 0.0, 1.0)),
+                float(np.clip(p_boxes[idx, 3], 0.0, 1.0)),
+            )
+            if not _is_reasonable_person_box(bx):
+                continue
+            person_boxes.append(bx)
+            person_centroids.append(((bx[0] + bx[2]) / 2.0, (bx[1] + bx[3]) / 2.0))
+            person_conf.append(float(p_conf[idx]))
 
-            bag_count = int(np.sum(bag_scores >= self.conf_threshold))
+        bag_count = int(np.sum(bag_scores >= self.conf_threshold))
 
-            if not person_conf:
-                return DetectionResult(
-                    person_count=0, max_person_conf=0.0, detection_error="",
-                    person_centroids=[], person_boxes=[], person_confidences=[],
-                    bag_count=bag_count,
-                )
+        if not person_conf:
             return DetectionResult(
-                person_count=len(person_conf),
-                max_person_conf=float(max(person_conf)),
-                detection_error="",
-                person_centroids=person_centroids,
-                person_boxes=person_boxes,
-                person_confidences=person_conf,
+                person_count=0, max_person_conf=0.0, detection_error="",
+                person_centroids=[], person_boxes=[], person_confidences=[],
                 bag_count=bag_count,
             )
+        return DetectionResult(
+            person_count=len(person_conf),
+            max_person_conf=float(max(person_conf)),
+            detection_error="",
+            person_centroids=person_centroids,
+            person_boxes=person_boxes,
+            person_confidences=person_conf,
+            bag_count=bag_count,
+        )
+
+    def detect(self, image_path: Path) -> DetectionResult:
+        try:
+            rgb = self._letterbox_cv2(image_path, self._INPUT_SIZE)
+            return self._run_inference(rgb)
+        except Exception as exc:
+            return DetectionResult(
+                person_count=0, max_person_conf=0.0, detection_error=str(exc),
+                person_centroids=[], person_boxes=[], person_confidences=[], bag_count=0,
+            )
+
+    def detect_bytes(self, image_bytes: bytes) -> DetectionResult:
+        """Run detection on raw image bytes (e.g. fetched from Drive) without writing to disk."""
+        try:
+            arr = np.frombuffer(image_bytes, dtype=np.uint8)
+            bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if bgr is None:
+                raise ValueError("cv2.imdecode returned None — not a valid image")
+            ih, iw = bgr.shape[:2]
+            S = self._INPUT_SIZE
+            scale = min(S / ih, S / iw)
+            nw, nh = int(round(iw * scale)), int(round(ih * scale))
+            resized = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            dw, dh = (S - nw) / 2, (S - nh) / 2
+            padded = cv2.copyMakeBorder(
+                resized,
+                int(round(dh - 0.1)), int(round(dh + 0.1)),
+                int(round(dw - 0.1)), int(round(dw + 0.1)),
+                cv2.BORDER_CONSTANT, value=(114, 114, 114),
+            )
+            rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+            return self._run_inference(rgb)
         except Exception as exc:
             return DetectionResult(
                 person_count=0, max_person_conf=0.0, detection_error=str(exc),
