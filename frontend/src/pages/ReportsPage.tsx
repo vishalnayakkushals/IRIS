@@ -342,11 +342,12 @@ export default function ReportsPage() {
   const [validationRows, setValidationRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [liveProgress, setLiveProgress] = useState<any>(null);
+  // Tracks which tabs have already been fetched for the current store selection.
+  // Switching tabs reuses cached data; store change clears everything.
+  const [fetchedTabs, setFetchedTabs] = useState<Set<string>>(new Set());
 
-  const storeMap = useMemo<Record<string, string>>(
-    () => ({}),
-    [],
-  );
+  const storeMap = useMemo<Record<string, string>>(() => ({}), []);
+
   const totalWalkins = useMemo(
     () => summaryRows.reduce((s, r) => s + Number(r.walkins || 0), 0),
     [summaryRows],
@@ -364,23 +365,48 @@ export default function ReportsPage() {
   const todayTag = new Date().toISOString().slice(0, 10);
   const tag = selectedStore || "all";
 
-  const loadReports = useCallback(() => {
+  const fetchTab = useCallback(async (view: string, sid: string | undefined) => {
     setLoading(true);
-    const sid = selectedStore || undefined;
-    return Promise.all([
-      reportsSummary(sid, 180).then((r) => setSummaryRows(r.data)),
-      reportsWalkins(sid, undefined, 2000).then((r) => setWalkinRows(r.data)),
-      reportsImageScans(sid, undefined, 2000).then((r) => setScanRows(r.data)),
-      reportsValidationMap(sid, undefined, 5000).then((r) => setValidationRows(r.data)),
-    ]).finally(() => setLoading(false));
-  }, [selectedStore]);
-
-  useEffect(() => {
+    try {
+      switch (view) {
+        case "summary":
+          await reportsSummary(sid, 180).then((r) => setSummaryRows(r.data));
+          break;
+        case "walkins":
+          await reportsWalkins(sid, undefined, 2000).then((r) => setWalkinRows(r.data));
+          break;
+        case "image_scans":
+          await reportsImageScans(sid, undefined, 2000).then((r) => setScanRows(r.data));
+          break;
+        case "validation":
+          await reportsValidationMap(sid, undefined, 5000).then((r) => setValidationRows(r.data));
+          break;
+      }
+      setFetchedTabs((prev) => new Set([...prev, view]));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  // When store changes, drop all cached tab data and re-fetch the current tab.
+  const prevStoreRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    void loadReports();
-  }, [loadReports]);
+    if (prevStoreRef.current === selectedStore) return;
+    prevStoreRef.current = selectedStore;
+    setSummaryRows([]);
+    setWalkinRows([]);
+    setScanRows([]);
+    setValidationRows([]);
+    setFetchedTabs(new Set());
+    setPage(0);
+  }, [selectedStore]);
+
+  // Fetch the active tab's data whenever tab or store changes, but only if not already cached.
+  useEffect(() => {
+    if (!fetchedTabs.has(reportView)) {
+      void fetchTab(reportView, selectedStore || undefined);
+    }
+  }, [reportView, fetchedTabs, fetchTab, selectedStore]);
 
   useEffect(() => {
     if (!selectedStore) { setLiveProgress(null); return; }
@@ -391,8 +417,7 @@ export default function ReportsPage() {
     setReportView(reportBucket === "main" ? "summary" : "image_scans");
   }, [reportBucket]);
 
-  // Reset to page 0 whenever the view or store changes
-  useEffect(() => { setPage(0); }, [reportView, selectedStore]);
+  useEffect(() => { setPage(0); }, [reportView]);
 
   const reportChoices = reportBucket === "main"
     ? [
@@ -406,16 +431,11 @@ export default function ReportsPage() {
 
   const activeRows = useMemo(() => {
     switch (reportView) {
-      case "summary":
-        return summaryRows;
-      case "walkins":
-        return walkinRows;
-      case "image_scans":
-        return scanRows;
-      case "validation":
-        return validationRows;
-      default:
-        return [];
+      case "summary":    return summaryRows;
+      case "walkins":    return walkinRows;
+      case "image_scans": return scanRows;
+      case "validation": return validationRows;
+      default:           return [];
     }
   }, [reportView, summaryRows, walkinRows, scanRows, validationRows]);
 
@@ -423,7 +443,12 @@ export default function ReportsPage() {
   const visibleReportRows = activeRows.slice(page * pageSize, (page + 1) * pageSize);
 
   async function refreshReportData() {
-    await loadReports();
+    // Force re-fetch the current tab by removing it from the cache first.
+    setFetchedTabs((prev) => {
+      const next = new Set(prev);
+      next.delete(reportView);
+      return next;
+    });
     if (selectedStore) {
       try {
         const { data } = await onFlyLiveProgress(selectedStore);
