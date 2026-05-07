@@ -88,6 +88,23 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-07 - QA/Frame Review Fixes, YOLO Threshold Tuning, README Docker
+
+- Changed paths:
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `backend/app/api/routes_reports.py`
+  - `backend/app/config.py`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `README.md`
+- Summary:
+  - **QualityFeedback (quality page) — approve/reject now saves to backend**: Previously approve/reject only updated local state and was never persisted. Now calls `qaCreateFeedback` (new row) or `qaUpdateFeedback` (existing row) on every action. Reject shows an inline correction picker (Customer / Staff / Uncertain / No Human) before saving. FeedbackId tracked per row to use PUT instead of POST on subsequent changes. Progress bar shows how many reviews toward the 200-row retraining threshold. Entry+exit thumbnails shown separately using new `last_image_id` field.
+  - **routes_reports.py walkins-qa**: Extended `cam_images` CTE to also compute `MAX(image_id) AS last_image_id`. API now returns separate `image_id` (entry frame) and `last_image_id` (exit frame) per walk-in session so QA Overview can show distinct thumbnails for start and end of each visit.
+  - **FrameReview — performance fix**: Page was re-fetching 400 rows every time user navigated back to it. Now caches results in `sessionStorage` with 5-minute TTL (keyed by store+status+date). Navigation back is instant; cache badge shows age; Refresh button bypasses cache. Default fetch limit reduced from 400 → 150 rows.
+  - **FrameReview — Step 1 / Step 2 labelling**: Each card now clearly shows two sections: Step 1 YOLO Detection (person count + confidence %) and Step 2 GPT Classification (customer/staff/banner/pedestrian counts). Low YOLO confidence warning shown when score < 65% but people detected. Reviewer label dropdown positioned under both steps.
+  - **YOLO confidence threshold**: Default raised from 0.18 → 0.30 in `config.py`. At 0.18, many banners and reflections with 18–29% YOLO confidence were being passed to GPT (false positives adding cost). At 0.30, only detections with meaningful YOLO confidence reach GPT, reducing unnecessary API calls by ~15–20% while preserving real customer recall. Override via `YOLO_CONF` in `.env`.
+  - **README**: Docker section rewritten to explain when Docker is needed (cloud, not local), what it starts automatically (API + Celery + Redis), and cost (free — you pay for the server, not Docker itself).
+
 ### 2026-05-07 - Update Deployment Docs per EC2 150-Store Spec
 
 - Changed paths:

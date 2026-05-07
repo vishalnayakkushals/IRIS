@@ -20,8 +20,15 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
     onfly_source_url: str = ""
-    yolo_conf: float = 0.18
+    yolo_conf: float = 0.30
     max_images: int = 10000
+    
+    # Storage Settings (S3 vs Local/Drive)
+    enable_s3_storage: bool = False
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    s3_bucket_name: str = ""
+
     # Comma-separated allowed CORS origins; defaults cover local dev only
     cors_origins: str = "http://localhost:3000,http://localhost:8767,http://127.0.0.1:8767"
 

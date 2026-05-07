@@ -40,17 +40,31 @@ Open: `http://localhost:8767`
 
 ## Running with Docker
 
+Docker is **not required for local development** — the no-Docker mode above works fine on Windows.
+
+Docker becomes necessary when deploying to a cloud server (AWS EC2). It packages the entire application — Python, all libraries, Redis — into a sealed container that runs identically on any Linux server with a single command.
+
+| Mode | When to use | Port |
+| --- | --- | --- |
+| No Docker (`start_api_server.py`) | Local development, testing | 8767 |
+| Docker Compose | Cloud server deployment | 8766 |
+
 ```powershell
 cd "C:\Users\Kushals.DESKTOP-D51MT8S\Desktop\Github\IRIS"
 
-# Build and start all services (API + Celery + Redis)
+# Build and start all services (API + Celery worker + Beat scheduler + Redis)
 docker compose -f deploy/docker-compose.yml up --build -d
 
 # View logs
 docker compose -f deploy/docker-compose.yml logs -f iris-api
+
+# Stop all services
+docker compose -f deploy/docker-compose.yml down
 ```
 
 Open: `http://localhost:8766`
+
+**What Docker starts automatically:** FastAPI server, Celery worker (pipeline jobs), Celery beat (scheduler), and Redis. Without Docker, you need to start each of these separately. Docker cost: free — you only pay for the cloud server it runs on.
 
 ---
 

@@ -614,15 +614,20 @@ async def get_walkins_for_qa(
         cur = conn.execute(
             f"""
             WITH cam_images AS (
-                -- Pick one representative image per (store, date, camera) for thumbnail
-                SELECT store_id, date_source, camera_id, MIN(image_id) AS rep_image_id
+                -- First (entry) and last (exit) representative images per (store, date, camera)
+                -- MIN/MAX on image_id approximates chronological order since IDs embed filenames
+                SELECT store_id, date_source, camera_id,
+                       MIN(image_id) AS rep_image_id,
+                       MAX(image_id) AS last_image_id
                 FROM onfly_image_state
                 GROUP BY store_id, date_source, camera_id
             )
             SELECT
                 w.store_id,
-                -- Prefer a real image_state image_id; fall back to session's own image_id
+                -- Entry frame: earliest image for this camera+date
                 COALESCE(ci.rep_image_id, w.image_id, '') AS image_id,
+                -- Exit frame: latest image for this camera+date (NULL if same as entry)
+                CASE WHEN ci.last_image_id != ci.rep_image_id THEN ci.last_image_id ELSE NULL END AS last_image_id,
                 w.walkin_id,
                 COALESCE(w.business_date, w.date, '') AS date,
                 w.role,
