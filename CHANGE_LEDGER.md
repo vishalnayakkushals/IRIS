@@ -88,6 +88,36 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-07 - Update Deployment Docs per EC2 150-Store Spec
+
+- Changed paths:
+  - `docs/deployment/deployment-readiness-report-2026-04-30.md`
+  - `docs/deployment/deployment-email-drafts-2026-04-30.md`
+- Summary:
+  - **Deployment readiness report**: Updated Section 2.6 (Streamlit → RETIRED 2026-05-07), Section 3 (hosting requirements rewritten for EC2 c6i.large + c6i.2xlarge + t3.micro + RDS db.t3.large + ElastiCache + ALB; storage note corrected — images never stored, DB grows ~2.7 GB/month), Section 4 (readiness checklist updated — GPT live, Streamlit retired, bundles cleaned; new blockers: OpenAI Tier 3+, Secrets Manager, Drive stagger), Section 5 (all cleanup items marked RESOLVED), Section 7 (future direction updated with new items: Drive rate limiting, 90-day retention, PII policy).
+  - **Email drafts**: Section 3 (Hosting Requirements) replaced generic 8GB/4vCPU spec with full EC2 production table and correct cost figures ($523/month infra, $6,500–13,000/month OpenAI at 54,000 calls/day). Section 4 (Readiness checklist) updated to reflect 2026-05-07 state. Section 5 updated to reflect cleanup as resolved. Requested Actions table rewritten: removed stale rows (stop ports 8768/8769, clean static bundles, trigger GPT on Apr 23+ images), added new rows (EC2 provisioning with correct instance types, OpenAI Tier 3+ upgrade, AWS Secrets Manager, staggered Drive sync, 90-day retention job).
+
+### 2026-05-07 - Retire Streamlit, Mature React + FastAPI
+
+- Changed paths:
+  - `src/iris/iris_dashboard.py` (deleted)
+  - `src/run_dashboard.py` (deleted)
+  - `scripts/start_web_app.py` (deleted)
+  - `deploy/Dockerfile` (deleted)
+  - `deploy/requirements.docker.txt` (deleted)
+  - `fix_login.py` (deleted)
+  - `patch.py` (deleted)
+  - `requirements.txt`
+  - `deploy/docker-compose.yml`
+  - `README.md`
+  - `AGENTS.md`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `release-notes/2026-05-07-streamlit-retired-react-fastapi-only.md` (new)
+  - `docs/deployment/IRIS-Server-Requirement-150-Stores.md` (new)
+  - `docs/deployment/scaling-analysis-150-stores.md` (deleted — superseded)
+- Summary:
+  - Deleted all Streamlit source, entrypoints, Dockerfile, and deps. Removed `streamlit`, `plotly`, `pyarrow` from `requirements.txt`. Docker Compose `iris` service (port 8765) removed. README fully rewritten for React + FastAPI stack. AGENTS.md updated with deleted module table and corrected deploy commands. React build confirmed clean: 0 errors, 3,884 modules, 20 pages. New EC2 server requirements document created for 150-store production scale. Stale scaling analysis doc deleted.
+
 ### 2026-05-04 - Storage Optimization (Zero Waste, 7-Day Retention, S3 Config Toggle)
 
 - Changed paths:

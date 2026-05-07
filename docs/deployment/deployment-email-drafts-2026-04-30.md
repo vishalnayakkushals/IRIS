@@ -81,42 +81,50 @@ The platform uses three layers:
 
 **3. Hosting Requirements**
 
-For production (6 stores, 2 cameras each):
-- **RAM:** 8 GB minimum
-- **CPU:** 4 vCPUs
-- **Storage:** 100 GB SSD (app server) + managed PostgreSQL storage
-- **Supporting services:** Managed Redis (1 GB), managed PostgreSQL (4 GB RAM)
-- **Estimated cloud cost:** USD 80–150/month on AWS/GCP/Azure
+IT has confirmed deployment on **AWS EC2**. Updated specification for full production scale (150 stores, 8–10 cameras each):
 
-Minimum viable (smaller scale): 4 GB RAM, 2 vCPUs, 20 GB storage.
+| Component | AWS Instance | Purpose |
+| --- | --- | --- |
+| App Server | `c6i.large` (2 vCPU, 4 GB) | FastAPI + React dashboard |
+| AI Workers | `c6i.2xlarge` (8 vCPU, 16 GB) | YOLO inference + pipeline |
+| Beat Scheduler | `t3.micro` (1 GB) | Cron job scheduler |
+| Database | `db.t3.large` RDS PostgreSQL, Multi-AZ | Analytics + session storage |
+| Cache / Queue | `cache.t3.medium` ElastiCache Redis | Celery job broker |
+| Load Balancer | ALB + ACM certificate | HTTPS termination |
+
+- **Infrastructure cost (1-year reserved):** ~USD 523/month
+- **OpenAI GPT API cost (54,000 calls/day):** ~USD 6,500–13,000/month — this is the dominant budget item
+- **Storage:** Images are never stored on the server — processed in memory and discarded. DB grows ~2.7 GB/month (text records only); plateaus at ~90 GB with 90-day retention.
+
+Full AWS specification with EBS volumes, networking, security groups, and phased rollout plan:
+`docs/deployment/IRIS-Server-Requirement-150-Stores.md`
 
 ---
 
 **4. Deployment Readiness — Current Status: NOT CLOUD-READY**
 
-The application is running and functional locally. It is NOT yet deployed to any cloud environment. Real-time output status:
+The application is running and functional locally. It is NOT yet deployed to any cloud environment. Status as of 2026-05-07:
 
 ✅ Application runs on local Windows service (port 8767)
 ✅ Docker image builds and runs correctly
 ✅ All API routes, auth, reports, pipeline, and dashboard functional
-✅ Walk-in sessions being generated and stored
-⚠️ Walk-in data is currently seeded (Apr 8–9 historical data). Live pipeline needs to be triggered on Apr 23+ images to generate real-time output.
+✅ Walk-in sessions being generated and stored from live GPT pipeline
+✅ GPT analysis live — `gpt_enabled` flag wired per store; Streamlit fully retired (React + FastAPI only)
+✅ Static asset bundle cleaned; redundant ports stopped
 ❌ JWT secret not set for production (using insecure default)
-❌ Database not migrated to PostgreSQL (SQLite cannot handle concurrent cloud writes)
 ❌ CORS not configured for production domain
 ❌ No TLS / HTTPS configured
-❌ Secrets not moved to cloud secrets manager
+❌ Secrets not moved to AWS Secrets Manager
+❌ OpenAI account not yet at Tier 3+ (required for 54,000 calls/day at scale)
 ❌ No cloud deployment or smoke test done yet
 
-**Action required from Engineering:** Complete the 6 blockers listed in Section 4 of the deployment document before any cloud go-live.
+**Action required from Engineering:** Complete the blockers listed in Section 4 of the deployment document before any cloud go-live.
 
 ---
 
-**5. Redundant Files — Cleanup Required**
+**5. Codebase Cleanup — RESOLVED**
 
-Old frontend bundle files from prior builds accumulate in `backend/app/static/assets/` (multiple versions of the same JS files). These are dead code and must be cleaned before deployment. Also two leftover Python processes are running on ports 8768 and 8769 from development sessions — these should be stopped.
-
-Cleanup commands are provided in Section 5 of the deployment document. This is a 5-minute task for the developer.
+Old frontend bundle files and Streamlit source files have been removed as of 2026-05-07. The Streamlit dashboard (`iris_dashboard.py`, 8,410 lines) and all related files have been permanently deleted. The React + FastAPI app is the sole UI. `npm run build` produces a clean bundle with zero errors across 3,884 modules.
 
 ---
 
@@ -131,15 +139,16 @@ Full step-by-step flow with data table names, file paths, and component names is
 **Requested Actions:**
 
 | Action | Owner | Deadline |
-|---|---|---|
-| Review deployment document and confirm requirements | Product Head | This week |
-| Set production JWT_SECRET and update CORS origins | Developer | Before cloud deploy |
-| Run PostgreSQL migration (`alembic upgrade head`) | Developer | Before cloud deploy |
-| Trigger live GPT pipeline on Apr 23+ images | Developer | This week |
-| Cloud server provisioning (8GB RAM, 4 vCPU) | Engineering Head | Before cloud deploy |
-| Stop redundant ports 8768 and 8769 | Developer | Immediately |
-| Clean old static asset bundles | Developer | Before deployment |
-| First cloud smoke test | Engineering + Developer | After provisioning |
+| --- | --- | --- |
+| Review deployment document and confirm AWS EC2 spec | Product Head | This week |
+| Set production `JWT_SECRET` and `CORS_ORIGINS` for cloud domain | Developer | Before cloud deploy |
+| Move all secrets to AWS Secrets Manager (API keys, DB creds, JWT) | Developer | Before cloud deploy |
+| Provision EC2 instances per spec: `c6i.large` (App), `c6i.2xlarge` × N (Workers), `t3.micro` (Beat), RDS `db.t3.large` Multi-AZ, ElastiCache `cache.t3.medium`, ALB + ACM | Engineering Head | Before cloud deploy |
+| Run PostgreSQL migration on RDS (`alembic upgrade head`) | Developer | Before cloud deploy |
+| Upgrade OpenAI account to Tier 3+ (54,000 calls/day requires higher rate limits) | Engineering Head | Before cloud deploy |
+| Implement staggered Drive sync schedule across 150 stores (avoid burst) | Developer | Before cloud deploy |
+| Implement 90-day DB retention job (keeps DB at ~90 GB plateau) | Developer | Phase 2 |
+| First cloud smoke test — login, pipeline trigger, report download | Engineering + Developer | After provisioning |
 
 ---
 

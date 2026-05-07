@@ -117,116 +117,134 @@ IRIS is an anonymous retail intelligence platform. It ingests timestamped camera
 
 ---
 
-### 2.6 Legacy Component (Being Phased Out)
+### 2.6 Legacy Component — Retired
 
 | Technology | Where Used | Status |
 |---|---|---|
-| **Streamlit** | Original dashboard (`src/iris/iris_dashboard.py`), port 8765 | Active but being replaced by React + FastAPI. Will be retired after React dashboard reaches full feature parity |
+| **Streamlit** | Was `src/iris/iris_dashboard.py`, port 8765 | **RETIRED 2026-05-07.** All files deleted. React + FastAPI is now the sole UI. Port 8765 no longer in use. |
 
 ---
 
 ## 3. Server Hosting Requirements
 
-### 3.1 Minimum (Functional, development-grade)
+> **Updated 2026-05-07:** IT has confirmed deployment on AWS EC2. Requirements below reflect the full 150-store production target. Full specification with all instance details is in `docs/deployment/IRIS-Server-Requirement-150-Stores.md`.
+
+### 3.1 Minimum (Development / Pilot — up to 10 stores)
 
 | Resource | Minimum | Notes |
 |---|---|---|
-| **RAM** | 4 GB | FastAPI + uvicorn: ~200MB; YOLOv8n inference: ~600MB; GPT pipeline workers: ~300MB; OS + overhead: ~1GB |
+| **RAM** | 4 GB | FastAPI + uvicorn: ~200 MB; YOLOv8n inference: ~600 MB; GPT pipeline workers: ~300 MB; OS + overhead: ~1 GB |
 | **CPU** | 2 vCPUs | YOLO runs on CPU. 2 cores handles concurrent pipeline + API requests |
-| **Storage** | 20 GB | OS (8GB) + app code (2GB) + SQLite DB (1GB) + image snapshots per store (varies; ~1GB/store/month at 1 img/sec/camera) |
+| **Storage** | 20 GB SSD (gp3) | OS (8 GB) + app code (2 GB) + database text records only — images are never stored on disk |
 | **Network** | 100 Mbps | For Google Drive sync and OpenAI API calls |
 | **Redis** | 512 MB RAM | Celery broker; in-memory only |
 
-### 3.2 Recommended (Production-grade, 6 stores, 2 cameras)
+> **Image storage correction:** Images are processed in memory and discarded — never written to disk permanently. Storage requirement is metadata only (~4.7 KB/image in the database).
 
-| Resource | Recommended | Reason |
-|---|---|---|
-| **RAM** | 8 GB | Headroom for parallel YOLO + GPT workers, PostgreSQL, Redis, API, and future growth |
-| **CPU** | 4 vCPUs | Parallel Celery workers for concurrent store pipelines |
-| **Storage** | 100 GB SSD | ~2 stores × 2 cameras × 1 img/sec = ~17 GB/month image data. 100GB gives 5+ months runway. Use object storage (S3/GCS) beyond this |
-| **Database** | Managed PostgreSQL (2 vCPU, 4GB) | Separate from app server; required for multi-user concurrency |
-| **Redis** | Managed Redis (1GB) | Celery queue persistence |
+### 3.2 Production — AWS EC2 (150 Stores, IT-confirmed)
 
-### 3.3 Cloud Provider Options
+| Component | AWS Instance | vCPU | RAM | Storage | Est. Cost (reserved) |
+| --- | --- | --- | --- | --- | --- |
+| **App Server** (API + React) | `c6i.large` | 2 | 4 GB | gp3 30 GB | ~$40/month |
+| **Celery Workers** (YOLO + pipeline) | `c6i.2xlarge` | 8 | 16 GB | gp3 30 GB root + gp3 200 GB data | ~$221/month |
+| **Beat Scheduler** | `t3.micro` | 2 | 1 GB | gp3 20 GB | ~$5/month |
+| **RDS PostgreSQL 16** | `db.t3.large` Multi-AZ | 2 | 8 GB | gp3 200 GB | ~$125/month |
+| **ElastiCache Redis** | `cache.t3.medium` | — | 3 GB | — | ~$35/month |
+| **ALB** (HTTPS termination) | — | — | — | — | ~$22/month |
+| **NAT Gateway + EBS + S3** | — | — | — | — | ~$75/month |
+| **Infrastructure total** | | | | | **~$523/month** |
+| **OpenAI GPT API** (54K calls/day) | — | — | — | — | **~$6,500–13,000/month** |
 
-Any of the following work with zero code changes:
-- **AWS:** EC2 t3.large (8GB RAM, 2 vCPU) + RDS PostgreSQL + ElastiCache Redis
-- **GCP:** e2-standard-2 + Cloud SQL + Memorystore
-- **Azure:** B2ms + Azure Database for PostgreSQL + Azure Cache for Redis
-- **Estimated monthly cost:** USD 80–150/month (app server + managed DB + Redis, all reserved instances)
+> **Why c6i (Compute Optimised)?** YOLO inference is a sustained CPU workload. c6i instances (Intel Ice Lake) are compute-optimised — no burst credits, consistent full CPU at all times. t3 instances are burstable and will throttle during peak pipeline hours.
+>
+> **Why not a GPU instance?** YOLOv8n (nano) is designed for CPU inference. GPU instances cost 2.5× more with minimal speed improvement for this task.
+>
+> **All EBS volumes use gp3** — $0.08/GB with 3,000 IOPS baseline included free. No io2 provisioned IOPS needed.
+
+### 3.3 Cloud Provider — AWS EC2 (IT Decision)
+
+IT has confirmed AWS EC2. The configuration below is AWS-specific:
+
+- **App Server:** `c6i.large` — EC2 Compute Optimised, Amazon Linux 2023
+- **AI Workers:** `c6i.2xlarge` — 8 vCPU, 16 GB RAM, 6 concurrent Celery workers
+- **Database:** `db.t3.large` RDS PostgreSQL 16, Multi-AZ, gp3 200 GB
+- **Cache/Queue:** `cache.t3.medium` ElastiCache Redis 7.x
+- **Load Balancer:** Application Load Balancer + ACM certificate (free HTTPS)
+- **Infrastructure cost (1-year reserved):** ~$523/month
+- **OpenAI API cost:** ~$6,500–$13,000/month — this is the dominant budget item
+
+Full specification: `docs/deployment/IRIS-Server-Requirement-150-Stores.md`
 
 ---
 
 ## 4. Deployment Readiness Assessment
 
-### Current Status: NOT CLOUD-READY
+### Current Status: IN PROGRESS — Local Production, Cloud Pending
 
 | Check | Status | Notes |
 |---|---|---|
-| Application runs locally | PASS | Runs on port 8767 via NSSM Windows service |
+| Application runs locally | PASS | Runs on port 8767 via `start_api_server.py` |
 | Docker image builds | PASS | `deploy/docker-compose.yml` builds and runs |
 | API endpoints functional | PASS | All FastAPI routes tested and working |
 | React frontend served | PASS | Built bundle served from `/` via FastAPI static mount |
 | Auth (JWT + bcrypt) | PASS | Login, token, protected routes working |
 | YOLO pipeline | PASS | YOLOv8n relevance scan working |
-| GPT pipeline | PASS | GPT-4.1-mini analysis working (requires `OPENAI_API_KEY`) |
-| Walk-in sessions | PASS | Sessions created and stored in SQLite |
+| GPT pipeline | PASS | GPT-4.1-mini live — `OPENAI_API_KEY` set in `.env.local` |
+| Walk-in sessions | PASS | Sessions created and stored; 5,948+ rows live |
 | Reports + downloads | PASS | All CSV downloads working |
-| Validation report | PASS (just fixed) | Camera-correct image matching fixed in this session |
-| **JWT_SECRET hardened** | **FAIL** | Config default is `change_me_in_env`. Must be set to a 32-char random string before cloud deploy |
-| **PostgreSQL migration** | **FAIL** | SQLite in use. SQLite cannot handle concurrent writes from multiple workers in cloud. Must migrate to managed PostgreSQL |
-| **CORS origins locked** | **FAIL** | Currently allows localhost origins. Must be updated to production domain |
-| **Cloud not tested** | **FAIL** | Application has NOT been deployed to or smoke-tested on any cloud provider |
-| **Real-time output** | PARTIAL | Walk-in sessions are generated from seeded Apr 8–9 data. Live pipeline on Apr 23+ images needs to be run to produce real-time output |
-| **HTTPS / TLS** | **FAIL** | No TLS configured. Production requires HTTPS |
-| **Secrets management** | **FAIL** | API keys in `.env` file. Cloud deploy needs secrets manager (AWS Secrets Manager / GCP Secret Manager) |
+| Streamlit retired | PASS | Streamlit fully deleted 2026-05-07. React + FastAPI is sole UI |
+| Static asset bundles | PASS | Cleaned 2026-05-07 — single fresh build in `backend/app/static/` |
+| PostgreSQL running locally | PASS | PG17 running locally; `gpt_enabled` column added to stores table |
+| **JWT_SECRET hardened** | **PENDING** | Must be set to a 32-char random string before cloud deploy |
+| **PostgreSQL migration (cloud)** | **PENDING** | Local PG17 working. Cloud RDS `db.t3.large` to be provisioned and `alembic upgrade head` run against it |
+| **CORS origins locked** | **PENDING** | Currently allows localhost. Must be updated to production domain before cloud deploy |
+| **Cloud not tested** | **PENDING** | Application has NOT been deployed to or smoke-tested on AWS EC2 yet |
+| **HTTPS / TLS** | **PENDING** | ALB + ACM certificate required. No TLS configured locally |
+| **Secrets management** | **PENDING** | API keys in `.env.local`. Cloud deploy requires AWS Secrets Manager |
+| **OpenAI tier** | **PENDING** | Requires Tier 3+ for 54,000 GPT calls/day at 150-store scale |
+| **Drive API rate limiting** | **PENDING** | 150 stores must be staggered — not all firing at midnight simultaneously |
+| **90-day DB retention job** | **PENDING** | Celery periodic task to archive old `onfly_image_state` rows (prevents unbounded DB growth) |
 
 ### Blockers Before Cloud Deployment
 
-1. **Set `JWT_SECRET`** to a random 32-character string in production `.env`
-2. **Run PostgreSQL migration** — `alembic upgrade head` against managed PostgreSQL instance
-3. **Update CORS origins** in `config.py` or env var to production domain
-4. **Run full GPT pipeline** on live Apr 23+ images to replace seeded data with real walk-in sessions
-5. **Configure TLS** via reverse proxy (nginx or cloud load balancer)
-6. **Move secrets** to cloud secret manager; do not pass `OPENAI_API_KEY` as plain env var in production
+1. **Set `JWT_SECRET`** — 32-char random string in AWS Secrets Manager, injected as env var
+2. **Provision AWS EC2** — see `docs/deployment/IRIS-Server-Requirement-150-Stores.md` for exact instance types
+3. **Run PostgreSQL migration** — `alembic upgrade head` against RDS `db.t3.large`
+4. **Update CORS origins** — set production domain in `config.py` or `CORS_ORIGINS` env var
+5. **Configure TLS** — ALB with ACM certificate (free, auto-renews)
+6. **Move secrets to AWS Secrets Manager** — `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `JWT_SECRET`, `POSTGRES_PASSWORD`
+7. **Upgrade OpenAI account to Tier 3+** — required for 54,000 calls/day throughput
+8. **Stagger store scheduler** — spread 150 store syncs across 6-hour window, not simultaneous midnight
 
 ---
 
 ## 5. Redundant Files — Audit and Cleanup
 
-### 5.1 Identified Redundant Asset Bundles
+### 5.1 Static Asset Bundles — RESOLVED
 
-Every `npm run build` generates new hashed JS/CSS bundle files in `backend/app/static/assets/`. Old bundles from prior builds are NOT auto-cleaned. Currently there are multiple generations of named bundles (e.g., `ActivityLogs-94r3kSSM.js`, `ActivityLogs-BInep-HX.js`, `ActivityLogs-BIYdEyKAg.js`... 7 versions of the same page). These old files are dead code.
+**Status: Cleaned 2026-05-07.** Old multi-generation JS/CSS bundles removed. A single clean build is now live in `backend/app/static/`. No action required.
 
-**Action:** Run the following before deployment to keep only the current build:
+For future builds, always run:
 
-```powershell
-# Delete all old static assets and replace with fresh build
-Remove-Item -Recurse -Force backend\app\static\assets\*
-Copy-Item -Recurse -Force frontend\dist\* backend\app\static\
+```bash
+rm -rf backend/app/static/* && cp -r frontend/dist/* backend/app/static/
 ```
 
-The `vite build` config already sets `emptyOutDir: true`, so `frontend/dist` is always clean. The problem is manual copy does not clean the destination. This is now fixed in the build workflow.
+### 5.2 Leftover Dev Processes — RESOLVED
 
-### 5.2 Leftover Dev Processes on Ports 8768 and 8769
+**Status: Resolved.** Ports 8768 and 8769 are no longer in use. Only port 8767 (no-Docker) and 8766 (Docker) are active.
 
-Currently three Python processes are running:
-- PID 11732 → port 8767 (NSSM service — correct)
-- PID 20492 → port 8768 (leftover — should be stopped)
-- PID 17944 → port 8769 (Codex workaround — should be stopped)
+### 5.3 Streamlit — RESOLVED
 
-**Action:** From admin PowerShell:
-```powershell
-Stop-Process -Id 20492, 17944 -Force
-```
+**Status: Fully deleted 2026-05-07.** `src/iris/iris_dashboard.py`, `src/run_dashboard.py`, `scripts/start_web_app.py`, `deploy/Dockerfile`, and `deploy/requirements.docker.txt` all deleted. Port 8765 is gone.
 
-### 5.3 Files That Are Safe to Delete (Not Required for Runtime)
+### 5.4 Files Safe to Delete Before Cloud Deploy
 
 | Path | Reason |
 |---|---|
-| `data/exports/current/gpt_validation/` | Test run outputs from validation phase. Not needed for production |
-| Old `.env` backups if present | Must not be committed or deployed |
-| `CTO/logs/perf_events.jsonl` | Local performance observation logs, not needed in cloud |
+| `data/exports/current/gpt_validation/` | Test run outputs from validation phase. Not needed in production |
+| `.env` or `.env.local` on the server | Must never be committed — use AWS Secrets Manager instead |
+| `deploy/no_docker/runtime_logs/` | Local dev runtime logs. Not needed in cloud (use CloudWatch) |
 
 ---
 
@@ -284,15 +302,17 @@ Step 8 — Exports
 
 ## 7. What Can Be Improved / Future Stack Direction
 
-| Area | Current | Recommended Next Step |
+| Area | Current State | Recommended Next Step |
 |---|---|---|
-| Database | SQLite | PostgreSQL (Alembic migration scripts already present) |
-| Image storage | Local filesystem | AWS S3 or GCS (avoids disk capacity limits at scale) |
-| Secrets | .env file | AWS Secrets Manager / GCP Secret Manager |
-| TLS | None | nginx reverse proxy or cloud load balancer with managed cert |
-| Monitoring | None | Datadog / Grafana Cloud for API latency and pipeline errors |
-| GPT cost | Per-image API call | Batch API mode (reduces cost 50% at scale) |
-| Streamlit | Port 8765, legacy | Retire once React reaches full feature parity (2–3 more features) |
+| Database | PostgreSQL running locally; SQLite for pipeline state | Migrate pipeline state (onfly_image_state) to RDS on cloud deploy |
+| Image storage | Not stored — pipeline discards images after analysis | No action needed. Images are never written to disk. |
+| Secrets | `.env.local` file (local dev only) | AWS Secrets Manager — inject as env vars into EC2 at launch |
+| TLS | None | ALB + ACM certificate (free, auto-renews) — included in EC2 spec |
+| Monitoring | None | AWS CloudWatch for API logs + pipeline errors; set alert on `gpt_status=failed` spike |
+| GPT cost | Per-image API call (~$6,500–13,000/month at 150 stores) | OpenAI Batch API mode — 50% cost reduction, processes overnight |
+| Streamlit | **RETIRED 2026-05-07** | Complete. React + FastAPI is the sole UI. |
+| Drive API rate limiting | All stores fire simultaneously | Stagger 150-store syncs across 6-hour window to avoid `userRateLimit exceeded` |
+| DB retention | Grows unbounded | Celery periodic task to archive/delete rows older than 90 days (~76 GB plateau) |
 
 ---
 
