@@ -328,6 +328,26 @@ function ValidationTable({ rows, storeMap }: { rows: any[]; storeMap: Record<str
   );
 }
 
+// ── SessionStorage cache helpers ─────────────────────────────────────────────
+
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+
+function cacheKey(store: string, tab: string) {
+  return `rp-v1:${store}:${tab}`;
+}
+function readCache(key: string): any[] | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { rows: any[]; ts: number };
+    if (Date.now() - parsed.ts > CACHE_TTL_MS) return null;
+    return parsed.rows;
+  } catch { return null; }
+}
+function writeCache(key: string, rows: any[]) {
+  try { sessionStorage.setItem(key, JSON.stringify({ rows, ts: Date.now() })); } catch { /* quota */ }
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
@@ -365,28 +385,41 @@ export default function ReportsPage() {
   const todayTag = new Date().toISOString().slice(0, 10);
   const tag = selectedStore || "all";
 
-  const fetchTab = useCallback(async (view: string, sid: string | undefined) => {
+  const setTabRows = useCallback((view: string, rows: any[]) => {
+    switch (view) {
+      case "summary":    setSummaryRows(rows); break;
+      case "walkins":    setWalkinRows(rows); break;
+      case "image_scans": setScanRows(rows); break;
+      case "validation": setValidationRows(rows); break;
+    }
+  }, []);
+
+  const fetchTab = useCallback(async (view: string, sid: string | undefined, force = false) => {
+    const key = cacheKey(sid ?? "all", view);
+    if (!force) {
+      const cached = readCache(key);
+      if (cached) {
+        setTabRows(view, cached);
+        setFetchedTabs((prev) => new Set([...prev, view]));
+        return;
+      }
+    }
     setLoading(true);
     try {
+      let rows: any[] = [];
       switch (view) {
-        case "summary":
-          await reportsSummary(sid, 180).then((r) => setSummaryRows(r.data));
-          break;
-        case "walkins":
-          await reportsWalkins(sid, undefined, 2000).then((r) => setWalkinRows(r.data));
-          break;
-        case "image_scans":
-          await reportsImageScans(sid, undefined, 2000).then((r) => setScanRows(r.data));
-          break;
-        case "validation":
-          await reportsValidationMap(sid, undefined, 5000).then((r) => setValidationRows(r.data));
-          break;
+        case "summary":     rows = (await reportsSummary(sid, 180)).data; break;
+        case "walkins":     rows = (await reportsWalkins(sid, undefined, 2000)).data; break;
+        case "image_scans": rows = (await reportsImageScans(sid, undefined, 2000)).data; break;
+        case "validation":  rows = (await reportsValidationMap(sid, undefined, 5000)).data; break;
       }
+      setTabRows(view, rows);
+      writeCache(key, rows);
       setFetchedTabs((prev) => new Set([...prev, view]));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setTabRows]);
 
   // When store changes, drop all cached tab data and re-fetch the current tab.
   const prevStoreRef = useRef<string | undefined>(undefined);
@@ -443,12 +476,7 @@ export default function ReportsPage() {
   const visibleReportRows = activeRows.slice(page * pageSize, (page + 1) * pageSize);
 
   async function refreshReportData() {
-    // Force re-fetch the current tab by removing it from the cache first.
-    setFetchedTabs((prev) => {
-      const next = new Set(prev);
-      next.delete(reportView);
-      return next;
-    });
+    await fetchTab(reportView, selectedStore || undefined, true);
     if (selectedStore) {
       try {
         const { data } = await onFlyLiveProgress(selectedStore);
@@ -527,7 +555,7 @@ export default function ReportsPage() {
           )}
         </div>
         <div className="w-full sm:w-80 flex flex-col gap-2">
-          <button onClick={() => void refreshReportData()} className="iris-btn-secondary justify-center">
+          <button type="button" onClick={() => void refreshReportData()} className="iris-btn-secondary justify-center">
             <RefreshCw size={14} />
             Refresh Report Data
           </button>
@@ -556,6 +584,7 @@ export default function ReportsPage() {
             <label className="iris-label">Report Stack</label>
             <select
               className="iris-select"
+              title="Report Stack"
               value={reportBucket}
               onChange={(e) => setReportBucket(e.target.value as "main" | "validation")}
             >
@@ -567,6 +596,7 @@ export default function ReportsPage() {
             <label className="iris-label">Report View</label>
             <select
               className="iris-select"
+              title="Report View"
               value={reportView}
               onChange={(e) => setReportView(e.target.value)}
             >
@@ -608,12 +638,14 @@ export default function ReportsPage() {
             {reportView !== "validation" && activeRows.length > pageSize && (
               <div className="flex items-center gap-1 text-sm">
                 <button
+                  type="button"
                   disabled={page === 0}
                   onClick={() => setPage(p => p - 1)}
                   className="px-3 py-1.5 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
                 >← Prev</button>
                 <span className="text-xs text-slate-500 px-1">Page {page + 1} / {totalPages}</span>
                 <button
+                  type="button"
                   disabled={page >= totalPages - 1}
                   onClick={() => setPage(p => p + 1)}
                   className="px-3 py-1.5 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 text-xs"
