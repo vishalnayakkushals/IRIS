@@ -59,10 +59,13 @@ async def security_headers(request: Request, call_next):
 async def startup_checks() -> None:
     cfg = get_settings()
     if cfg.jwt_is_insecure:
-        logger.warning(
+        msg = (
             "JWT_SECRET is using the insecure default value. "
-            "Set the JWT_SECRET environment variable before going to production."
+            "Set JWT_SECRET to a 32+ char random string before going to production."
         )
+        if cfg.environment.lower() == "production":
+            raise RuntimeError(f"[FATAL] {msg}")
+        logger.warning(msg)
     # Clean up any zombie runs from a previous process that died mid-run
     _cleanup_zombie_runs(cfg)
     await _run_migrations()

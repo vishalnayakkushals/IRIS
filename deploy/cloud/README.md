@@ -122,20 +122,32 @@ sudo nginx -t && sudo systemctl reload nginx
 ## Validation
 
 ```bash
+# Quick health check
 curl http://localhost:8767/api/health
-curl http://localhost:8767/
 sudo systemctl status iris-api
-journalctl -u iris-api -f
+
+# Full smoke test (run from /opt/iris/app)
+sudo -u iris /opt/iris/app/.venv/bin/python scripts/smoke_test.py \
+  --url http://localhost:8767 \
+  --email admin@yourdomain.com \
+  --password 'YourAdminPassword'
+
+# After TLS is up, re-run against the public domain
+python scripts/smoke_test.py \
+  --url https://iris.your-domain.com \
+  --email admin@yourdomain.com \
+  --password 'YourAdminPassword'
 ```
 
-Demo-ready checks:
+All 7 checks must pass before handing over to users:
 
-- login works
-- Overview loads
-- Reports show headers even when data is empty
-- Store Detail opens with full store names
-- Scheduler shows sync state and run history
-- Store Master accepts CSV/TSV imports
+- Health endpoint responds 200
+- React SPA loads (HTML served)
+- Login returns a JWT token
+- Dashboard overview loads
+- Store list returns data
+- Pipeline run history accessible
+- Security headers present (X-Frame-Options, X-Content-Type-Options)
 
 ## Restarting
 

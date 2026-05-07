@@ -28,6 +28,8 @@ import requests
 
 DATE_FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+# Matches Google Drive's double-upload suffix: "photo (1)", "photo (2)", etc.
+_GDRIVE_DUP_SUFFIX = re.compile(r"^(.*)\s+\(\d+\)$")
 
 
 @dataclass
@@ -42,6 +44,50 @@ class DeltaSyncResult:
     marked_deleted: int
     elapsed_sec: float
     message: str
+    skipped_duplicates: int = 0
+
+
+def _dedup_by_filename_suffix(items: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+    """Layer 1: drop Google Drive double-upload artifacts.
+
+    Google Drive creates 'photo (1).jpg', 'photo (2).jpg' when the same file is
+    uploaded again. This groups items by (parent folder, base name, extension) and
+    keeps only the original (no suffix). If only suffixed versions exist, keeps
+    the first one so nothing is lost.
+
+    Returns (deduplicated_items, skipped_count).
+    """
+    from pathlib import PurePosixPath
+
+    # group_key → list of (item, has_suffix)
+    groups: dict[tuple[str, str, str], list[tuple[dict[str, str], bool]]] = {}
+    for item in items:
+        rel = str(item.get("relative_path", item.get("name", ""))).replace("\\", "/")
+        p = PurePosixPath(rel)
+        stem = p.stem
+        ext = p.suffix.lower()
+        parent = str(p.parent)
+        m = _GDRIVE_DUP_SUFFIX.match(stem)
+        base_stem = m.group(1) if m else stem
+        key = (parent, base_stem, ext)
+        groups.setdefault(key, []).append((item, m is not None))
+
+    kept: list[dict[str, str]] = []
+    skipped = 0
+    for group in groups.values():
+        if len(group) == 1:
+            kept.append(group[0][0])
+            continue
+        originals = [item for item, has_suffix in group if not has_suffix]
+        suffixed = [item for item, has_suffix in group if has_suffix]
+        if originals:
+            kept.append(originals[0])
+            skipped += len(suffixed) + len(originals) - 1
+        else:
+            # All have suffixes — keep first, drop rest
+            kept.append(group[0][0])
+            skipped += len(group) - 1
+    return kept, skipped
 
 
 def _date_bucket_from_relative_path(relative_path: str) -> str:
@@ -261,7 +307,8 @@ def sync_store_gdrive_delta(
     target_dir = ensure_store_snapshot_dir(data_root=data_root, store_id=store.store_id)
     active_rows = _list_present_index_rows(db_path=db_path, store_id=store.store_id)
     mode = "full_recursive"
-    listed_items = _drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
+    listed_items_raw = _drive_api_list_files_recursive(folder_id=folder_id, api_key=api_key)
+    listed_items, suffix_dups = _dedup_by_filename_suffix(listed_items_raw)
     scope_date = "ALL"
 
     listed_map = {str(item.get("id", "")).strip(): item for item in listed_items if str(item.get("id", "")).strip()}
@@ -288,6 +335,8 @@ def sync_store_gdrive_delta(
         remove_local_files=remove_local_deleted_files,
     )
 
+    seen_ids = _get_seen_file_ids(db_path=db_path, store_id=store.store_id)
+
     pending_items: list[dict[str, str]] = []
     reused_existing = 0
     for item in listed_items:
@@ -296,6 +345,9 @@ def sync_store_gdrive_delta(
             continue
         dest, _ = _drive_item_dest_path(target_dir=target_dir, item=item)
         if dest.exists() and dest.is_file() and dest.stat().st_size > 0:
+            reused_existing += 1
+            continue
+        if source_file_id in seen_ids:
             reused_existing += 1
             continue
         pending_items.append(item)
@@ -343,16 +395,17 @@ def sync_store_gdrive_delta(
         store_id=store.store_id,
         mode=mode,
         scope_date=scope_date,
-        listed_files=len(listed_items),
+        listed_files=len(listed_items_raw),
         active_before=active_before,
         reused_existing=reused_existing,
         downloaded_new=downloaded_new,
         marked_deleted=marked_deleted,
         elapsed_sec=round(elapsed, 2),
+        skipped_duplicates=suffix_dups,
         message=(
-            f"{store.store_id}: mode={mode} scope={scope_date} listed={len(listed_items)} "
-            f"reused={reused_existing} downloaded={downloaded_new} marked_deleted={marked_deleted} "
-            f"elapsed_sec={round(elapsed, 2)}"
+            f"{store.store_id}: mode={mode} scope={scope_date} listed={len(listed_items_raw)} "
+            f"suffix_dups={suffix_dups} reused={reused_existing} downloaded={downloaded_new} "
+            f"marked_deleted={marked_deleted} elapsed_sec={round(elapsed, 2)}"
         ),
     )
 
@@ -398,3 +451,20 @@ def sleep_seconds_until_next_run(run_hhmm: str, tz_name: str) -> int:
     if target <= now:
         target = target + timedelta(days=1)
     return max(1, int((target - now).total_seconds()))
+
+
+def _get_seen_file_ids(db_path: Path, store_id: str) -> set[str]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT source_file_id
+            FROM store_source_file_index
+            WHERE store_id=? AND source_provider='gdrive'
+            """,
+            (store_id.strip(),),
+        ).fetchall()
+        return {str(r[0]) for r in rows}
+    finally:
+        conn.close()

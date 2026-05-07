@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = ""
     s3_bucket_name: str = ""
 
+    # "production" triggers hard checks (insecure JWT → startup error, etc.)
+    environment: str = "development"
+
     # Comma-separated allowed CORS origins; defaults cover local dev only
     cors_origins: str = "http://localhost:3000,http://localhost:8767,http://127.0.0.1:8767"
 

@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import base64
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -584,6 +585,9 @@ def init_onfly_tables(db_path: Path) -> None:
             conn.execute("ALTER TABLE onfly_image_state ADD COLUMN yolo_version TEXT NOT NULL DEFAULT ''")
         if "gpt_version" not in state_cols:
             conn.execute("ALTER TABLE onfly_image_state ADD COLUMN gpt_version TEXT NOT NULL DEFAULT ''")
+        if "content_hash" not in state_cols:
+            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_hash ON onfly_image_state(store_id, content_hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_task_stage_status ON onfly_task_queue(stage,status,updated_at)")
         conn.execute(
             """
@@ -769,6 +773,10 @@ def _json_compact(payload: dict[str, Any] | None) -> str:
         return json.dumps(payload, separators=(",", ":"))
     except Exception:
         return "{}"
+
+
+def _sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _is_gpt_quota_error(text: str) -> bool:
@@ -1017,6 +1025,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_work_list: list[tuple] = []
         bytes_cache: dict[str, bytes] = {}
         gpt_result_map: dict[str, tuple] = {}
+        _seen_hashes: set[str] = set()  # Layer 2: SHA256 dedup within this run
 
         def _run_gpt(work: tuple) -> tuple:  # noqa: E306
             _item, _img_bytes = work
@@ -1134,6 +1143,40 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 conn.commit()
                 continue
             timings["download_ms"] += round((time.perf_counter() - dl0) * 1000.0, 2)
+
+            # Layer 2: SHA256 exact-duplicate check
+            _h = _sha256_of(image_bytes)
+            _is_dup = _h in _seen_hashes
+            if not _is_dup and _h:
+                _dup_row = conn.execute(
+                    "SELECT image_id FROM onfly_image_state"
+                    " WHERE store_id=? AND content_hash=? AND image_id!=?"
+                    " AND yolo_status NOT IN ('pending','skipped_duplicate_sha256')"
+                    " LIMIT 1",
+                    (cfg.store_id, _h, item.image_id),
+                ).fetchone()
+                _is_dup = _dup_row is not None
+            if _is_dup:
+                conn.execute(
+                    "UPDATE onfly_image_state SET yolo_status='skipped_duplicate_sha256',"
+                    " gpt_status='skipped_duplicate_sha256', content_hash=?, last_run_id=?"
+                    " WHERE store_id=? AND image_id=?",
+                    (_h, run_id, cfg.store_id, item.image_id),
+                )
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="skipped_duplicate_sha256")
+                _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="progress",
+                    image_id=item.image_id, image_name=item.image_name,
+                    message="Skipped — exact duplicate (SHA256 match)")
+                skipped += 1
+                new_images -= 1
+                conn.commit()
+                continue
+            _seen_hashes.add(_h)
+            conn.execute(
+                "UPDATE onfly_image_state SET content_hash=? WHERE store_id=? AND image_id=?",
+                (_h, cfg.store_id, item.image_id),
+            )
+
             bytes_cache[item.image_id] = image_bytes
             _append_pipeline_event(
                 conn,

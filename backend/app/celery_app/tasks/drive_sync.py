@@ -64,6 +64,19 @@ def drive_sync_task(
                 yolo_scan_task.delay(store_id=store_id, triggered_by=triggered_by, chain=True)
             return {"run_id": run_id, "status": "done", "skipped": True, "remarks": remarks}
 
+        if getattr(settings, "enable_s3_storage", False):
+            # S3 Alternative Branch - Currently disabled via config
+            # When IT provisions the buckets, we will import s3_sync logic here
+            remarks = f"S3 Storage is enabled via config. S3 logic stub hit for store {store_id}."
+            update_run_log_status(
+                settings.db_path_obj, run_id, "done", remarks=remarks, result_json=json.dumps({"s3_mode": True})
+            )
+            if chain:
+                from backend.app.celery_app.tasks.yolo_scan import yolo_scan_task
+                yolo_scan_task.delay(store_id=store_id, triggered_by=triggered_by, chain=True)
+            return {"run_id": run_id, "status": "done", "s3_mode": True, "remarks": remarks}
+
+
         result = sync_store_gdrive_delta(
             db_path=settings.db_path_obj,
             data_root=data_root,

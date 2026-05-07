@@ -16,6 +16,7 @@ celery_app = Celery(
         "backend.app.celery_app.tasks.yolo_scan",
         "backend.app.celery_app.tasks.gpt_analysis",
         "backend.app.celery_app.tasks.report",
+        "backend.app.celery_app.tasks.cleanup",
     ],
 )
 
@@ -50,6 +51,16 @@ celery_app.conf.update(
                 "store_id": os.getenv("STORE_ID", "TEST_STORE_D07"),
                 "triggered_by": "scheduler",
                 "chain": True,
+            },
+        },
+        # Daily: clean up old raw images to save storage
+        "daily-image-cleanup": {
+            "task": "backend.app.celery_app.tasks.cleanup.cleanup_old_images_task",
+            "schedule": crontab(hour=2, minute=0),
+            "kwargs": {
+                "store_id": "ALL",
+                "triggered_by": "scheduler",
+                "retention_days": 7,
             },
         },
     },

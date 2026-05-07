@@ -297,6 +297,13 @@ def run_stage1_scan(args: argparse.Namespace) -> dict[str, Any]:
             }
             store_rows.append(row)
             all_rows.append(row)
+            
+            # Zero Waste Policy: Delete irrelevant images immediately
+            if not person_detected:
+                try:
+                    image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         store_df = pd.DataFrame(store_rows)
         if store_df.empty:
