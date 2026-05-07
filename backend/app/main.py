@@ -132,11 +132,7 @@ def _cleanup_zombie_runs(cfg) -> None:
             WHERE status='running'
               AND (
                 last_heartbeat_at IS NULL
-                OR last_heartbeat_at < datetime('now', '-5 minutes')
-              )
-              AND (
-                started_at IS NULL
-                OR started_at < datetime('now', '-3 minutes')
+                OR last_heartbeat_at < datetime('now', '-2 minutes')
               )
             """,
             (now, now),

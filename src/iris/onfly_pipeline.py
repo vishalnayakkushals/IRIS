@@ -2122,6 +2122,23 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             _heartbeat.stop()
         except Exception:
             pass
+        # If run is still 'running' here, a BaseException (SIGTERM/KeyboardInterrupt) bypassed
+        # the except block above. Mark it abandoned so it doesn't appear stuck forever.
+        try:
+            row = conn.execute(
+                "SELECT status FROM onfly_pipeline_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row and row[0] == "running":
+                _now_ts = _now()
+                conn.execute(
+                    "UPDATE onfly_pipeline_runs SET status='abandoned', "
+                    "error_message='Pipeline process was interrupted (server restart or SIGTERM)', "
+                    "ended_at=?, updated_at=? WHERE run_id=?",
+                    (_now_ts, _now_ts, run_id),
+                )
+                conn.commit()
+        except Exception:
+            pass
         # Cancel any outstanding download futures (e.g. if pipeline failed mid-run)
         try:
             _dl_pool.shutdown(wait=False, cancel_futures=True)

@@ -104,6 +104,27 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
   - **`detect_bytes()` integration**: Pipeline YOLO stage now calls `OnnxPersonDetector.detect_bytes(raw_bytes)` directly instead of writing a temp file. Eliminates temp-file I/O on every image.
   - **Unit tests**: All three infrastructure classes verified — token bucket timing, circuit breaker state transitions, heartbeat DB writes. See `scripts/_test_pipeline_infra.py`.
 
+### 2026-05-08 - Reports UX Overhaul + Zombie Run Fix
+
+- Changed paths:
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/components/layout/TopNav.tsx`
+  - `frontend/src/api/client.ts`
+  - `backend/app/api/routes_reports.py`
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/main.py`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Lazy tab loading**: Reports page previously fired 4 parallel API calls (loading ~9,000 rows) on every mount. Now only the active tab's data is fetched on first visit. Other tabs load on demand. Re-fetching only happens on explicit Refresh click.
+  - **sessionStorage caching**: All four tab views cached with 5-minute TTL using key `rp-v1:{store}:{tab}`. Back/forward navigation is instant; cache is shared with hover-prefetch.
+  - **Hover-prefetch on store selector**: Hovering a store in the TopNav dropdown triggers a 200ms-debounced prefetch of that store's summary tab. Result is written to the same sessionStorage key ReportsPage reads — so switching stores loads summary data immediately.
+  - **Background CSV export (zero infra)**: Download no longer blocks the UI. A FastAPI daemon thread generates the CSV; frontend polls every second and auto-downloads when ready. Toast notifications show loading / success / error. No Redis, no Celery, no new services. Job registry is an in-process dict purged after 10 minutes.
+  - **SQLite covering indexes**: Two indexes added in `_init_db` — `(store_id, date_display, yolo_relevant)` on `onfly_image_state` and `(store_id, business_date)` on `onfly_walkin_sessions`. Turns GROUP BY summary queries from full scans to index lookups.
+  - **Zombie run fix — pipeline**: `finally` block in `run_onfly_pipeline` now checks if the run is still `status='running'` after stopping the heartbeat thread. If so (meaning a `BaseException` / SIGTERM killed the process before the `except Exception` block ran), it marks the run as `abandoned`. Previously, SIGTERM left runs stuck in 'running' forever.
+  - **Zombie run fix — startup cleanup**: `_cleanup_zombie_runs` in `main.py` threshold lowered from `-5 minutes` to `-2 minutes` for heartbeat staleness. Removed the `started_at > -3 minutes` guard (which blocked cleanup of runs killed just before restart). Startup is now reliable at catching any orphaned run.
+  - **UI fix**: `liveProgress.error` in Reports page now only renders when `liveProgress.is_running` is true. Previously showed stale error messages from dead/abandoned runs as if they were current.
+  - **Orphaned server**: Killed PID 8596 (old server on port 8767 — orphaned from a prior restart and competing on the same SQLite DB, causing zombie run misdetection).
+
 ### 2026-05-07 - In-App ONNX Detection Boxes + Visual Review Script
 
 - Changed paths:

@@ -546,7 +546,7 @@ export default function ReportsPage() {
               {liveProgress.is_running ? (
                 <span className="text-slate-400">Report tables stay stable. Click Refresh Report Data when you want the latest snapshot.</span>
               ) : null}
-              {liveProgress.error ? <span className="text-rose-500 truncate max-w-[18rem]">{liveProgress.error}</span> : null}
+              {liveProgress.is_running && liveProgress.error ? <span className="text-rose-500 truncate max-w-[18rem]">{liveProgress.error}</span> : null}
             </div>
           )}
         </div>
