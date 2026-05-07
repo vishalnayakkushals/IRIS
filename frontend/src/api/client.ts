@@ -182,7 +182,7 @@ export interface WalkinSession {
   created_at: string;
 }
 
-export const fetchWalkins = (storeId?: string, limit = 200) =>
+export const fetchWalkins = (storeId?: string, limit = 100) =>
   storeId
     ? api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/${storeId}/walkins?limit=${limit}`)
     : api.get<{ sessions: WalkinSession[]; total: number }>(`/detail/walkins?limit=${limit}`);
@@ -264,13 +264,13 @@ export const adminUploadStoreMasterFile = (file: File) => {
 };
 
 // ── Reports ───────────────────────────────────────────────────────────────────
-export const reportsWalkins = (storeId?: string, date?: string, limit = 200) => {
+export const reportsWalkins = (storeId?: string, date?: string, limit = 100) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (storeId) params.set("store_id", storeId);
   if (date) params.set("business_date", date);
   return api.get<any[]>(`/reports/walkins?${params}`);
 };
-export const reportsWalkinsQA = (storeId?: string, limit = 500) => {
+export const reportsWalkinsQA = (storeId?: string, limit = 100) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (storeId) params.set("store_id", storeId);
   return api.get<any[]>(`/reports/walkins-qa?${params}`);
@@ -280,7 +280,7 @@ export const reportsSummary = (storeId?: string, limit = 90) => {
   if (storeId) params.set("store_id", storeId);
   return api.get<any[]>(`/reports/summary?${params}`);
 };
-export const reportsImageScans = (storeId?: string, date?: string, limit = 200) => {
+export const reportsImageScans = (storeId?: string, date?: string, limit = 100) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (storeId) params.set("store_id", storeId);
   if (date) params.set("business_date", date);

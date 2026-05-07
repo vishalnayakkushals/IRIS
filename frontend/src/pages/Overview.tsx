@@ -141,7 +141,26 @@ export default function Overview() {
   const [delta, setDelta] = useState<DeltaData | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const load = useCallback(() => {
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const cacheKey = `overview_${storeFilter || "all"}_${days}_${groupBy}`;
+
+  const load = useCallback((force = false) => {
+    if (!force) {
+      try {
+        const raw = sessionStorage.getItem(cacheKey);
+        if (raw) {
+          const { data, ts } = JSON.parse(raw);
+          if (Date.now() - ts < CACHE_TTL_MS) {
+            setAnalytics(data.analytics);
+            setTrend(data.trend);
+            setLeaderboard(data.leaderboard);
+            setDelta(data.delta);
+            return;
+          }
+          sessionStorage.removeItem(cacheKey);
+        }
+      } catch {}
+    }
     setLoading(true);
     const sid = storeFilter || undefined;
     Promise.all([
@@ -155,10 +174,16 @@ export default function Overview() {
         setTrend(t.data ?? []);
         setLeaderboard(l.data ?? []);
         setDelta(d.data);
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({
+            data: { analytics: a.data, trend: t.data ?? [], leaderboard: l.data ?? [], delta: d.data },
+            ts: Date.now(),
+          }));
+        } catch {}
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [storeFilter, days, groupBy]);
+  }, [storeFilter, days, groupBy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();

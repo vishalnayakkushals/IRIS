@@ -566,7 +566,7 @@ def _sqlite_runtime_image_scans(
 async def get_walkins(
     store_id: str | None = None,
     business_date: str | None = None,
-    limit: int = 200,
+    limit: int = 100,
     _: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     runtime_rows = _sqlite_runtime_walkins(store_id=store_id, business_date=business_date, limit=limit)
@@ -589,7 +589,7 @@ async def get_walkins(
 @router.get("/walkins-qa")
 async def get_walkins_for_qa(
     store_id: str | None = None,
-    limit: int = 500,
+    limit: int = 100,
     _: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     """Fast QA-Review endpoint — returns GPT-analysed walk-in sessions with image_id intact.
@@ -620,6 +620,7 @@ async def get_walkins_for_qa(
                        MIN(image_id) AS rep_image_id,
                        MAX(image_id) AS last_image_id
                 FROM onfly_image_state
+                {"WHERE store_id = ?" if store_id else ""}
                 GROUP BY store_id, date_source, camera_id
             )
             SELECT
@@ -651,7 +652,7 @@ async def get_walkins_for_qa(
             ORDER BY w.business_date DESC, w.entry_time ASC
             LIMIT ?
             """,
-            tuple(([store_id] if store_id else []) + [max(1, int(limit))]),
+            tuple(([store_id, store_id] if store_id else []) + [max(1, int(limit))]),
         )
         return _row_dicts(cur)
     finally:
@@ -686,7 +687,7 @@ async def get_store_day_summary(
 async def get_image_scans(
     store_id: str | None = None,
     business_date: str | None = None,
-    limit: int = 200,
+    limit: int = 100,
     _: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     runtime_rows = _sqlite_runtime_image_scans(store_id=store_id, business_date=business_date, limit=limit)

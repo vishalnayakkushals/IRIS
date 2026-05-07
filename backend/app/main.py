@@ -68,6 +68,7 @@ async def startup_checks() -> None:
         logger.warning(msg)
     # Clean up any zombie runs from a previous process that died mid-run
     _cleanup_zombie_runs(cfg)
+    _run_sqlite_migrations(cfg)
     await _run_migrations()
     asyncio.create_task(auto_sync_loop())
 
@@ -85,6 +86,32 @@ async def _run_migrations() -> None:
                 await conn.execute(text(sql))
             except Exception as exc:
                 logger.warning("Migration skipped: %s — %s", sql[:60], exc)
+
+
+def _run_sqlite_migrations(cfg) -> None:
+    """Create missing SQLite indexes on startup to speed up all analytics queries."""
+    import sqlite3
+    db_path = cfg.db_path_obj
+    if not db_path.exists():
+        return
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_walkin_store_date ON onfly_walkin_sessions(store_id, business_date)",
+        "CREATE INDEX IF NOT EXISTS idx_walkin_business_date ON onfly_walkin_sessions(business_date)",
+        "CREATE INDEX IF NOT EXISTS idx_walkin_created_at ON onfly_walkin_sessions(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_image_state_store_date ON onfly_image_state(store_id, date_source)",
+    ]
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        for sql in indexes:
+            try:
+                conn.execute(sql)
+            except Exception as exc:
+                logger.warning("SQLite index skipped: %s", exc)
+        conn.commit()
+        conn.close()
+        logger.info("SQLite indexes verified.")
+    except Exception as exc:
+        logger.warning("SQLite migration failed: %s", exc)
 
 
 def _cleanup_zombie_runs(cfg) -> None:

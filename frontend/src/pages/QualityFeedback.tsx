@@ -133,15 +133,36 @@ export default function QualityFeedback() {
     setTimeout(() => setToast(""), 2500);
   }
 
-  function load() {
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+
+  function getCacheKey() { return `qa_sessions_${storeId || "all"}`; }
+
+  function readCache(): any[] | null {
+    try {
+      const raw = sessionStorage.getItem(getCacheKey());
+      if (!raw) return null;
+      const { data, ts } = JSON.parse(raw);
+      if (Date.now() - ts > CACHE_TTL_MS) { sessionStorage.removeItem(getCacheKey()); return null; }
+      return data;
+    } catch { return null; }
+  }
+
+  function writeCache(data: any[]) {
+    try { sessionStorage.setItem(getCacheKey(), JSON.stringify({ data, ts: Date.now() })); } catch {}
+  }
+
+  function load(force = false) {
+    const cached = !force && readCache();
+    if (cached) { setRows(cached); setFeedbackState({}); setPage(0); return; }
     setLoading(true);
     setError("");
     setPage(0);
-    reportsWalkinsQA(storeId || undefined, 500)
+    reportsWalkinsQA(storeId || undefined, 100)
       .then((r) => {
         const data: any[] = Array.isArray(r.data) ? r.data : [];
         setRows(data);
         setFeedbackState({});
+        writeCache(data);
       })
       .catch(() => setError("Failed to load sessions. Check the server is running."))
       .finally(() => setLoading(false));
@@ -266,7 +287,7 @@ export default function QualityFeedback() {
           </p>
         </div>
         <button
-          onClick={load} disabled={loading}
+          onClick={() => load(true)} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
         >
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
