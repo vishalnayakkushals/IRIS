@@ -104,6 +104,17 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
   - **`detect_bytes()` integration**: Pipeline YOLO stage now calls `OnnxPersonDetector.detect_bytes(raw_bytes)` directly instead of writing a temp file. Eliminates temp-file I/O on every image.
   - **Unit tests**: All three infrastructure classes verified — token bucket timing, circuit breaker state transitions, heartbeat DB writes. See `scripts/_test_pipeline_infra.py`.
 
+### 2026-05-08 - Fix Overview/StoreDetail Showing Zero Analytics
+
+- Changed paths:
+  - `backend/app/api/routes_dashboard.py`
+  - `backend/app/api/routes_detail.py`
+  - `backend/app/api/routes_reports.py`
+- Summary:
+  - **Root cause 1 — date format mismatch**: The pipeline stores `business_date` in SQLite as `DD-MM-YYYY` (e.g. `06-05-2026`) for recent runs. All dashboard analytics queries filtered with `business_date >= DATE('now', '-30 days')` which returns `YYYY-MM-DD`. String comparison `'06-05-2026' < '2026-04-07'` → all recent rows silently excluded. Added inline `CASE WHEN ... GLOB '??-??-????' THEN ... END` normalization (`_ISO_DATE`) to all date comparisons and `GROUP BY period` in `routes_dashboard.py` (`_sqlite_analytics`, `_sqlite_trend`, `_sqlite_leaderboard`, `_sqlite_delta`). Result: 137 walk-ins now visible vs 86 before (the 86 happened to be in YYYY-MM-DD format from older runs).
+  - **Root cause 2 — wrong database for store detail**: `routes_detail.py` called `get_store_metrics()` and `get_walkin_sessions()` from `platform_data.py` which uses `AsyncSessionLocal` → PostgreSQL. The pipeline never writes to PostgreSQL `onfly_walkin_sessions`. Rewrote `routes_detail.py` with direct SQLite queries (same pattern as `routes_dashboard.py`), keeping only `list_store_registry_stores` from `platform_data` (stores managed in PG).
+  - **Root cause 3 — Summary tab join**: `_sqlite_runtime_summary` in `routes_reports.py` joined `walkin_rollup.business_date` against `image_rollup.iso_date` (already normalized to YYYY-MM-DD). The raw `business_date` DD-MM-YYYY never matched. Fixed by normalizing `business_date` inside the `walkin_rollup` CTE before grouping.
+
 ### 2026-05-08 - Reports UX Overhaul + Zombie Run Fix
 
 - Changed paths:

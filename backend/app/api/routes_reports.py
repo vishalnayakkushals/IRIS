@@ -346,7 +346,10 @@ def _sqlite_runtime_summary(store_id: str | None = None, limit: int = 90) -> lis
             walkin_rollup AS (
                 SELECT
                     w.store_id,
-                    w.business_date,
+                    -- Normalize DD-MM-YYYY → YYYY-MM-DD so the join with image_rollup.iso_date works
+                    CASE WHEN w.business_date GLOB '??-??-????' THEN
+                        SUBSTR(w.business_date,7,4)||'-'||SUBSTR(w.business_date,4,2)||'-'||SUBSTR(w.business_date,1,2)
+                    ELSE w.business_date END AS business_date,
                     SUM(CASE WHEN UPPER(COALESCE(w.role, '')) = 'CUSTOMER' AND UPPER(COALESCE(w.included_in_analytics, '')) = 'YES' THEN 1 ELSE 0 END) AS walkins,
                     SUM(CASE WHEN UPPER(COALESCE(w.role, '')) = 'CUSTOMER' AND UPPER(COALESCE(w.included_in_analytics, '')) = 'YES' AND UPPER(COALESCE(w.purchase_signal_bag, '')) = 'YES' THEN 1 ELSE 0 END) AS conversions,
                     AVG(
@@ -359,7 +362,7 @@ def _sqlite_runtime_summary(store_id: str | None = None, limit: int = 90) -> lis
                 FROM onfly_walkin_sessions w
                 WHERE COALESCE(w.business_date, '') != ''
                 {f"AND w.store_id = ?" if store_id else ""}
-                GROUP BY w.store_id, w.business_date
+                GROUP BY w.store_id, business_date
             )
             SELECT
                 image_rollup.store_id,

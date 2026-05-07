@@ -23,6 +23,18 @@ def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Normalize stored business_date to ISO (YYYY-MM-DD) for date comparisons.
+# Pipeline writes DD-MM-YYYY; some older runs wrote YYYY-MM-DD.
+# String comparison only works correctly on YYYY-MM-DD, so we convert inline.
+_ISO_DATE = """
+    CASE
+        WHEN business_date GLOB '??-??-????' THEN
+            SUBSTR(business_date,7,4)||'-'||SUBSTR(business_date,4,2)||'-'||SUBSTR(business_date,1,2)
+        ELSE business_date
+    END
+"""
+
+
 def _sqlite_analytics(
     store_id: str | None = None,
     days: int = 30,
@@ -58,7 +70,7 @@ def _sqlite_analytics(
             FROM onfly_walkin_sessions
             WHERE COALESCE(business_date,'') != ''
             {store_filter}
-            AND business_date >= DATE('now', '-' || ? || ' days')
+            AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
         """, tuple(params)).fetchone()
 
         # Gender breakdown
@@ -71,7 +83,7 @@ def _sqlite_analytics(
             AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
             AND COALESCE(business_date,'') != ''
             {store_filter}
-            AND business_date >= DATE('now', '-' || ? || ' days')
+            AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
             GROUP BY gender ORDER BY cnt DESC
         """, tuple(params)).fetchall()
 
@@ -85,7 +97,7 @@ def _sqlite_analytics(
             AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
             AND COALESCE(business_date,'') != ''
             {store_filter}
-            AND business_date >= DATE('now', '-' || ? || ' days')
+            AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
             GROUP BY age_band ORDER BY cnt DESC
         """, tuple(params)).fetchall()
 
@@ -99,7 +111,7 @@ def _sqlite_analytics(
             AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
             AND COALESCE(business_date,'') != ''
             {store_filter}
-            AND business_date >= DATE('now', '-' || ? || ' days')
+            AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
             GROUP BY engagement_type ORDER BY cnt DESC LIMIT 8
         """, tuple(params)).fetchall()
 
@@ -137,12 +149,13 @@ def _sqlite_trend(
             params.append(store_id)
         params.append(days)
 
+        iso_date = _ISO_DATE
         if group_by == "month":
-            period_expr = "SUBSTR(business_date,1,7)"
+            period_expr = f"SUBSTR(({iso_date}),1,7)"
         elif group_by == "week":
-            period_expr = "STRFTIME('%Y-W%W', business_date)"
+            period_expr = f"STRFTIME('%Y-W%W', ({iso_date}))"
         else:
-            period_expr = "business_date"
+            period_expr = f"({iso_date})"
 
         rows = conn.execute(f"""
             SELECT
@@ -161,7 +174,7 @@ def _sqlite_trend(
             FROM onfly_walkin_sessions
             WHERE COALESCE(business_date,'') != ''
             {store_filter}
-            AND business_date >= DATE('now', '-' || ? || ' days')
+            AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
             GROUP BY period
             ORDER BY period ASC
         """, tuple(params)).fetchall()
@@ -207,7 +220,7 @@ def _sqlite_leaderboard(days: int = 30) -> list[dict[str, Any]]:
             FROM onfly_walkin_sessions w
             LEFT JOIN stores s ON s.store_id = w.store_id
             WHERE COALESCE(w.business_date,'') != ''
-            AND w.business_date >= DATE('now', '-' || ? || ' days')
+            AND (CASE WHEN w.business_date GLOB '??-??-????' THEN SUBSTR(w.business_date,7,4)||'-'||SUBSTR(w.business_date,4,2)||'-'||SUBSTR(w.business_date,1,2) ELSE w.business_date END) >= DATE('now', '-' || ? || ' days')
             GROUP BY w.store_id, s.store_name
             HAVING walkins > 0
             ORDER BY walkins DESC
@@ -281,8 +294,8 @@ def _sqlite_delta(store_id: str | None, current_days: int, prior_days: int) -> d
                 FROM onfly_walkin_sessions
                 WHERE COALESCE(business_date,'') != ''
                 {store_filter}
-                AND business_date >= DATE('now', '-' || ? || ' days')
-                AND business_date < DATE('now', '-' || ? || ' days')
+                AND {_ISO_DATE} >= DATE('now', '-' || ? || ' days')
+                AND {_ISO_DATE} < DATE('now', '-' || ? || ' days')
             """, tuple(p2)).fetchone()
             w = int(row["walkins"] or 0)
             c = int(row["conversions"] or 0)
