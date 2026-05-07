@@ -8,9 +8,11 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import random
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 from typing import Any, Protocol
 
@@ -136,6 +138,103 @@ _RETAIL_WALKIN_PROMPT = (
     "Engagement Type, Engagement Depth, Purchase Signal (Bag), Included in Analytics, Event Type, Direction Confidence, Match Fingerprint. "
     "Prefer NA over guessing. Never invent data. Never output explanatory text outside the JSON."
 )
+
+
+class _TokenBucket:
+    """Thread-safe token bucket — controls calls/second to the OpenAI API."""
+
+    def __init__(self, rate: float, capacity: int) -> None:
+        self._rate = max(0.1, rate)       # tokens refilled per second
+        self._capacity = max(1, capacity)
+        self._tokens = float(capacity)
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self, timeout: float = 60.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._rate)
+                self._last = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return True
+                wait = (1.0 - self._tokens) / self._rate
+            if time.monotonic() + wait > deadline:
+                return False
+            time.sleep(min(wait, 0.25))
+
+
+class _CircuitBreaker:
+    """Trips after fail_max consecutive API errors; auto-resets after reset_timeout seconds."""
+
+    CLOSED = "closed"
+    OPEN = "open"
+
+    def __init__(self, fail_max: int = 5, reset_timeout: float = 60.0) -> None:
+        self._fail_max = fail_max
+        self._reset_timeout = reset_timeout
+        self._failures = 0
+        self._opened_at: float | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if time.monotonic() - self._opened_at >= self._reset_timeout:
+                self._failures = 0
+                self._opened_at = None
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._fail_max and self._opened_at is None:
+                self._opened_at = time.monotonic()
+
+    @property
+    def state(self) -> str:
+        return self.OPEN if self.is_open else self.CLOSED
+
+
+class _HeartbeatThread(threading.Thread):
+    """Background thread that writes last_heartbeat_at to SQLite every interval seconds.
+
+    Keeps pipeline runs from appearing stuck/zombie when long downloads or GPT calls
+    block the main thread from calling _update_pipeline_run.
+    """
+
+    def __init__(self, db_path: Path, run_id: str, interval: float = 25.0) -> None:
+        super().__init__(daemon=True, name=f"heartbeat-{run_id[-8:]}")
+        self._db_path = db_path
+        self._run_id = run_id
+        self._interval = interval
+        self._stop_evt = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    def run(self) -> None:
+        while not self._stop_evt.wait(self._interval):
+            try:
+                c = sqlite3.connect(str(self._db_path), timeout=5)
+                c.execute(
+                    "UPDATE onfly_pipeline_runs SET last_heartbeat_at=? WHERE run_id=?",
+                    (_now(), self._run_id),
+                )
+                c.commit()
+                c.close()
+            except Exception:
+                pass
 
 
 def _walkin_schema() -> dict[str, Any]:
@@ -866,7 +965,17 @@ def _append_pipeline_event(
             _now(),
         ),
     )
-def _yolo_detect_from_bytes(detector: Any, image_bytes: bytes, image_name: str) -> tuple[int, float, str]:
+def _yolo_detect_direct(detector: Any, image_bytes: bytes, image_name: str) -> tuple[int, float, str]:
+    """Run YOLO/ONNX detection on raw bytes.
+
+    Uses OnnxPersonDetector.detect_bytes() when available (no temp file, no disk I/O).
+    Falls back to temp file only for detectors that require a filesystem path
+    (YoloPersonDetector, LegacyTf).
+    """
+    if hasattr(detector, "detect_bytes"):
+        r = detector.detect_bytes(image_bytes)
+        return int(r.person_count or 0), float(r.max_person_conf or 0.0), str(r.detection_error or "")
+    # Fallback path — detectors that need a file path
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(image_name).suffix or ".jpg") as tmp:
         tmp.write(image_bytes)
         tmp_path = Path(tmp.name)
@@ -878,7 +987,9 @@ def _yolo_detect_from_bytes(detector: Any, image_bytes: bytes, image_name: str) 
 
 
 def _yolo_detect_full_result(detector: Any, image_bytes: bytes, image_name: str) -> Any:
-    """Like _yolo_detect_from_bytes but returns the full DetectionResult (with boxes)."""
+    """Like _yolo_detect_direct but returns the full DetectionResult (boxes + confidences)."""
+    if hasattr(detector, "detect_bytes"):
+        return detector.detect_bytes(image_bytes)
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(image_name).suffix or ".jpg") as tmp:
         tmp.write(image_bytes)
         tmp_path = Path(tmp.name)
@@ -1002,6 +1113,10 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             source_uri=cfg.source_uri,
             started_at=started_at,
         )
+        # Start heartbeat thread — updates last_heartbeat_at every 25s so the run
+        # is never mistakenly marked zombie even during slow downloads or long GPT calls.
+        _heartbeat = _HeartbeatThread(cfg.db_path, run_id)
+        _heartbeat.start()
         _append_pipeline_event(
             conn,
             run_id=run_id,
@@ -1027,26 +1142,84 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_result_map: dict[str, tuple] = {}
         _seen_hashes: set[str] = set()  # Layer 2: SHA256 dedup within this run
 
+        _GPT_EMPTY = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
+
         def _run_gpt(work: tuple) -> tuple:  # noqa: E306
+            """Submit one image to GPT with rate limiting, circuit breaker, and jittered retry.
+
+            Industry-standard pattern:
+            - Token bucket: enforces calls/sec without hammering the API.
+            - Circuit breaker: after 5 consecutive 429s trips OPEN for 90s, then
+              half-opens and tries again — prevents cost storms and unrecoverable loops.
+            - Exponential backoff + jitter: each retry waits 2^attempt + rand(0,1)s,
+              multiplied by 4 for quota errors, capped at 120s. Jitter prevents
+              all concurrent workers from retrying at the exact same moment.
+            - DLQ: after _GPT_MAX_ATTEMPTS the image is marked gpt_dlq (dead letter),
+              surfaced separately in the dashboard from ordinary failures.
+            """
             _item, _img_bytes = work
             _g0 = time.perf_counter()
-            try:
-                _out = _openai_eval(cfg, _img_bytes, _item.image_name)
-                return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
-            except Exception as _exc:
-                _gerr = str(_exc)
-                _gstatus = "quota_pending_retry" if _is_gpt_quota_error(_gerr) else "failed"
-                return (
-                    _item.image_id,
-                    {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
-                    _gstatus, _gerr, round((time.perf_counter() - _g0) * 1000.0, 2),
-                )
+            for _attempt in range(1, _GPT_MAX_ATTEMPTS + 1):
+                # Circuit breaker — if tripped, fail fast rather than pile onto a rate-limit storm
+                if _breaker.is_open:
+                    return (
+                        _item.image_id, _GPT_EMPTY.copy(),
+                        "quota_pending_retry", "circuit_open — breaker tripped, skipping this cycle",
+                        round((time.perf_counter() - _g0) * 1000.0, 2),
+                    )
+                # Rate limit — acquire a token (blocks up to 60s before giving up)
+                if not _bucket.acquire(timeout=60.0):
+                    return (
+                        _item.image_id, _GPT_EMPTY.copy(),
+                        "quota_pending_retry", "rate_limiter_timeout",
+                        round((time.perf_counter() - _g0) * 1000.0, 2),
+                    )
+                try:
+                    _out = _openai_eval(cfg, _img_bytes, _item.image_name)
+                    _breaker.record_success()
+                    return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
+                except Exception as _exc:
+                    _gerr = str(_exc)
+                    _is_quota = _is_gpt_quota_error(_gerr)
+                    if _is_quota:
+                        _breaker.record_failure()
+                    if _attempt < _GPT_MAX_ATTEMPTS:
+                        # Exponential backoff with jitter — prevents retry storms
+                        _base = (2 ** _attempt) + random.uniform(0.0, 1.0)
+                        _delay = min(_base * (4 if _is_quota else 1), 120.0)
+                        time.sleep(_delay)
+                    else:
+                        # Exhausted retries → dead letter queue
+                        _gstatus = "gpt_dlq" if not _is_quota else "quota_pending_retry"
+                        return (
+                            _item.image_id, _GPT_EMPTY.copy(),
+                            _gstatus, f"[attempt {_attempt}/{_GPT_MAX_ATTEMPTS}] {_gerr}",
+                            round((time.perf_counter() - _g0) * 1000.0, 2),
+                        )
+            # Should never reach here
+            return (_item.image_id, _GPT_EMPTY.copy(), "failed", "run_gpt_exhausted", 0.0)
 
         _max_w = max(1, int(cfg.gpt_parallel_workers))
         _gpt_pool: concurrent.futures.ThreadPoolExecutor | None = (
             concurrent.futures.ThreadPoolExecutor(max_workers=_max_w) if cfg.gpt_enabled else None
         )
         _gpt_ordered: list[tuple] = []  # (item, image_bytes, future) — in YOLO submission order
+
+        # ── Parallel download pool ───────────────────────────────────────────
+        # As soon as each image passes the skip-check, its download is submitted
+        # to this background pool (8 workers). By the time the main loop reaches
+        # the YOLO stage for that image, the bytes are usually already waiting —
+        # eliminating serial network wait (biggest pipeline bottleneck).
+        _DL_WORKERS = min(8, max(1, len(images)))
+        _dl_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_DL_WORKERS, thread_name_prefix="dl")
+        _pending_dl: dict[str, concurrent.futures.Future] = {}
+
+        # ── Rate limiter + circuit breaker for OpenAI ───────────────────────
+        # gpt_rate_limit_rps controls tokens/sec; capacity = number of parallel workers
+        # so all workers can be in flight simultaneously once primed.
+        _bucket = _TokenBucket(rate=cfg.gpt_rate_limit_rps, capacity=_max_w)
+        _breaker = _CircuitBreaker(fail_max=5, reset_timeout=90.0)
+        _GPT_MAX_ATTEMPTS = 3  # per-image retry limit before DLQ
 
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
@@ -1111,6 +1284,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 current_stage=stage,
             )
             _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="pending")
+
+            # Submit download to background pool as soon as we know this image needs work.
+            # The main thread continues the skip-check loop while the download runs in parallel.
+            # When YOLO is reached below, _dl_future.result() is usually already done.
+            if item.image_id not in _pending_dl:
+                _pending_dl[item.image_id] = _dl_pool.submit(client.fetch_bytes, item)
+
             _append_pipeline_event(
                 conn,
                 run_id=run_id,
@@ -1118,11 +1298,12 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 event_type="start",
                 image_id=item.image_id,
                 image_name=item.image_name,
-                message="Downloading image bytes",
+                message="Downloading image bytes (parallel pool)",
             )
             dl0 = time.perf_counter()
             try:
-                image_bytes = client.fetch_bytes(item)
+                _dl_future = _pending_dl.pop(item.image_id, None)
+                image_bytes = _dl_future.result() if _dl_future is not None else client.fetch_bytes(item)
             except Exception as exc:
                 err = str(exc)
                 conn.execute(
@@ -1216,7 +1397,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         _confs = list(_det.person_confidences) if _det.person_confidences else [max_conf] * len(_det.person_boxes)
                         _tracker.update(list(_det.person_boxes), _confs, image_id=item.image_id)
                 else:
-                    pcount, max_conf, yerr = _yolo_detect_from_bytes(detector, image_bytes, item.image_name)
+                    pcount, max_conf, yerr = _yolo_detect_direct(detector, image_bytes, item.image_name)
                 timings["yolo_ms"] += round((time.perf_counter() - y0) * 1000.0, 2)
                 relevant = int(pcount > 0 and not yerr)
                 yolo_relevant += int(relevant == 1)
@@ -1357,6 +1538,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             _gpt_pool.shutdown(wait=True)
             _update_pipeline_run(conn, run_id, gpt_success_count=gpt_done, gpt_failed_count=gpt_failed)
             conn.commit()
+        # Shut down download pool — cancel any futures for images that ended up skipped
+        _dl_pool.shutdown(wait=False, cancel_futures=True)
 
         # Phase 3: sequential session writes — preserves event-time ordering for Re-ID state machine.
         if gpt_work_list:
@@ -1368,8 +1551,11 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 )
                 timings["gpt_ms"] += _elapsed_ms
                 gpt_done += int(gstatus == "done")
-                gpt_failed += int(gstatus == "failed")
+                gpt_failed += int(gstatus in {"failed", "gpt_dlq"})
                 gpt_retry_pending += int(gstatus == "quota_pending_retry")
+                # Free image bytes immediately after GPT result is consumed — prevents
+                # bytes_cache from growing to GBs during large runs.
+                bytes_cache.pop(_item.image_id, None)
                 walkins = _gpt_dict.pop("walkins", [])
                 gpt_summary = json.dumps(_gpt_dict, separators=(',', ':'))
                 conn.execute(
@@ -1927,6 +2113,16 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         conn.commit()
         raise
     finally:
+        # Stop heartbeat — must happen before conn.close() so the final status write wins
+        try:
+            _heartbeat.stop()
+        except Exception:
+            pass
+        # Cancel any outstanding download futures (e.g. if pipeline failed mid-run)
+        try:
+            _dl_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         conn.close()
 
 

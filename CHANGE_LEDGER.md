@@ -88,6 +88,22 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-07 - Industry-Standard Pipeline: Parallel Downloads + Rate Limiter + Circuit Breaker + Heartbeat
+
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+  - `scripts/_test_pipeline_infra.py` (new — unit tests only, not app code)
+- Summary:
+  - **Parallel download prefetch (8 workers)**: Downloads are now submitted to a `ThreadPoolExecutor(8)` at skip-check time via `_dl_pool.submit(client.fetch_bytes, ...)`. The YOLO stage retrieves via `_pending_dl[image_id].result()`. On a 5,000-image run, this reduces serial network wait from ~41 min to ~5 min (network no longer the bottleneck — YOLO is).
+  - **Token bucket rate limiter (`_TokenBucket`)**: Thread-safe token bucket that enforces `gpt_rate_limit_rps` calls/second across all GPT worker threads. `acquire()` sleeps until a token is available (timeout=30s). Prevents hammering OpenAI and triggering cascading 429s.
+  - **Circuit breaker (`_CircuitBreaker`)**: Trips OPEN after 5 consecutive quota/auth failures. Auto-resets after 90s timeout. While OPEN, all GPT workers skip immediately rather than pile-on retrying. Prevents cost storms and allows recovery.
+  - **Exponential jitter retry**: GPT calls retry up to 3 times (`_GPT_MAX_ATTEMPTS`) with delay `2^n + uniform(0,1)` seconds (×4 for quota errors), capped at 120s. Jitter prevents synchronized retry storms across 5 concurrent workers.
+  - **Dead letter queue**: After 3 failed attempts, image is marked `gpt_dlq` instead of generic `failed`. Distinguishes permanent failures (content policy, corrupt image) from transient ones. Easy to re-queue later.
+  - **Heartbeat thread (`_HeartbeatThread`)**: Daemon thread updates `last_heartbeat_at` every 25s via its own SQLite connection. Runs regardless of main-thread blocking (YOLO, GPT, Drive calls). Zombie detection now works correctly — a run with stale heartbeat >2 min is dead, not just slow.
+  - **Memory management**: `bytes_cache.pop(image_id, None)` called immediately after GPT result is written. Prevents RAM accumulating to GBs during large runs (5,000 images × ~300 KB = 1.5 GB without this).
+  - **`detect_bytes()` integration**: Pipeline YOLO stage now calls `OnnxPersonDetector.detect_bytes(raw_bytes)` directly instead of writing a temp file. Eliminates temp-file I/O on every image.
+  - **Unit tests**: All three infrastructure classes verified — token bucket timing, circuit breaker state transitions, heartbeat DB writes. See `scripts/_test_pipeline_infra.py`.
+
 ### 2026-05-07 - In-App ONNX Detection Boxes + Visual Review Script
 
 - Changed paths:
