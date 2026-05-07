@@ -82,8 +82,11 @@ _RETAIL_WALKIN_PROMPT = (
     "Detect all visible people in every frame. Classify each as: Customer, Staff, or Uncertain.\n"
     "Staff identification signals: repeated presence across frames, uniform/name tag/store dress, stationary near entrance or billing area,\n"
     "door handling for others, counter-side positioning, repeated customer-facing interaction pattern.\n"
-    "Special staff rules: store staff commonly wear red shirt + black pant/trouser; managers (Store/Cluster/Area) commonly wear white shirt + black pant/trouser; classify both patterns as Staff.\n"
-    "Clothing colour alone is NOT sufficient to classify staff.\n"
+    "Special staff uniform rules (OVERRIDE clothing-alone restriction):\n"
+    "  - Red shirt + black pant/trouser = Staff (floor staff)\n"
+    "  - White shirt + black pant/trouser = Staff (managers, senior staff, supervisors)\n"
+    "Both patterns are always classified as Staff regardless of other cues. Do NOT classify either pattern as Customer or Manager — the only valid Role values are Customer, Staff, Uncertain.\n"
+    "Clothing colour alone is NOT sufficient to classify staff UNLESS the above specific uniform combinations are present.\n"
     "Staff and Uncertain must be excluded from customer analytics: set Included in Analytics = No.\n\n"
     "CRITICAL FALSE-POSITIVE CONTROL:\n"
     "Do not treat posters, banners, standees, mannequins, printed humans, wall graphics, or reflection-only humans as customers.\n"
@@ -159,9 +162,10 @@ def _walkin_schema() -> dict[str, Any]:
 
 
 def _apply_staff_manager_rule(walkins: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Deterministic post-rules:
-    - red shirt + black pant/trouser => Staff (store staff)
-    - white shirt + black pant/trouser => Staff (managers)
+    """Deterministic post-processing override (runs after GPT, catches missed classifications):
+    - red shirt + black pant/trouser => Staff (floor staff)
+    - white shirt + black pant/trouser => Staff (managers / senior staff / supervisors)
+    Both are Staff — there is no Manager role.
     """
     for row in walkins:
         role = str(row.get("Role", "") or "").strip().lower()
@@ -1259,6 +1263,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="GPT skipped",
                     payload={"reason": status},
                 )
+                
+                # Zero Waste Policy: Delete irrelevant images from local disk immediately
+                if relevant == 0 and client.provider == "local":
+                    try:
+                        Path(item.source_url).unlink(missing_ok=True)
+                    except Exception:
+                        pass
             # Drain completed GPT futures so live progress reflects GPT counts during YOLO
             if _gpt_pool is not None:
                 for _pi, _, _pf in _gpt_ordered:

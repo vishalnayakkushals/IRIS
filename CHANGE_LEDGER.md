@@ -88,6 +88,13 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-07 - GPT Prompt: White Shirt + Black Pants = Staff (not Manager)
+
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+- Summary:
+  - **Prompt update**: Clarified that both red shirt + black pant (floor staff) AND white shirt + black pant (managers/supervisors) are always classified as `Staff`. There is no `Manager` role — the only valid Role values are `Customer`, `Staff`, `Uncertain`. Added explicit instruction that GPT must NOT output `Manager` as a Role. Post-processing function comment updated to match.
+
 ### 2026-05-07 - QA/Frame Review Fixes, YOLO Threshold Tuning, README Docker
 
 - Changed paths:
