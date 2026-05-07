@@ -395,24 +395,27 @@ class OnnxPersonDetector:
 
     @staticmethod
     def _letterbox_cv2(image_path: Path, size: int) -> np.ndarray:
-        """Load and letterbox using OpenCV — matches YOLO's internal preprocessing exactly.
+        """Load and letterbox using OpenCV — matches ultralytics letterbox() exactly.
 
-        YOLO uses cv2.imread + cv2.INTER_LINEAR internally. Using Pillow produces
-        slightly different pixel values (different interpolation sampling), which can
-        flip borderline detections. OpenCV eliminates that gap.
+        Uses the same dw/2, dh/2 split + round(x-0.1)/round(x+0.1) trick that
+        ultralytics applies internally, so pixel layout is bit-for-bit identical.
         """
         bgr = cv2.imread(str(image_path))
         if bgr is None:
             raise OSError(f"cv2.imread failed: {image_path}")
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        ih, iw = rgb.shape[:2]
-        scale = size / max(iw, ih)
+        ih, iw = bgr.shape[:2]
+        scale = min(size / ih, size / iw)
         nw, nh = int(round(iw * scale)), int(round(ih * scale))
-        resized = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
-        pad_x, pad_y = (size - nw) // 2, (size - nh) // 2
-        canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = resized
-        return canvas
+        resized = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        dw = (size - nw) / 2
+        dh = (size - nh) / 2
+        top    = int(round(dh - 0.1))
+        bottom = int(round(dh + 0.1))
+        left   = int(round(dw - 0.1))
+        right  = int(round(dw + 0.1))
+        padded = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+        rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+        return rgb
 
     def detect(self, image_path: Path) -> DetectionResult:
         S = self._INPUT_SIZE
@@ -437,7 +440,7 @@ class OnnxPersonDetector:
             p_mask  = person_scores >= self.conf_threshold
             p_boxes = np.stack([x1n, y1n, x2n, y2n], axis=1)[p_mask]
             p_conf  = person_scores[p_mask]
-            keep    = self._nms(p_boxes, p_conf, iou_threshold=0.70)
+            keep    = self._nms(p_boxes, p_conf, iou_threshold=0.45)
 
             person_boxes: list[tuple[float, float, float, float]] = []
             person_centroids: list[tuple[float, float]] = []
