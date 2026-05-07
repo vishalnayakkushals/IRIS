@@ -431,7 +431,7 @@ def _run_pipeline_sync(
             source_uri=source_url,
             db_path=settings.db_path_obj,
             out_dir=out_dir,
-            detector_type=os.getenv("DETECTOR_TYPE", "onnx"),
+            detector_type=os.getenv("ONFLY_DETECTOR", "onnx"),
             conf_threshold=settings.yolo_conf,
             max_images=max_images,
             gpt_enabled=gpt_enabled,

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
     onfly_source_url: str = ""
-    yolo_conf: float = 0.30
+    yolo_conf: float = 0.20
     max_images: int = 10000
     
     # Storage Settings (S3 vs Local/Drive)
