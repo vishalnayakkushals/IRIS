@@ -79,3 +79,16 @@ docker compose -f deploy/docker-compose.yml down
 docker compose -f deploy/docker-compose.yml build
 docker compose -f deploy/docker-compose.yml up -d
 ```
+
+## Frontend Build Rule — MUST CLEAN BEFORE COPY
+
+Vite hashes JS/CSS filenames on every build. Always wipe the old assets before copying the new build, or stale `*-<hash>.js` files accumulate in git and bloat the repo.
+
+```powershell
+cd frontend
+npm run build
+Remove-Item -Recurse -Force ..\backend\app\static\assets\*
+Copy-Item -Recurse -Force dist\* ..\backend\app\static\
+```
+
+After copying, `backend/app/static/assets/` should contain exactly **5 files**: 4 JS bundles + 1 CSS. If you see more, the clean step was skipped.

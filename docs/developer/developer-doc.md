@@ -239,6 +239,7 @@ Key tables:
 **Build and deploy:**
 ```powershell
 cd frontend && npm run build
+Remove-Item -Recurse -Force ..\backend\app\static\assets\*
 Copy-Item -Recurse -Force dist\* ..\backend\app\static\
 # Then restart uvicorn / NSSM service
 ```
@@ -324,19 +325,18 @@ python scripts/run_onfly_pipeline.py --store-id BLRJAY
 
 ### Rebuild frontend and deploy
 
+Always clean the old assets before copying. Vite hashes file names on every build — without the clean step, old bundles accumulate and get committed to git bloating the repo.
+
 ```powershell
 cd frontend
 npm run build
+# REQUIRED: wipe old hashed bundles before copying new ones
+Remove-Item -Recurse -Force ..\backend\app\static\assets\*
 Copy-Item -Recurse -Force dist\* ..\backend\app\static\
-# Restart NSSM service or kill uvicorn
+# Restart the server (NSSM service or kill uvicorn PID)
 ```
 
-### Clean old static asset bundles (before deployment)
-
-```powershell
-Remove-Item -Recurse -Force backend\app\static\assets\*
-Copy-Item -Recurse -Force frontend\dist\* backend\app\static\
-```
+**Never use `Copy-Item` without the `Remove-Item` first.** Skipping it leaves the old `*-<hash>.js` files in git alongside the new ones. After the copy, verify only 5 files exist in `backend/app/static/assets/` (the 4 JS bundles + 1 CSS file).
 
 ### Check which ports are running
 
