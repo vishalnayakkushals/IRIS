@@ -174,6 +174,7 @@ Key tables:
 | `model_versions` | ML model version registry with accuracy metrics |
 
 **`platform_data.py`** — query helpers used by route handlers:
+
 - `authenticate_platform_user()` — validates email/password (supports bcrypt and pbkdf2_sha256)
 - `get_overview_metrics()` — platform-wide KPIs
 - `get_store_metrics()` — per-store footfall, dwell, bounce
@@ -181,12 +182,14 @@ Key tables:
 - `get_pipeline_runs()` / `get_walkin_sessions()` — data for reports
 
 **`session.py`** — two engines:
+
 - `AsyncSessionLocal` — used in FastAPI async route handlers (asyncpg driver)
 - Sync engine — used in background threads and Celery tasks (psycopg2 driver)
 
 ### 3.3 Core Pipeline (`src/iris/`)
 
 **`onfly_pipeline.py`** — the main AI pipeline. Called from `routes_onfly.py`:
+
 1. Lists images from Google Drive folder (delta sync — skips already-processed images)
 2. Downloads in-memory, runs YOLO (`yolov8n.pt`, confidence threshold 0.18)
 3. For YOLO-relevant images only: calls GPT-4.1-mini vision API
@@ -195,6 +198,7 @@ Key tables:
 6. Updates `pipeline_run_log`
 
 **`drive_delta_sync.py`** — Google Drive sync:
+
 - Uses `GOOGLE_API_KEY` for Drive API calls
 - `DATE_FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")` — only syncs date-named subfolders
 - Delta mode: only downloads files not already in `onfly_image_state`
@@ -237,6 +241,7 @@ Key tables:
 **Auth** — JWT stored in `localStorage`. Axios interceptor attaches `Authorization: Bearer <token>` to every request. 401 response → redirect to `/login`.
 
 **Build and deploy:**
+
 ```powershell
 cd frontend && npm run build
 Remove-Item -Recurse -Force ..\backend\app\static\assets\*
@@ -272,6 +277,7 @@ cd frontend && npx tsc --noEmit
 ```
 
 CI runs on every push via `.github/workflows/python-package-conda.yml`:
+
 - `flake8` lint (critical errors only)
 - `pytest` with `PYTHONPATH=src`
 
@@ -325,18 +331,27 @@ python scripts/run_onfly_pipeline.py --store-id BLRJAY
 
 ### Rebuild frontend and deploy
 
-Always clean the old assets before copying. Vite hashes file names on every build — without the clean step, old bundles accumulate and get committed to git bloating the repo.
+Always clean the old assets before copying. Vite hashes file names on every build — without the clean step, old bundles from previous builds accumulate in git and bloat the repo.
 
 ```powershell
 cd frontend
 npm run build
 # REQUIRED: wipe old hashed bundles before copying new ones
-Remove-Item -Recurse -Force ..\backend\app\static\assets\*
+# Do NOT delete assets\ — copy the new build which overwrites stale files
+# Then stage and commit backend\app\static\ in git
 Copy-Item -Recurse -Force dist\* ..\backend\app\static\
 # Restart the server (NSSM service or kill uvicorn PID)
 ```
 
-**Never use `Copy-Item` without the `Remove-Item` first.** Skipping it leaves the old `*-<hash>.js` files in git alongside the new ones. After the copy, verify only 5 files exist in `backend/app/static/assets/` (the 4 JS bundles + 1 CSS file).
+**Important:** The build produces ~25 files in `dist/assets/` — 4 shared vendor bundles + 1 CSS + ~20 per-page lazy chunks. **All 25 must be present in `backend/app/static/assets/`**. The per-page chunks (`Overview-*.js`, `FrameReview-*.js`, etc.) are not listed in `index.html` — they are loaded on demand. If any are missing, navigating to that page causes a blank screen.
+
+**Git hygiene:** Before committing, remove any files from `backend/app/static/assets/` that are not in the latest `dist/assets/`. A safe way:
+
+```powershell
+# From repo root — replaces static/assets with exactly what the build produced
+Remove-Item -Recurse -Force backend\app\static\assets\*
+Copy-Item -Recurse -Force frontend\dist\* backend\app\static\
+```
 
 ### Check which ports are running
 
