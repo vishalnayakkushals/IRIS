@@ -351,7 +351,7 @@ def _sqlite_runtime_summary(store_id: str | None = None, limit: int = 90) -> lis
                         SUBSTR(w.business_date,7,4)||'-'||SUBSTR(w.business_date,4,2)||'-'||SUBSTR(w.business_date,1,2)
                     ELSE w.business_date END AS business_date,
                     SUM(CASE WHEN UPPER(COALESCE(w.role, '')) = 'CUSTOMER' AND UPPER(COALESCE(w.included_in_analytics, '')) = 'YES' THEN 1 ELSE 0 END) AS walkins,
-                    SUM(CASE WHEN UPPER(COALESCE(w.role, '')) = 'CUSTOMER' AND UPPER(COALESCE(w.included_in_analytics, '')) = 'YES' AND UPPER(COALESCE(w.purchase_signal_bag, '')) = 'YES' THEN 1 ELSE 0 END) AS conversions,
+                    SUM(CASE WHEN UPPER(COALESCE(w.role, '')) = 'CUSTOMER' AND UPPER(COALESCE(w.included_in_analytics, '')) = 'YES' AND w.entry_type = 'BILLING' THEN 1 ELSE 0 END) AS conversions,
                     AVG(
                         CASE
                             WHEN TRIM(COALESCE(w.time_spent_mins, '')) GLOB '[0-9]*'

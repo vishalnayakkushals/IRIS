@@ -39,7 +39,7 @@ def _sqlite_store_metrics(store_id: str) -> dict[str, Any]:
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES' THEN 1 END) AS walkins,
                 COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
-                    AND UPPER(COALESCE(purchase_signal_bag,'')) = 'YES' THEN 1 END) AS conversions,
+                    AND entry_type = 'BILLING' THEN 1 END) AS conversions,
                 AVG(CASE
                     WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'

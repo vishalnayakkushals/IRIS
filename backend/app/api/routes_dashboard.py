@@ -60,7 +60,7 @@ def _sqlite_analytics(
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES' THEN 1 END) AS total_walkins,
                 COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
-                    AND UPPER(COALESCE(purchase_signal_bag,'')) = 'YES' THEN 1 END) AS total_conversions,
+                    AND entry_type = 'BILLING' THEN 1 END) AS total_conversions,
                 COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'STAFF' THEN 1 END) AS total_staff,
                 AVG(CASE
                     WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
@@ -164,7 +164,7 @@ def _sqlite_trend(
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES' THEN 1 END) AS walkins,
                 COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
-                    AND UPPER(COALESCE(purchase_signal_bag,'')) = 'YES' THEN 1 END) AS conversions,
+                    AND entry_type = 'BILLING' THEN 1 END) AS conversions,
                 COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'STAFF' THEN 1 END) AS staff,
                 AVG(CASE
                     WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
@@ -208,7 +208,7 @@ def _sqlite_leaderboard(days: int = 30) -> list[dict[str, Any]]:
                     AND UPPER(COALESCE(w.included_in_analytics,'')) = 'YES' THEN 1 END) AS walkins,
                 COUNT(CASE WHEN UPPER(COALESCE(w.role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(w.included_in_analytics,'')) = 'YES'
-                    AND UPPER(COALESCE(w.purchase_signal_bag,'')) = 'YES' THEN 1 END) AS conversions,
+                    AND w.entry_type = 'BILLING' THEN 1 END) AS conversions,
                 COUNT(DISTINCT CASE WHEN UPPER(COALESCE(w.role,'')) = 'CUSTOMER'
                     AND UPPER(COALESCE(w.included_in_analytics,'')) = 'YES'
                     AND COALESCE(w.group_id,'') != '' THEN w.group_id END) AS groups,
@@ -265,7 +265,7 @@ def _sqlite_delta(store_id: str | None, current_days: int, prior_days: int) -> d
                         AND UPPER(COALESCE(included_in_analytics,'')) = 'YES' THEN 1 END) AS walkins,
                     COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                         AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
-                        AND UPPER(COALESCE(purchase_signal_bag,'')) = 'YES' THEN 1 END) AS conversions
+                        AND entry_type = 'BILLING' THEN 1 END) AS conversions
                 FROM onfly_walkin_sessions
                 WHERE COALESCE(business_date,'') != ''
                 {store_filter}
@@ -290,7 +290,7 @@ def _sqlite_delta(store_id: str | None, current_days: int, prior_days: int) -> d
                         AND UPPER(COALESCE(included_in_analytics,'')) = 'YES' THEN 1 END) AS walkins,
                     COUNT(CASE WHEN UPPER(COALESCE(role,'')) = 'CUSTOMER'
                         AND UPPER(COALESCE(included_in_analytics,'')) = 'YES'
-                        AND UPPER(COALESCE(purchase_signal_bag,'')) = 'YES' THEN 1 END) AS conversions
+                        AND entry_type = 'BILLING' THEN 1 END) AS conversions
                 FROM onfly_walkin_sessions
                 WHERE COALESCE(business_date,'') != ''
                 {store_filter}
