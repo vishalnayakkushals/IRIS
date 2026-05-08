@@ -383,7 +383,7 @@ class OnFlyConfig:
 class SourceClient(Protocol):
     provider: str
 
-    def list_images(self, limit: int) -> list[SourceImage]:
+    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
         ...
 
     def fetch_bytes(self, item: SourceImage) -> bytes:
@@ -496,7 +496,7 @@ class LocalClient:
         if not self.root.exists():
             raise ValueError(f"Local path not found: {self.root}")
 
-    def list_images(self, limit: int) -> list[SourceImage]:
+    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
         paths = [p for p in self.root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
         paths.sort(key=lambda p: str(p.relative_to(self.root)).lower(), reverse=True)
         if limit > 0:
@@ -557,21 +557,24 @@ class GDriveClient:
                 break
         return subfolders, images
 
-    def list_images(self, limit: int) -> list[SourceImage]:
-        # Use a two-phase approach: first collect all date-level subfolders (fast),
-        # sort them newest-first, then enumerate images folder-by-folder until limit is reached.
+    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
+        # DFS newest-first. `limit` counts only NEW (unseen) files so the pipeline
+        # always finds `limit` processable images regardless of how many are already done.
+        # Without this, a folder with 50,000 images where 10,000 are already processed
+        # would return those same 10,000 every run and never advance past them.
+        seen = seen_ids or set()
         files: list[dict[str, str]] = []
 
         def _collect(folder_id: str, rel_parts: list[str], depth: int = 0) -> bool:
             """DFS with newest-first subfolder ordering. Returns True if limit reached."""
             subfolders, images = self._list_folder(folder_id)
-            # Add images found directly in this folder
             for img in images:
+                if img["id"] in seen:
+                    continue  # skip already-processed — don't count against limit
                 rel = (Path(*rel_parts) / img["name"]) if rel_parts else Path(img["name"])
                 files.append({"id": img["id"], "name": img["name"], "rel": str(rel).replace("\\", "/")})
                 if limit > 0 and len(files) >= limit:
                     return True
-            # Sort subfolders newest-first (YYYY-MM-DD names sort lexicographically)
             subfolders.sort(key=lambda s: s["name"], reverse=True)
             for sf in subfolders:
                 if _collect(sf["id"], rel_parts + [sf["name"]], depth + 1):
@@ -579,7 +582,6 @@ class GDriveClient:
             return False
 
         _collect(self.folder_id, [])
-        # Final sort: newest date path first
         files.sort(key=lambda r: str(r["rel"]).lower(), reverse=True)
         if limit > 0:
             files = files[:limit]
@@ -1158,7 +1160,22 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     detector_warning = ""
     timings = {"list_ms": 0.0, "detector_init_ms": 0.0, "download_ms": 0.0, "yolo_ms": 0.0, "gpt_ms": 0.0, "report_ms": 0.0}
     t_list = time.perf_counter()
-    images = client.list_images(cfg.max_images)
+    # Load already-processed Drive file IDs so list_images skips them during DFS
+    # collection. Without this, folders with >max_images files get stuck — the DFS
+    # fills its limit with already-done files and never advances to new ones.
+    _seen_ids: set[str] = set()
+    if hasattr(client, "folder_id"):  # GDriveClient only — LocalClient doesn't need this
+        try:
+            _conn_pre = _connect(cfg.db_path)
+            _seen_rows = _conn_pre.execute(
+                "SELECT source_item_id FROM onfly_image_state WHERE store_id=? AND source_provider='gdrive'",
+                (cfg.store_id,),
+            ).fetchall()
+            _seen_ids = {str(r[0]) for r in _seen_rows if r[0]}
+            _conn_pre.close()
+        except Exception:
+            pass
+    images = client.list_images(cfg.max_images, seen_ids=_seen_ids)
     timings["list_ms"] = round((time.perf_counter() - t_list) * 1000.0, 2)
 
     # ── Load QA artefacts (Option A + Option B) ──────────────────────────────

@@ -346,9 +346,12 @@ async def get_pipeline_runs_route(
 
 @router.get("/overview")
 async def get_dashboard_overview(
+    store_id: str | None = None,
+    days: int = 90,
     _email: str = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return await get_overview_metrics()
+    # Read from SQLite (pipeline writes walkin sessions there, not PostgreSQL)
+    return _sqlite_analytics(store_id=store_id or None, days=days)
 
 
 @router.get("/analytics")
