@@ -100,6 +100,19 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-08 - Fix Camera Thumbnails Not Showing on /admin/cameras
+
+- Changed paths:
+  - `backend/app/main.py`
+  - `backend/app/api/routes_admin.py`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Root cause 1 — missing schema migration**: `camera_type` and `sample_image_id` columns added to `canonical_metadata.py` and migration `003_camera_type.py` in the previous session, but the startup `_run_migrations()` in `main.py` never applied them via `ALTER TABLE IF NOT EXISTS`. Added both `ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS` statements to the startup migration list. Columns applied manually on current PG instance to unblock immediately.
+  - **Root cause 2 — discover refresh skip**: Discover endpoint only updated `sample_image_id` for unlabeled cameras. Already-labeled cameras kept a stale (or empty) thumbnail. Changed to always refresh `sample_image_id` on discover (camera_type is never overwritten).
+  - **CameraThumb upgraded to match SessionThumb** (the working pattern from QualityFeedback): added `HoverPreview` portal (380×285 zoom-in on mouse hover), hover scale animation, `ZoomIn` icon fallback instead of "No img" text. Exact visual parity with `/quality` thumbnails.
+  - **Old build was being served**: Backend serves from `backend/app/static/` but `npm run build` wrote to `frontend/dist/`. Deployed new build by running `cp -r dist/. ../backend/app/static/`.
+
 ### 2026-05-08 - Camera-Type Exclusion: Auto-Discovery + Labeling UI + Pipeline Skip
 
 - Changed paths:

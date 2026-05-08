@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   adminListCameras,
   adminUpsertCamera,
@@ -10,7 +11,7 @@ import {
   qaFrameImageUrl,
 } from "../api/client";
 import { Card, Title, Text, Button, TabGroup, TabList, Tab, TabPanels, TabPanel, Badge } from "@tremor/react";
-import { Plus, Trash2, Check, X, ScanSearch, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Check, X, ScanSearch, RefreshCw, ZoomIn } from "lucide-react";
 import { useStore } from "../context/StoreContext";
 
 const CAM_TYPES = ["unlabeled", "floor", "entry", "external", "skip"] as const;
@@ -31,22 +32,54 @@ function TypeBadge({ type }: { type: CamType }) {
   return <Badge color={m.color as any} size="sm">{m.label}</Badge>;
 }
 
+function HoverPreview({ src, rect }: { src: string; rect: DOMRect }) {
+  const W = 380, H = 285, margin = 12;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = rect.right + margin;
+  let top  = rect.top + rect.height / 2 - H / 2;
+  if (left + W > vw - margin) left = rect.left - W - margin;
+  if (top < margin) top = margin;
+  if (top + H > vh - margin) top = vh - H - margin;
+  return createPortal(
+    <div
+      className="fixed z-[9999] rounded-xl overflow-hidden border-2 border-white pointer-events-none"
+      style={{ left, top, width: W, height: H, boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }}
+    >
+      <img src={src} alt="preview" className="w-full h-full object-cover" />
+    </div>,
+    document.body,
+  );
+}
+
 function CameraThumb({ storeId, imageId }: { storeId: string; imageId: string }) {
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const [err, setErr] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
   if (!imageId || err) {
     return (
-      <div className="w-16 h-12 rounded border bg-slate-100 flex items-center justify-center text-slate-300 text-xs">
-        No img
+      <div className="w-16 h-12 rounded border bg-slate-100 flex items-center justify-center shrink-0">
+        <ZoomIn size={13} className="text-slate-300" />
       </div>
     );
   }
+  const src = qaFrameImageUrl(storeId, imageId);
   return (
-    <img
-      src={qaFrameImageUrl(storeId, imageId)}
-      alt="sample"
-      className="w-16 h-12 object-cover rounded border border-slate-200"
-      onError={() => setErr(true)}
-    />
+    <div
+      ref={ref}
+      className="relative w-16 h-12 rounded overflow-hidden bg-slate-100 cursor-zoom-in shrink-0 group border border-slate-200"
+      onMouseEnter={() => setHoverRect(ref.current?.getBoundingClientRect() ?? null)}
+      onMouseLeave={() => setHoverRect(null)}
+    >
+      {hoverRect && <HoverPreview src={src} rect={hoverRect} />}
+      <img
+        src={src}
+        alt="sample"
+        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+        loading="lazy"
+        onError={() => setErr(true)}
+      />
+    </div>
   );
 }
 

@@ -79,6 +79,8 @@ async def _run_migrations() -> None:
     from sqlalchemy import text
     migrations = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hint VARCHAR(255) DEFAULT ''",
+        "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS camera_type VARCHAR(64) NOT NULL DEFAULT 'unlabeled'",
+        "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS sample_image_id VARCHAR(255) NOT NULL DEFAULT ''",
     ]
     async with engine.begin() as conn:
         for sql in migrations:

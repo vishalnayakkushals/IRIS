@@ -846,13 +846,12 @@ async def discover_cameras(store_id: str, actor: str = Depends(get_current_user)
             )
             existing_row = existing.first()
             if existing_row:
-                # Already registered — update sample_image_id if empty but don't overwrite camera_type
-                if not existing_row[0] or existing_row[0] == "unlabeled":
-                    await session.execute(
-                        update(camera_configs)
-                        .where(camera_configs.c.store_id == store_id, camera_configs.c.camera_id == cam_id)
-                        .values(sample_image_id=str(row["sample_image_id"] or ""), updated_at=now)
-                    )
+                # Always refresh sample_image_id (thumbnail); never overwrite camera_type
+                await session.execute(
+                    update(camera_configs)
+                    .where(camera_configs.c.store_id == store_id, camera_configs.c.camera_id == cam_id)
+                    .values(sample_image_id=str(row["sample_image_id"] or ""), updated_at=now)
+                )
                 existing_count += 1
             else:
                 await session.execute(
