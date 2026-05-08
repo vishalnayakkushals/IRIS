@@ -97,20 +97,26 @@ function AnalyticsBadge({ value }: { value: string }) {
 // ── Reject correction picker ───────────────────────────────────────────────
 function RejectPicker({ onPick, onCancel }: { onPick: (label: string) => void; onCancel: () => void }) {
   return (
-    <div className="absolute inset-0 z-10 bg-white/95 rounded flex flex-col items-center justify-center gap-2 border border-rose-200 shadow-lg p-3">
-      <p className="text-xs font-semibold text-slate-700 text-center">What is the correct label?</p>
-      <div className="flex flex-wrap gap-1.5 justify-center">
-        {ROLE_OPTIONS.map((opt) => (
-          <button
-            key={opt}
-            onClick={() => onPick(opt)}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 hover:border-blue-400 hover:bg-blue-50 transition-colors capitalize"
-          >
-            {opt.replace("_", " ")}
-          </button>
-        ))}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 flex flex-col items-center gap-4 min-w-[280px]">
+        <p className="text-sm font-semibold text-slate-800">What is the correct label?</p>
+        <div className="flex flex-wrap gap-2 justify-center">
+          {ROLE_OPTIONS.map((opt) => (
+            <button
+              type="button"
+              key={opt}
+              onClick={() => onPick(opt)}
+              className="px-4 py-2 rounded-lg text-sm font-semibold border border-slate-300 bg-slate-50 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 transition-colors capitalize"
+            >
+              {opt.replace("_", " ")}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={onCancel} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">Cancel</button>
       </div>
-      <button onClick={onCancel} className="text-[10px] text-slate-400 hover:text-slate-600 mt-1">Cancel</button>
     </div>
   );
 }
