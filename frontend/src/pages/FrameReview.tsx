@@ -20,8 +20,8 @@ const PAGE_SIZE = 24;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 
 // ── SessionStorage cache helpers ──────────────────────────────────────────
-function cacheKey(storeId: string, status: string, date: string) {
-  return `fr-v2:${storeId}:${status}:${date}`;
+function cacheKey(storeId: string, date: string) {
+  return `fr-v2:${storeId}:${date}`;
 }
 function readCache(key: string): { rows: any[]; ts: number } | null {
   try {
@@ -93,11 +93,12 @@ function MetricPill({ label, value }: { label: string; value: string | number })
 
 // ── FeedbackCard ─────────────────────────────────────────────────────────
 function FeedbackCard({
-  row, onSaved, onDelete,
+  row, onSaved, onDelete, onFlash,
 }: {
   row: any;
   onSaved: (updated: any) => void;
   onDelete: (imageId: string) => void;
+  onFlash: (msg: string) => void;
 }) {
   const [corrected, setCorrected] = useState(row.corrected_label || row.predicted_label || "");
   const [comment, setComment] = useState(row.comment || "");
@@ -135,6 +136,8 @@ function FeedbackCard({
         });
       }
       onSaved({ ...row, review_status: reviewStatus, corrected_label: corrected, comment });
+    } catch {
+      onFlash("Save failed — check server connection");
     } finally {
       setSaving(false);
     }
@@ -346,7 +349,7 @@ function FeedbackCard({
 // ── Main page ─────────────────────────────────────────────────────────────
 export default function FrameReview() {
   const { storeId } = useStore();
-  const [statusFilter, setStatusFilter] = useState("pending");
+  const [statusFilter, setStatusFilter] = useState("");
   const [gptFilter, setGptFilter] = useState("");
   const [rows, setRows] = useState<any[]>([]);
   const [cachedAt, setCachedAt] = useState<number | null>(null);
@@ -362,7 +365,7 @@ export default function FrameReview() {
 
   async function load(force = false) {
     if (!storeId) return;
-    const key = cacheKey(storeId, statusFilter, dateFilter);
+    const key = cacheKey(storeId, dateFilter);
 
     // Use cache on navigation back (not on explicit refresh)
     if (!force) {
@@ -378,7 +381,8 @@ export default function FrameReview() {
     setLoading(true);
     setCachedAt(null);
     setPage(0);
-    qaReviewQueue(storeId, statusFilter || undefined, dateFilter || undefined, 150)
+    // Always fetch all statuses from server; filter client-side so counts stay accurate
+    qaReviewQueue(storeId, undefined, dateFilter || undefined, 150)
       .then((r) => {
         setRows(r.data);
         writeCache(key, r.data);
@@ -389,19 +393,19 @@ export default function FrameReview() {
 
   useEffect(() => {
     if (storeId) void load();
-  }, [storeId, statusFilter, dateFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [storeId, dateFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSaved(updated: any) {
-    flash("Review saved");
+    flash("Review saved ✓");
     setRows((prev) => prev.map((r) => r.image_id === updated.image_id ? updated : r));
     // Invalidate cache so next visit gets fresh data
-    if (storeId) sessionStorage.removeItem(cacheKey(storeId, statusFilter, dateFilter));
+    if (storeId) sessionStorage.removeItem(cacheKey(storeId, dateFilter));
   }
 
   function handleDeleted(imageId: string) {
     flash("Review removed");
     setRows((prev) => prev.filter((r) => r.image_id !== imageId));
-    if (storeId) sessionStorage.removeItem(cacheKey(storeId, statusFilter, dateFilter));
+    if (storeId) sessionStorage.removeItem(cacheKey(storeId, dateFilter));
   }
 
   const dateOptions = useMemo(
@@ -410,9 +414,15 @@ export default function FrameReview() {
   );
 
   const filteredRows = useMemo(() => {
-    if (!gptFilter) return rows;
-    return rows.filter((r) => (r.gpt_status || "pending") === gptFilter);
-  }, [rows, gptFilter]);
+    let result = rows;
+    if (statusFilter) {
+      result = result.filter((r) => (r.review_status || "pending") === statusFilter);
+    }
+    if (gptFilter) {
+      result = result.filter((r) => (r.gpt_status || "pending") === gptFilter);
+    }
+    return result;
+  }, [rows, statusFilter, gptFilter]);
 
   const pending   = rows.filter((r) => (r.review_status || "pending") === "pending").length;
   const confirmed = rows.filter((r) => r.review_status === "confirmed").length;
@@ -572,6 +582,7 @@ export default function FrameReview() {
                 row={r}
                 onSaved={handleSaved}
                 onDelete={handleDeleted}
+                onFlash={flash}
               />
             ))}
           </div>

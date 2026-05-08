@@ -143,23 +143,23 @@ export default function QualityFeedback() {
 
   function getCacheKey() { return `qa_sessions_${storeId || "all"}`; }
 
-  function readCache(): any[] | null {
+  function readCache(): { rows: any[]; feedback: Record<string, FeedbackEntry> } | null {
     try {
       const raw = sessionStorage.getItem(getCacheKey());
       if (!raw) return null;
-      const { data, ts } = JSON.parse(raw);
-      if (Date.now() - ts > CACHE_TTL_MS) { sessionStorage.removeItem(getCacheKey()); return null; }
-      return data;
+      const parsed = JSON.parse(raw);
+      if (Date.now() - parsed.ts > CACHE_TTL_MS) { sessionStorage.removeItem(getCacheKey()); return null; }
+      return { rows: parsed.data || [], feedback: parsed.feedback || {} };
     } catch { return null; }
   }
 
-  function writeCache(data: any[]) {
-    try { sessionStorage.setItem(getCacheKey(), JSON.stringify({ data, ts: Date.now() })); } catch {}
+  function writeCache(data: any[], feedback: Record<string, FeedbackEntry> = {}) {
+    try { sessionStorage.setItem(getCacheKey(), JSON.stringify({ data, feedback, ts: Date.now() })); } catch {}
   }
 
   function load(force = false) {
     const cached = !force && readCache();
-    if (cached) { setRows(cached); setFeedbackState({}); setPage(0); return; }
+    if (cached) { setRows(cached.rows); setFeedbackState(cached.feedback); setPage(0); return; }
     setLoading(true);
     setError("");
     setPage(0);
@@ -168,7 +168,7 @@ export default function QualityFeedback() {
         const data: any[] = Array.isArray(r.data) ? r.data : [];
         setRows(data);
         setFeedbackState({});
-        writeCache(data);
+        writeCache(data, {});
       })
       .catch(() => setError("Failed to load sessions. Check the server is running."))
       .finally(() => setLoading(false));
@@ -196,9 +196,10 @@ export default function QualityFeedback() {
     const role = getRole(s);
     try {
       const existing = feedbackState[key];
+      let newEntry: FeedbackEntry;
       if (existing?.feedbackId) {
         await qaUpdateFeedback(existing.feedbackId, { review_status: "confirmed", corrected_label: role });
-        setFeedbackState((prev) => ({ ...prev, [key]: { ...existing, status: "approved" } }));
+        newEntry = { ...existing, status: "approved" };
       } else {
         const res = await qaCreateFeedback({
           store_id: getStore(s),
@@ -212,11 +213,13 @@ export default function QualityFeedback() {
           needs_review: false,
           review_status: "confirmed",
         });
-        setFeedbackState((prev) => ({
-          ...prev,
-          [key]: { status: "approved", feedbackId: res.data.id, correctedLabel: role },
-        }));
+        newEntry = { status: "approved", feedbackId: res.data.id, correctedLabel: role };
       }
+      setFeedbackState((prev) => {
+        const updated = { ...prev, [key]: newEntry };
+        writeCache(rows, updated);
+        return updated;
+      });
       flash("Approved ✓");
     } catch {
       flash("Save failed — check server");
@@ -231,9 +234,10 @@ export default function QualityFeedback() {
     const role = getRole(s);
     try {
       const existing = feedbackState[key];
+      let newEntry: FeedbackEntry;
       if (existing?.feedbackId) {
         await qaUpdateFeedback(existing.feedbackId, { review_status: "rejected", corrected_label: correctedLabel });
-        setFeedbackState((prev) => ({ ...prev, [key]: { ...existing, status: "rejected", correctedLabel } }));
+        newEntry = { ...existing, status: "rejected", correctedLabel };
       } else {
         const res = await qaCreateFeedback({
           store_id: getStore(s),
@@ -247,11 +251,13 @@ export default function QualityFeedback() {
           needs_review: true,
           review_status: "rejected",
         });
-        setFeedbackState((prev) => ({
-          ...prev,
-          [key]: { status: "rejected", feedbackId: res.data.id, correctedLabel },
-        }));
+        newEntry = { status: "rejected", feedbackId: res.data.id, correctedLabel };
       }
+      setFeedbackState((prev) => {
+        const updated = { ...prev, [key]: newEntry };
+        writeCache(rows, updated);
+        return updated;
+      });
       flash("Rejected — label saved ✓");
     } catch {
       flash("Save failed — check server");

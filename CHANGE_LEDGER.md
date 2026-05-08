@@ -66,7 +66,19 @@ The `GOOGLE_API_KEY` is a **Simple API Key** (not a service account JSON, not OA
 | `UNIQUE constraint failed: onfly_image_state` | Two concurrent pipeline runs inserting same image | Fixed 2026-05-03: `INSERT OR IGNORE` applied |
 | `No module named 'iris'` | Server started without `src/` on `PYTHONPATH` | Set `PYTHONPATH=<repo>/src;<repo>` before starting uvicorn |
 | `getaddrinfo failed` | Machine has no internet when scheduler fires | Transient network failure — run will auto-retry next cycle |
-| Runs stuck in `running` state | Server was killed mid-run | These are zombie rows; safe to ignore or manually mark `failed` in DB |
+| Runs stuck in `running` state | Server was killed mid-run | Fixed 2026-05-08: `finally` block in pipeline marks run `abandoned` on SIGTERM; startup cleanup (`_cleanup_zombie_runs`) threshold 2 min |
+| QA Frame Review feedback appears to do nothing | API error (Postgres down or network) caught silently | Fixed 2026-05-08: error toast now shown; check Postgres is running |
+| QA approve/reject counts reset to 0 after navigation | `feedbackState` cleared on every cache load; FrameReview only fetched "pending" rows | Fixed 2026-05-08: feedbackState cached in sessionStorage alongside rows; FrameReview loads all statuses |
+
+### Two-Database Architecture (critical to understand)
+
+- **SQLite** (`data/store_registry.db`): pipeline writes walk-in sessions (`onfly_walkin_sessions`), image state (`onfly_image_state`), pipeline runs. All analytics (dashboard, detail, reports) read from SQLite.
+- **PostgreSQL** (`iris_db`): stores QA feedback (`qa_feedback`), model versions, user/store/employee tables. Platform data (`list_store_registry_stores`) also reads from PG.
+- `business_date` in SQLite is stored as `DD-MM-YYYY` by recent pipeline runs. All SQL date comparisons must normalize using `_ISO_DATE` CASE expression (defined in `routes_dashboard.py`, `routes_detail.py`, `routes_reports.py`). Do NOT use raw string comparison against `DATE('now', ...)`.
+
+### Conversion Rule
+
+Conversions = `entry_type = 'BILLING'` in `onfly_walkin_sessions`. This means the customer was at the billing counter (Kushals red bag given). The old rule `purchase_signal_bag = 'YES'` matched 0 rows (GPT writes `'Bag Sighted'`, not `'YES'`). Do not revert.
 
 ### Build & Deploy Sequence
 ```powershell
@@ -103,6 +115,25 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
   - **Memory management**: `bytes_cache.pop(image_id, None)` called immediately after GPT result is written. Prevents RAM accumulating to GBs during large runs (5,000 images × ~300 KB = 1.5 GB without this).
   - **`detect_bytes()` integration**: Pipeline YOLO stage now calls `OnnxPersonDetector.detect_bytes(raw_bytes)` directly instead of writing a temp file. Eliminates temp-file I/O on every image.
   - **Unit tests**: All three infrastructure classes verified — token bucket timing, circuit breaker state transitions, heartbeat DB writes. See `scripts/_test_pipeline_infra.py`.
+
+### 2026-05-08 - Fix QA/Frame Review Feedback Bugs + Counts Reset
+
+- Changed paths:
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **FrameReview — silent save failure**: `FeedbackCard.save()` had no `catch` block. If the API call failed (Postgres error, network issue), the spinner cleared but no error was shown and the row didn't update. Added `catch` block calling `onFlash("Save failed — check server connection")` so the user sees a toast on failure. Added `onFlash` prop to `FeedbackCard` and wired `flash` from the parent.
+  - **FrameReview — counts disappearing**: `statusFilter="pending"` (the old default) scoped the server fetch to pending rows only. After confirming/rejecting in-session, counts showed correctly in local state. On next navigation away and back, load() re-fetched "pending" rows from server — confirmed/rejected counts reset to 0. Fix: default changed to `""` (all). Server fetch now always loads all statuses (no `review_status` param). Client-side `filteredRows` memo applies `statusFilter` locally. Cache key no longer includes status. Stats cards always reflect true counts of loaded data.
+  - **QualityFeedback — counts reset on navigation**: `load()` called `setFeedbackState({})` on every cache hit, wiping all session approve/reject state whenever the component re-mounted. Fix: `readCache`/`writeCache` updated to include `feedbackState` in the stored payload. On cache hit, `feedbackState` is restored from cache alongside rows. On fresh server fetch (force or cache miss), both rows and feedbackState are reset together. After each approve/reject, `writeCache(rows, updatedFeedback)` is called inside `setFeedbackState` to keep cache in sync. Error handling (`catch` + `flash`) added to both `saveApprove` and `saveReject` (they already had try/catch but the error message was already there; restructured to compute `newEntry` before `setFeedbackState` so cache can be updated atomically).
+
+### 2026-05-08 - Fix RejectPicker Blending Into Background (QualityFeedback)
+
+- Changed paths:
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **RejectPicker overlay**: Previously `absolute inset-0 bg-white/95` — confined inside the tiny actions table column (a few pixels tall), semi-transparent, blended into the rose/emerald row background. Rewrote as `fixed inset-0 z-50 bg-slate-900/40` fullscreen overlay with a centred `bg-white rounded-2xl shadow-2xl` card. Clicking the backdrop cancels. Added `type="button"` to both buttons to clear IDE warnings.
 
 ### 2026-05-08 - Fix Overview/StoreDetail Showing Zero Analytics
 
