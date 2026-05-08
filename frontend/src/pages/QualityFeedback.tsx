@@ -157,24 +157,35 @@ export default function QualityFeedback() {
     try { sessionStorage.setItem(getCacheKey(), JSON.stringify({ data, feedback, ts: Date.now() })); } catch {}
   }
 
+  const abortRef = useRef<AbortController | null>(null);
+
   function load(force = false) {
     const cached = !force && readCache();
     if (cached) { setRows(cached.rows); setFeedbackState(cached.feedback); setPage(0); return; }
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
     setLoading(true);
     setError("");
     setPage(0);
-    reportsWalkinsQA(storeId || undefined, 100)
+    reportsWalkinsQA(storeId || undefined, 100, { signal })
       .then((r) => {
         const data: any[] = Array.isArray(r.data) ? r.data : [];
         setRows(data);
         setFeedbackState({});
         writeCache(data, {});
       })
-      .catch(() => setError("Failed to load sessions. Check the server is running."))
+      .catch((e) => {
+        if (e?.code === "ERR_CANCELED") return;
+        setError("Failed to load sessions. Check the server is running.");
+      })
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => { load(); }, [storeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load();
+    return () => { abortRef.current?.abort(); };
+  }, [storeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getKey     = (s: any) => String(s.walkin_id || s.id || Math.random());
   const getRole    = (s: any) => s.role || "";

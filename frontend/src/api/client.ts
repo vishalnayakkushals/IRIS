@@ -272,10 +272,10 @@ export const reportsWalkins = (storeId?: string, date?: string, limit = 100) => 
   if (date) params.set("business_date", date);
   return api.get<any[]>(`/reports/walkins?${params}`);
 };
-export const reportsWalkinsQA = (storeId?: string, limit = 100) => {
+export const reportsWalkinsQA = (storeId?: string, limit = 100, axiosConfig?: object) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (storeId) params.set("store_id", storeId);
-  return api.get<any[]>(`/reports/walkins-qa?${params}`);
+  return api.get<any[]>(`/reports/walkins-qa?${params}`, axiosConfig);
 };
 export const reportsSummary = (storeId?: string, limit = 90) => {
   const params = new URLSearchParams({ limit: String(limit) });
@@ -305,7 +305,7 @@ export const reportsDownloadImageScans = (storeId?: string, date?: string, limit
   if (date) params.set("business_date", date);
   return api.get(`/reports/download/image-scans?${params}`, { responseType: "blob" });
 };
-export const reportsModelAccuracy = () => api.get<any[]>("/reports/model-accuracy");
+export const reportsModelAccuracy = (axiosConfig?: object) => api.get<any[]>("/reports/model-accuracy", axiosConfig);
 export const reportsStoresWithData = () => api.get<any[]>("/reports/stores-with-data");
 export const reportsValidationMap = (storeId?: string, date?: string, limit = 5000) => {
   const params = new URLSearchParams({ limit: String(limit) });
@@ -345,11 +345,11 @@ export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 
   if (reviewStatus) params.set("review_status", reviewStatus);
   return api.get<any[]>(`/qa/feedback?${params}`);
 };
-export const qaReviewQueue = (storeId: string, reviewStatus?: string, businessDate?: string, limit = 200) => {
+export const qaReviewQueue = (storeId: string, reviewStatus?: string, businessDate?: string, limit = 200, axiosConfig?: object) => {
   const params = new URLSearchParams({ store_id: storeId, limit: String(limit) });
   if (reviewStatus) params.set("review_status", reviewStatus);
   if (businessDate) params.set("business_date", businessDate);
-  return api.get<any[]>(`/qa/review-queue?${params}`);
+  return api.get<any[]>(`/qa/review-queue?${params}`, axiosConfig);
 };
 export const qaCreateFeedback = (body: {
   store_id: string;
@@ -370,7 +370,7 @@ export const qaUpdateFeedback = (id: number, body: { review_status: string; corr
   api.put(`/qa/feedback/${id}`, body);
 export const qaDeleteFeedback = (id: number) => api.delete(`/qa/feedback/${id}`);
 export const qaRetrain = (storeId: string) => api.post<any>(`/qa/retrain/${storeId}`);
-export const qaAccuracy = (storeId: string) => api.get<any>(`/qa/accuracy/${storeId}`);
+export const qaAccuracy = (storeId: string, axiosConfig?: object) => api.get<any>(`/qa/accuracy/${storeId}`, axiosConfig);
 export const qaImprovePrompt = (storeId: string) => api.post<any>(`/qa/improve-prompt/${storeId}`);
 export const qaApplyImprovement = (storeId: string, body: { suggestion: string; based_on_count: number }) =>
   api.post<any>(`/qa/apply-prompt-improvement/${storeId}`, body);

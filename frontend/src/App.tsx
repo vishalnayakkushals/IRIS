@@ -1,30 +1,38 @@
-import { ReactNode, Suspense, lazy, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "./components/layout/AppLayout";
 import { StoreProvider } from "./context/StoreContext";
 import { getMe } from "./api/client";
 
-const Login = lazy(() => import("./pages/Login"));
+const Login            = lazy(() => import("./pages/Login"));
 const SchedulerDashboard = lazy(() => import("./pages/SchedulerDashboard"));
-const Overview = lazy(() => import("./pages/Overview"));
-const StoreDetail = lazy(() => import("./pages/StoreDetail"));
-const QualityFeedback = lazy(() => import("./pages/QualityFeedback"));
-const RunDetail = lazy(() => import("./pages/RunDetail"));
-const ReportsPage = lazy(() => import("./pages/ReportsPage"));
+const Overview         = lazy(() => import("./pages/Overview"));
+const StoreDetail      = lazy(() => import("./pages/StoreDetail"));
+const QualityFeedback  = lazy(() => import("./pages/QualityFeedback"));
+const RunDetail        = lazy(() => import("./pages/RunDetail"));
+const ReportsPage      = lazy(() => import("./pages/ReportsPage"));
 const CustomerJourneys = lazy(() => import("./pages/CustomerJourneys"));
-const StoreMapping = lazy(() => import("./pages/StoreMapping"));
-const CameraZones = lazy(() => import("./pages/CameraZones"));
+const StoreMapping     = lazy(() => import("./pages/StoreMapping"));
+const CameraZones      = lazy(() => import("./pages/CameraZones"));
 const EmployeeManagement = lazy(() => import("./pages/EmployeeManagement"));
-const Organisation = lazy(() => import("./pages/Organisation"));
-const UsersPage = lazy(() => import("./pages/UsersPage"));
-const RolePermissions = lazy(() => import("./pages/RolePermissions"));
-const StoreAccess = lazy(() => import("./pages/StoreAccess"));
-const ModelAccuracy = lazy(() => import("./pages/ModelAccuracy"));
-const ActivityLogs = lazy(() => import("./pages/ActivityLogs"));
-const StoreMaster = lazy(() => import("./pages/StoreMaster"));
-const FrameReview = lazy(() => import("./pages/FrameReview"));
-const ModelFeedback = lazy(() => import("./pages/ModelFeedback"));
+const Organisation     = lazy(() => import("./pages/Organisation"));
+const UsersPage        = lazy(() => import("./pages/UsersPage"));
+const RolePermissions  = lazy(() => import("./pages/RolePermissions"));
+const StoreAccess      = lazy(() => import("./pages/StoreAccess"));
+const ModelAccuracy    = lazy(() => import("./pages/ModelAccuracy"));
+const ActivityLogs     = lazy(() => import("./pages/ActivityLogs"));
+const StoreMaster      = lazy(() => import("./pages/StoreMaster"));
+const FrameReview      = lazy(() => import("./pages/FrameReview"));
+const ModelFeedback    = lazy(() => import("./pages/ModelFeedback"));
+
+// Module-level: persists across route changes within the browser session.
+// Prevents calling getMe() on every navigation.
+let _authCache: "authenticated" | "unauthenticated" | null = null;
+
+// Called by the 401 interceptor path (window.location.href = '/login') reloads
+// the page anyway, but export this so logout handlers can clear it too.
+export function clearAuthCache() { _authCache = null; }
 
 function AuthLoading() {
   return (
@@ -46,106 +54,118 @@ function RouteLoading() {
   );
 }
 
-function RequireAuth({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<"checking" | "authenticated" | "unauthenticated">("checking");
+// ── Single auth shell ─────────────────────────────────────────────────────
+// Mounts ONCE for all authenticated routes. StoreProvider + AppLayout are
+// stable — they do NOT remount on every navigation. <Outlet /> is the only
+// part that changes when the URL changes.
+function AuthShell() {
+  const [status, setStatus] = useState<"checking" | "authenticated" | "unauthenticated">(() => {
+    if (!localStorage.getItem("iris_token")) return "unauthenticated";
+    return _authCache ?? "checking";
+  });
 
   useEffect(() => {
-    const token = localStorage.getItem("iris_token");
-    if (!token) {
-      setStatus("unauthenticated");
-      return;
-    }
-
+    if (status !== "checking") return;
     let active = true;
     getMe()
       .then(() => {
+        _authCache = "authenticated";
         if (active) setStatus("authenticated");
       })
       .catch(() => {
         localStorage.removeItem("iris_token");
+        _authCache = "unauthenticated";
         if (active) setStatus("unauthenticated");
       });
-
     return () => { active = false; };
   }, []);
 
   if (status === "checking") return <AuthLoading />;
   if (status === "unauthenticated") return <Navigate to="/login" replace />;
-  return <StoreProvider><AppLayout>{children}</AppLayout></StoreProvider>;
+  return (
+    <StoreProvider>
+      <AppLayout>
+        <Suspense fallback={<RouteLoading />}>
+          <Outlet />
+        </Suspense>
+      </AppLayout>
+    </StoreProvider>
+  );
 }
 
+// ── Login route ───────────────────────────────────────────────────────────
 function LoginRoute() {
-  const [status, setStatus] = useState<"checking" | "ready" | "redirect">("checking");
+  const [status, setStatus] = useState<"checking" | "ready" | "redirect">(() => {
+    const token = localStorage.getItem("iris_token");
+    if (!token) return "ready";
+    return _authCache === "authenticated" ? "redirect" : "checking";
+  });
 
   useEffect(() => {
-    const token = localStorage.getItem("iris_token");
-    if (!token) { setStatus("ready"); return; }
-
+    if (status !== "checking") return;
     let active = true;
     getMe()
-      .then(() => { if (active) setStatus("redirect"); })
+      .then(() => {
+        _authCache = "authenticated";
+        if (active) setStatus("redirect");
+      })
       .catch(() => {
         localStorage.removeItem("iris_token");
         if (active) setStatus("ready");
       });
-
     return () => { active = false; };
   }, []);
 
   if (status === "checking") return <AuthLoading />;
   if (status === "redirect") return <Navigate to="/overview" replace />;
-  return <Login />;
-}
-
-function auth(el: ReactNode) {
   return (
-    <RequireAuth>
-      <Suspense fallback={<RouteLoading />}>{el}</Suspense>
-    </RequireAuth>
+    <Suspense fallback={<AuthLoading />}>
+      <Login />
+    </Suspense>
   );
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<AuthLoading />}>
-        <Routes>
-          <Route path="/login" element={<LoginRoute />} />
+      <Routes>
+        <Route path="/login" element={<LoginRoute />} />
 
+        {/* All authenticated routes share one AuthShell — layout mounts once,
+            only <Outlet /> swaps on navigation. No repeated getMe() calls. */}
+        <Route element={<AuthShell />}>
           {/* Core */}
-          <Route path="/overview" element={auth(<Overview />)} />
-          <Route path="/detail" element={auth(<StoreDetail />)} />
-          <Route path="/quality" element={auth(<QualityFeedback />)} />
-          <Route path="/scheduler" element={auth(<SchedulerDashboard />)} />
-          <Route path="/runs/:runId" element={auth(<RunDetail />)} />
+          <Route path="/overview"   element={<Overview />} />
+          <Route path="/detail"     element={<StoreDetail />} />
+          <Route path="/quality"    element={<QualityFeedback />} />
+          <Route path="/scheduler"  element={<SchedulerDashboard />} />
+          <Route path="/runs/:runId" element={<RunDetail />} />
 
           {/* Reports */}
-          <Route path="/reports" element={auth(<ReportsPage />)} />
-          <Route path="/journeys" element={auth(<CustomerJourneys />)} />
+          <Route path="/reports"    element={<ReportsPage />} />
+          <Route path="/journeys"   element={<CustomerJourneys />} />
 
           {/* QA */}
-          <Route path="/qa/frame-review" element={auth(<FrameReview />)} />
-          <Route path="/qa/model-feedback" element={auth(<ModelFeedback />)} />
+          <Route path="/qa/frame-review"    element={<FrameReview />} />
+          <Route path="/qa/model-feedback"  element={<ModelFeedback />} />
 
           {/* Admin */}
-          <Route path="/admin/stores" element={auth(<StoreMapping />)} />
-          <Route path="/admin/store-master" element={auth(<StoreMaster />)} />
-          <Route path="/admin/cameras" element={auth(<CameraZones />)} />
-          <Route path="/admin/employees" element={auth(<EmployeeManagement />)} />
-          <Route path="/admin/users" element={auth(<UsersPage />)} />
-          <Route path="/admin/roles" element={auth(<RolePermissions />)} />
-          <Route path="/admin/store-access" element={auth(<StoreAccess />)} />
-          <Route path="/admin/organisation" element={auth(<Organisation />)} />
-          <Route path="/admin/model-accuracy" element={auth(<ModelAccuracy />)} />
-          <Route path="/admin/activity" element={auth(<ActivityLogs />)} />
+          <Route path="/admin/stores"        element={<StoreMapping />} />
+          <Route path="/admin/store-master"  element={<StoreMaster />} />
+          <Route path="/admin/cameras"       element={<CameraZones />} />
+          <Route path="/admin/employees"     element={<EmployeeManagement />} />
+          <Route path="/admin/users"         element={<UsersPage />} />
+          <Route path="/admin/roles"         element={<RolePermissions />} />
+          <Route path="/admin/store-access"  element={<StoreAccess />} />
+          <Route path="/admin/organisation"  element={<Organisation />} />
+          <Route path="/admin/model-accuracy" element={<ModelAccuracy />} />
+          <Route path="/admin/activity"      element={<ActivityLogs />} />
+          <Route path="/admin"               element={<Navigate to="/admin/stores" replace />} />
+        </Route>
 
-          {/* Legacy redirect — old /admin path goes to store mapping */}
-          <Route path="/admin" element={<Navigate to="/admin/stores" replace />} />
-
-          <Route path="/" element={<Navigate to="/overview" replace />} />
-          <Route path="*" element={<Navigate to="/overview" replace />} />
-        </Routes>
-      </Suspense>
+        <Route path="/" element={<Navigate to="/overview" replace />} />
+        <Route path="*" element={<Navigate to="/overview" replace />} />
+      </Routes>
     </BrowserRouter>
   );
 }

@@ -100,6 +100,23 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-08 - Fix Navigation Stuck on "Loading page..." After QA Pages
+
+- Changed paths:
+  - `frontend/src/App.tsx`
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/ModelFeedback.tsx`
+  - `frontend/src/api/client.ts`
+  - `backend/app/static/` (rebuilt React bundle)
+- Root cause: Three compounding issues made navigation from /quality, /qa/frame-review, /qa/model-feedback block the new page:
+  1. **`RequireAuth` re-ran `getMe()` on every navigation** — each route change mounted a fresh `RequireAuth` component → called `getMe()` (1 HTTP request) AND re-mounted `StoreProvider` → called `adminListStores()` (another request) AND re-mounted `AppLayout` + Sidebar + TopNav. Browsers have a 6-connection limit per origin; these extra requests queued behind any pending QA page requests.
+  2. **QA page API calls not cancelled on unmount** — `reportsWalkinsQA` (up to 150+ rows), `qaReviewQueue`, `qaAccuracy` requests continued in-flight after navigation, holding connections open.
+  3. **Thumbnail images (`<img>` tags) cannot be cancelled by React** — once a browser starts fetching an `<img>` src, unmounting the element does not cancel the in-flight request.
+- Fixes:
+  - **App.tsx restructured to single `AuthShell` with `<Outlet />`**: All authenticated routes are children of one `<Route element={<AuthShell />}>`. `AuthShell` renders `StoreProvider` + `AppLayout` + `Suspense` once. `<Outlet />` swaps page content on navigation. Module-level `_authCache` variable means `getMe()` only fires on the very first load — subsequent navigations skip the auth check entirely.
+  - **AbortController added to all three QA pages**: On unmount, the pending API call is aborted (`ERR_CANCELED` is swallowed). Added `axiosConfig?: object` param to `reportsWalkinsQA`, `qaReviewQueue`, `qaAccuracy`, `reportsModelAccuracy` in `client.ts`.
+
 ### 2026-05-08 - Fix Camera Thumbnails Not Showing on /admin/cameras
 
 - Changed paths:

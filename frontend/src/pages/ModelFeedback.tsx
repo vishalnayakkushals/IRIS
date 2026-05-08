@@ -34,13 +34,17 @@ export default function ModelFeedback() {
   }
 
   useEffect(() => {
-    reportsModelAccuracy().then((r) => setModelVersions(r.data));
+    const ctrl = new AbortController();
+    reportsModelAccuracy({ signal: ctrl.signal }).then((r) => setModelVersions(r.data)).catch(() => {});
+    return () => ctrl.abort();
   }, []);
 
   useEffect(() => {
     if (!storeId) return;
-    qaAccuracy(storeId).then((r) => setAccuracy(r.data)).catch(() => {});
+    const ctrl = new AbortController();
+    qaAccuracy(storeId, { signal: ctrl.signal }).then((r) => setAccuracy(r.data)).catch(() => {});
     loadImprovements();
+    return () => ctrl.abort();
   }, [storeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRetrain() {

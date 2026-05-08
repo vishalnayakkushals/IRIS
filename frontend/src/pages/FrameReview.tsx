@@ -363,11 +363,12 @@ export default function FrameReview() {
     setTimeout(() => setToast(""), 3000);
   }
 
-  async function load(force = false) {
+  const abortRef = useRef<AbortController | null>(null);
+
+  function load(force = false) {
     if (!storeId) return;
     const key = cacheKey(storeId, dateFilter);
 
-    // Use cache on navigation back (not on explicit refresh)
     if (!force) {
       const cached = readCache(key);
       if (cached) {
@@ -378,21 +379,25 @@ export default function FrameReview() {
       }
     }
 
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
     setLoading(true);
     setCachedAt(null);
     setPage(0);
-    // Always fetch all statuses from server; filter client-side so counts stay accurate
-    qaReviewQueue(storeId, undefined, dateFilter || undefined, 150)
+    qaReviewQueue(storeId, undefined, dateFilter || undefined, 150, { signal })
       .then((r) => {
         setRows(r.data);
         writeCache(key, r.data);
         setCachedAt(Date.now());
       })
+      .catch((e) => { if (e?.code !== "ERR_CANCELED") setRows([]); })
       .finally(() => setLoading(false));
   }
 
   useEffect(() => {
-    if (storeId) void load();
+    if (storeId) load();
+    return () => { abortRef.current?.abort(); };
   }, [storeId, dateFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSaved(updated: any) {
