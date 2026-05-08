@@ -233,6 +233,8 @@ export const adminListCameras = (storeId: string) => api.get<any[]>(`/admin/came
 export const adminUpsertCamera = (storeId: string, body: any) => api.post(`/admin/cameras/${storeId}`, body);
 export const adminDeleteCamera = (storeId: string, cameraId: string) =>
   api.delete(`/admin/cameras/${storeId}/${encodeURIComponent(cameraId)}`);
+export const adminDiscoverCameras = (storeId: string) =>
+  api.post<{ added: number; existing: number; total: number }>(`/admin/cameras/${storeId}/discover`);
 
 // ── Admin — Locations ─────────────────────────────────────────────────────────
 export const adminListLocations = (storeId: string) => api.get<any[]>(`/admin/locations/${storeId}`);

@@ -1185,6 +1185,70 @@ def _load_prompt_improvement_text(store_id: str, data_root: Path) -> str:
         return ""
 
 
+# ── Camera exclusion + auto-discovery ────────────────────────────────────────
+
+def _load_excluded_cameras(store_id: str) -> set[str]:
+    """Return set of camera_ids marked external or skip in PostgreSQL camera_configs.
+    Non-fatal: returns empty set if PG is unreachable or table doesn't exist.
+    """
+    try:
+        from backend.app.db.session import engine_sync
+        from sqlalchemy import text as sa_text
+        with engine_sync.connect() as pg:
+            rows = pg.execute(
+                sa_text(
+                    "SELECT camera_id FROM camera_configs "
+                    "WHERE store_id=:sid AND camera_type IN ('external','skip')"
+                ),
+                {"sid": store_id},
+            ).fetchall()
+        return {str(r[0]) for r in rows if r[0]}
+    except Exception:
+        return set()
+
+
+def _auto_discover_cameras(sqlite_conn: sqlite3.Connection, store_id: str) -> None:
+    """After a pipeline run, register any new camera_ids found in onfly_image_state
+    into PostgreSQL camera_configs (camera_type='unlabeled'). Already-registered
+    cameras are untouched. Non-fatal.
+    """
+    try:
+        rows = sqlite_conn.execute(
+            """
+            SELECT camera_id, MIN(image_id) AS sample_image_id
+            FROM onfly_image_state
+            WHERE store_id=? AND camera_id IS NOT NULL AND camera_id != ''
+            GROUP BY camera_id
+            """,
+            (store_id,),
+        ).fetchall()
+        if not rows:
+            return
+        from backend.app.db.session import engine_sync
+        from sqlalchemy import text as sa_text
+        from datetime import datetime, timezone
+        now = datetime.now(tz=timezone.utc)
+        with engine_sync.begin() as pg:
+            for cam_id, sample_image_id in rows:
+                existing = pg.execute(
+                    sa_text("SELECT 1 FROM camera_configs WHERE store_id=:sid AND camera_id=:cid"),
+                    {"sid": store_id, "cid": cam_id},
+                ).first()
+                if not existing:
+                    pg.execute(
+                        sa_text(
+                            "INSERT INTO camera_configs "
+                            "(store_id, camera_id, camera_role, floor_name, location_name, "
+                            "entry_line_x, entry_direction, camera_type, sample_image_id, updated_at) "
+                            "VALUES (:sid, :cid, 'INSIDE', '', '', 0.5, 'OUTSIDE_TO_INSIDE', "
+                            "'unlabeled', :sample, :now)"
+                        ),
+                        {"sid": store_id, "cid": cam_id, "sample": sample_image_id or "", "now": now},
+                    )
+    except Exception:
+        pass
+
+
 # ── PostgreSQL sync ───────────────────────────────────────────────────────────
 _PG_WALKIN_COLS = [
     "store_id", "run_id", "image_id", "source_image_name", "source_folder_name",
@@ -1264,6 +1328,10 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     data_root = Path(cfg.db_path).parent  # db is in data_root
     _correction_map = _load_qa_correction_map(cfg.store_id, data_root)
     _prompt_extra = _load_prompt_improvement_text(cfg.store_id, data_root)
+
+    # ── Load camera exclusion list from PostgreSQL ────────────────────────────
+    # Cameras labelled external or skip are excluded from YOLO + GPT entirely.
+    _excluded_cameras: set[str] = _load_excluded_cameras(cfg.store_id)
 
     conn = _connect(cfg.db_path)
     try:
@@ -1404,6 +1472,21 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
 
         _append_pipeline_event(conn, run_id=run_id, stage=PIPELINE_STAGES[1], event_type="start", message="Skip check started")
         for item in images:
+            # Camera exclusion: skip YOLO + GPT for cameras marked external or skip
+            if _excluded_cameras and item.camera_id and item.camera_id in _excluded_cameras:
+                skipped += 1
+                conn.execute(
+                    "INSERT OR IGNORE INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,"
+                    "source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,"
+                    "discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version,"
+                    "yolo_status,gpt_status) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'camera_excluded','camera_excluded')",
+                    (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id,
+                     item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display,
+                     item.camera_id, item.timestamp_hint, _now(), _now(), cfg.pipeline_version, "", ""),
+                )
+                conn.commit()
+                continue
             now = _now()
             row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             if row is None:
@@ -2283,12 +2366,17 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         )
         conn.execute("INSERT OR REPLACE INTO onfly_run_metrics(run_id,store_id,run_mode,source_provider,started_at,ended_at,total_listed,new_images,skipped_cached,yolo_done,yolo_relevant,gpt_done,total_ms,list_ms,download_ms,yolo_ms,gpt_ms,report_ms,status,summary_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (run_id, cfg.store_id, cfg.run_mode, client.provider, started_at, ended_at, len(images), new_images, skipped, yolo_done, yolo_relevant, gpt_done, total_ms, timings["list_ms"], timings["download_ms"], timings["yolo_ms"], timings["gpt_ms"], timings["report_ms"], "ok", json.dumps(summary, separators=(',', ':'))))
         conn.commit()
-        # ── Sync this run's sessions to PostgreSQL ─────────────────────────────
+        # ── Sync this run's sessions + discover cameras in PostgreSQL ──────────
         try:
             _sync_run_to_postgres(conn, run_id, cfg.store_id)
         except Exception as _pg_exc:
             import logging
             logging.getLogger(__name__).warning("Post-run PG sync failed (non-fatal): %s", _pg_exc)
+        try:
+            _auto_discover_cameras(conn, cfg.store_id)
+        except Exception as _cam_exc:
+            import logging
+            logging.getLogger(__name__).warning("Camera auto-discover failed (non-fatal): %s", _cam_exc)
         return summary
     except Exception as exc:
         err = str(exc)

@@ -100,6 +100,31 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-08 - Camera-Type Exclusion: Auto-Discovery + Labeling UI + Pipeline Skip
+
+- Changed paths:
+  - `backend/app/db/canonical_metadata.py`
+  - `backend/app/api/routes_admin.py`
+  - `backend/migrations/versions/003_camera_type.py` (new)
+  - `src/iris/onfly_pipeline.py`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/api/client.ts`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **DB migration**: Added `camera_type` (unlabeled/floor/entry/external/skip) and `sample_image_id` to `camera_configs` table in PostgreSQL.
+  - **Auto-discovery (`POST /admin/cameras/{store_id}/discover`)**: Reads SQLite `onfly_image_state` to find all distinct camera IDs seen for a store. Auto-inserts new ones into `camera_configs` with `camera_type='unlabeled'` and one representative `sample_image_id`. Already-labeled cameras are untouched.
+  - **Post-run auto-discover**: `_auto_discover_cameras()` called at end of every successful pipeline run alongside `_sync_run_to_postgres`. New cameras that appear in a scan are automatically registered without manual intervention.
+  - **Pipeline exclusion (`_load_excluded_cameras`)**: At pipeline start, loads camera IDs with `camera_type IN ('external','skip')` from PostgreSQL. In the skip-check loop, any image whose `camera_id` is in the exclusion set is immediately skipped (status: `camera_excluded`) — no YOLO download, no GPT call. Non-fatal if PG is unreachable (empty exclusion set).
+  - **CameraZones page rebuilt**:
+    - "Discover from pipeline" button — one click populates all cameras from last scan
+    - Sample image thumbnail per camera row (fetched via existing `/qa/frame-image` endpoint with `?token=`)
+    - Inline type dropdown per camera row — change type saves immediately without a separate form
+    - Summary strip: counts per type (floor/entry/external/skip)
+    - Warning banner when unlabeled cameras exist
+    - Green confirmation banner showing which cameras are excluded from AI
+    - Type legend explaining each type and its pipeline effect
+  - **Workflow**: Run pipeline once → click Discover → label each camera by type → subsequent pipeline runs skip excluded cameras automatically. 16 cameras discovered and pre-populated for BLRRRN (D01–D15, D18).
+
 ### 2026-05-07 - Industry-Standard Pipeline: Parallel Downloads + Rate Limiter + Circuit Breaker + Heartbeat
 
 - Changed paths:

@@ -93,6 +93,8 @@ camera_configs = Table(
     Column("location_name", String(255), nullable=False, server_default=""),
     Column("entry_line_x", Numeric(5, 4), nullable=False, server_default="0.5"),
     Column("entry_direction", String(64), nullable=False, server_default="OUTSIDE_TO_INSIDE"),
+    Column("camera_type", String(64), nullable=False, server_default="unlabeled"),
+    Column("sample_image_id", String(255), nullable=False, server_default=""),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("store_id", "camera_id"),
 )

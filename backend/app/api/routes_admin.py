@@ -730,6 +730,9 @@ async def delete_employee_endpoint(
 # Camera configs
 # ---------------------------------------------------------------------------
 
+_CAMERA_TYPES = {"unlabeled", "floor", "entry", "external", "skip"}
+
+
 class CameraIn(BaseModel):
     camera_id: str
     camera_role: str = "INSIDE"
@@ -737,6 +740,8 @@ class CameraIn(BaseModel):
     location_name: str = ""
     entry_line_x: float = 0.5
     entry_direction: str = "OUTSIDE_TO_INSIDE"
+    camera_type: str = "unlabeled"
+    sample_image_id: str = ""
 
 
 @router.get("/cameras/{store_id}")
@@ -750,6 +755,8 @@ async def list_cameras(store_id: str, _: str = Depends(get_current_user)) -> lis
 
 @router.post("/cameras/{store_id}", status_code=status.HTTP_201_CREATED)
 async def upsert_camera(store_id: str, body: CameraIn, actor: str = Depends(get_current_user)) -> dict:
+    if body.camera_type not in _CAMERA_TYPES:
+        raise HTTPException(status_code=422, detail=f"camera_type must be one of {sorted(_CAMERA_TYPES)}")
     now = _now()
     async with AsyncSessionLocal() as session:
         existing = await session.execute(
@@ -767,6 +774,8 @@ async def upsert_camera(store_id: str, body: CameraIn, actor: str = Depends(get_
                     location_name=body.location_name,
                     entry_line_x=body.entry_line_x,
                     entry_direction=body.entry_direction,
+                    camera_type=body.camera_type,
+                    sample_image_id=body.sample_image_id,
                     updated_at=now,
                 )
             )
@@ -780,12 +789,91 @@ async def upsert_camera(store_id: str, body: CameraIn, actor: str = Depends(get_
                     location_name=body.location_name,
                     entry_line_x=body.entry_line_x,
                     entry_direction=body.entry_direction,
+                    camera_type=body.camera_type,
+                    sample_image_id=body.sample_image_id,
                     updated_at=now,
                 )
             )
         await session.commit()
-    await _log_activity(actor, "camera.upsert", store_id, {"camera_id": body.camera_id})
+    await _log_activity(actor, "camera.upsert", store_id, {"camera_id": body.camera_id, "camera_type": body.camera_type})
     return {"store_id": store_id, "camera_id": body.camera_id, "saved": True}
+
+
+@router.post("/cameras/{store_id}/discover")
+async def discover_cameras(store_id: str, actor: str = Depends(get_current_user)) -> dict:
+    """Scan SQLite onfly_image_state to find all camera IDs seen for this store.
+    Auto-inserts new cameras into camera_configs with camera_type='unlabeled'.
+    Already-labeled cameras are untouched. Returns counts of added vs existing.
+    """
+    import sqlite3
+    from backend.app.config import get_settings
+    cfg = get_settings()
+
+    if not cfg.db_path_obj.exists():
+        raise HTTPException(status_code=404, detail="Pipeline database not found — run a pipeline scan first")
+
+    conn = sqlite3.connect(str(cfg.db_path_obj), timeout=10)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT camera_id,
+               COUNT(*) AS img_count,
+               MIN(image_id) AS sample_image_id
+        FROM onfly_image_state
+        WHERE store_id = ? AND camera_id IS NOT NULL AND camera_id != ''
+        GROUP BY camera_id
+        ORDER BY camera_id
+        """,
+        (store_id,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No images found for this store — run a pipeline scan first")
+
+    now = _now()
+    added = 0
+    existing_count = 0
+
+    async with AsyncSessionLocal() as session:
+        for row in rows:
+            cam_id = str(row["camera_id"])
+            existing = await session.execute(
+                select(camera_configs.c.camera_type).where(
+                    camera_configs.c.store_id == store_id,
+                    camera_configs.c.camera_id == cam_id,
+                )
+            )
+            existing_row = existing.first()
+            if existing_row:
+                # Already registered — update sample_image_id if empty but don't overwrite camera_type
+                if not existing_row[0] or existing_row[0] == "unlabeled":
+                    await session.execute(
+                        update(camera_configs)
+                        .where(camera_configs.c.store_id == store_id, camera_configs.c.camera_id == cam_id)
+                        .values(sample_image_id=str(row["sample_image_id"] or ""), updated_at=now)
+                    )
+                existing_count += 1
+            else:
+                await session.execute(
+                    insert(camera_configs).values(
+                        store_id=store_id,
+                        camera_id=cam_id,
+                        camera_role="INSIDE",
+                        floor_name="",
+                        location_name="",
+                        entry_line_x=0.5,
+                        entry_direction="OUTSIDE_TO_INSIDE",
+                        camera_type="unlabeled",
+                        sample_image_id=str(row["sample_image_id"] or ""),
+                        updated_at=now,
+                    )
+                )
+                added += 1
+        await session.commit()
+
+    await _log_activity(actor, "camera.discover", store_id, {"added": added, "existing": existing_count})
+    return {"store_id": store_id, "added": added, "existing": existing_count, "total": added + existing_count}
 
 
 @router.delete("/cameras/{store_id}/{camera_id}")
