@@ -116,6 +116,20 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
   - **`detect_bytes()` integration**: Pipeline YOLO stage now calls `OnnxPersonDetector.detect_bytes(raw_bytes)` directly instead of writing a temp file. Eliminates temp-file I/O on every image.
   - **Unit tests**: All three infrastructure classes verified — token bucket timing, circuit breaker state transitions, heartbeat DB writes. See `scripts/_test_pipeline_infra.py`.
 
+### 2026-05-08 - Option A + Option B: Feedback Loop Closes Into Pipeline
+
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/api/routes_qa.py`
+  - `frontend/src/pages/ModelFeedback.tsx`
+  - `frontend/src/api/client.ts`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Option A — correction override**: `trigger_retrain` now writes a second file alongside the versioned rule file: `data/models/qa_corrections_{store_id}.json`. This file contains every confirmed feedback row keyed by (filename, track_id). At pipeline start, `_load_qa_correction_map()` reads this file. After all GPT walk-in sessions are written for the run, `_apply_qa_corrections_to_run()` iterates them and overrides any row whose `source_image_name + walkin_id` matches a confirmed correction — updating `role` and `included_in_analytics`. Corrections persist across re-runs of the same footage without calling GPT again. Falls back gracefully if the file doesn't exist (first run).
+  - **Option B — prompt self-improvement**: New endpoint `POST /api/qa/improve-prompt/{store_id}` loads up to 20 rejected feedback rows + fetches their actual images from Drive/local, sends them to GPT with the current `_RETAIL_WALKIN_PROMPT` and asks GPT to write a short additional rule (≤120 words) that would have prevented those specific errors. Returns the suggestion text. New endpoint `POST /api/qa/apply-prompt-improvement/{store_id}` saves the approved text to `data/models/prompt_improvements_{store_id}.json` (with full history). At pipeline start, `_load_prompt_improvement_text()` reads the `active_text` field (concatenation of all applied improvements) and passes it to `_openai_eval()` as `prompt_extra` — appended after the base prompt with a `STORE-SPECIFIC RULES:` header on every GPT call for that store. New endpoint `GET /api/qa/prompt-improvements/{store_id}` returns history.
+  - **ModelFeedback page rebuilt**: Two distinct cards — Option A (green, "Sync Corrections") and Option B (violet, "Improve Prompt"). Option B card shows the GPT suggestion in a reviewable monospace block with Apply/Discard buttons. Applied improvement history and collapsible active rule text shown below. Both sections explain exactly what they do and what they cost.
+  - **client.ts**: Added `qaImprovePrompt`, `qaApplyImprovement`, `qaGetImprovements`.
+
 ### 2026-05-08 - Fix QA/Frame Review Feedback Bugs + Counts Reset
 
 - Changed paths:

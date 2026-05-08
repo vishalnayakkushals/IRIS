@@ -598,6 +598,29 @@ async def trigger_retrain(
     artifact_path = artifact_dir / f"qa_feedback_rules_{store_id}_{version_tag}.json"
     artifact_path.write_text(json.dumps({"store_id": store_id, "rules": rules}, indent=2))
 
+    # Write a stable "latest corrections" file that the pipeline loads at startup.
+    # Keyed by (filename_lower, track_id_lower) so the pipeline can do O(1) lookup.
+    corrections_path = artifact_dir / f"qa_corrections_{store_id}.json"
+    corrections_path.write_text(
+        json.dumps(
+            {
+                "store_id": store_id,
+                "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+                "correction_count": len(rules),
+                "corrections": [
+                    {
+                        "filename": r["filename"],
+                        "track_id": r["track_id"],
+                        "corrected_label": r["corrected_label"],
+                    }
+                    for r in rules
+                    if r.get("corrected_label")
+                ],
+            },
+            indent=2,
+        )
+    )
+
     metrics = {
         "rule_count": len(rules),
         "confirmed_rows": len(rows),
@@ -690,3 +713,180 @@ async def get_feedback_accuracy(
         "scored_rows": scored,
         "matched_rows": matched,
     }
+
+
+# ---------------------------------------------------------------------------
+# Prompt improvement (Option B) — GPT self-engineers better rules from errors
+# ---------------------------------------------------------------------------
+
+def _load_prompt_improvements(store_id: str, data_root: Path) -> dict:
+    """Load the prompt improvements JSON for a store (or return empty structure)."""
+    path = data_root / "models" / f"prompt_improvements_{store_id}.json"
+    if not path.exists():
+        return {"store_id": store_id, "active_text": "", "improvements": []}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {"store_id": store_id, "active_text": "", "improvements": []}
+
+
+def _save_prompt_improvements(store_id: str, data_root: Path, data: dict) -> None:
+    path = data_root / "models" / f"prompt_improvements_{store_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
+
+@router.get("/prompt-improvements/{store_id}")
+async def get_prompt_improvements(
+    store_id: str,
+    _: str = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    return _load_prompt_improvements(store_id, settings.data_root_obj)
+
+
+@router.post("/improve-prompt/{store_id}")
+async def improve_prompt(
+    store_id: str,
+    actor: str = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    """
+    Fetch rejected feedback rows + their images for this store, send to GPT
+    with the current prompt, ask GPT to write an additional rule that would
+    have prevented those errors.  Returns the suggestion — does NOT apply it yet.
+    """
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=400, detail="OPENAI_API_KEY not configured")
+
+    # Load all rejected feedback rows for this store
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(qa_feedback)
+            .where(qa_feedback.c.store_id == store_id)
+            .where(qa_feedback.c.review_status == "rejected")
+            .order_by(qa_feedback.c.created_at.desc())
+            .limit(20)  # cap at 20 images to keep the GPT request size sane
+        )
+        rejected_rows = [dict(r) for r in result.mappings().all()]
+
+    if not rejected_rows:
+        raise HTTPException(status_code=400, detail="No rejected feedback rows found for this store. Reject some frames in QA first.")
+
+    # Import the prompt
+    from iris.onfly_pipeline import _RETAIL_WALKIN_PROMPT
+
+    # Build the GPT message content — text description of each error + images where available
+    content: list[dict] = []
+
+    # System instruction text
+    error_summary = "\n".join(
+        f"- Image: {r.get('filename','?')} | GPT said: {r.get('predicted_label','?')} | Correct label: {r.get('corrected_label','?')}"
+        for r in rejected_rows
+    )
+
+    instruction = (
+        f"You are an expert AI prompt engineer specializing in retail analytics.\n\n"
+        f"The following prompt is used to classify people in retail camera images for store '{store_id}':\n\n"
+        f"--- CURRENT PROMPT START ---\n{_RETAIL_WALKIN_PROMPT}\n--- CURRENT PROMPT END ---\n\n"
+        f"The following {len(rejected_rows)} misclassifications were observed when this prompt was used:\n\n"
+        f"{error_summary}\n\n"
+        f"Look at the images provided. Based on these specific errors, write a SHORT ADDITIONAL RULE "
+        f"(maximum 120 words) to add to the END of the prompt that would prevent these specific errors. "
+        f"Focus on visual patterns that caused the confusion (e.g., clothing, position, lighting, camera angle). "
+        f"Output ONLY the additional rule text. No explanations, no JSON, no formatting — just the rule text."
+    )
+    content.append({"type": "input_text", "text": instruction})
+
+    # Attach images where we can fetch them
+    images_attached = 0
+    for row in rejected_rows:
+        try:
+            img_bytes, media_type, _ = _fetch_frame_bytes(store_id, str(row.get("filename", "")))
+            ext = media_type.split("/")[-1] if "/" in media_type else "jpeg"
+            if ext == "jpg":
+                ext = "jpeg"
+            import base64 as _b64
+            data_uri = f"data:image/{ext};base64,{_b64.b64encode(img_bytes).decode('ascii')}"
+            content.append({
+                "type": "input_image",
+                "image_url": data_uri,
+            })
+            # Label this image for GPT context
+            content.append({
+                "type": "input_text",
+                "text": f"[Above image: GPT said '{row.get('predicted_label','')}', correct is '{row.get('corrected_label','')}']",
+            })
+            images_attached += 1
+            if images_attached >= 8:  # hard cap — OpenAI limits per request
+                break
+        except Exception:
+            pass  # skip images we can't fetch — text context is sufficient
+
+    # Call GPT
+    import requests as _req
+    body = {
+        "model": settings.openai_model or "gpt-4.1-mini",
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": 400,
+    }
+    resp = _req.post(
+        f"{(settings.openai_api_base or 'https://api.openai.com/v1').rstrip('/')}/responses",
+        headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=90,
+    )
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"OpenAI error {resp.status_code}: {resp.text[:300]}")
+
+    payload = resp.json()
+    suggestion = payload.get("output_text", "")
+    if not suggestion:
+        for item in payload.get("output", []):
+            for c in (item.get("content") or []):
+                if isinstance(c, dict) and c.get("type") in {"output_text", "text"}:
+                    suggestion = c.get("text", "")
+                    break
+            if suggestion:
+                break
+
+    if not suggestion.strip():
+        raise HTTPException(status_code=502, detail="GPT returned empty response")
+
+    return {
+        "store_id": store_id,
+        "suggestion": suggestion.strip(),
+        "based_on_count": len(rejected_rows),
+        "images_attached": images_attached,
+        "status": "suggested",
+    }
+
+
+class ApplyImprovementIn(BaseModel):
+    suggestion: str
+    based_on_count: int = 0
+
+
+@router.post("/apply-prompt-improvement/{store_id}")
+async def apply_prompt_improvement(
+    store_id: str,
+    body: ApplyImprovementIn,
+    actor: str = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Save an approved prompt improvement. Pipeline picks it up on next run."""
+    data = _load_prompt_improvements(store_id, settings.data_root_obj)
+    improvement_id = f"v{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    data["improvements"].append({
+        "id": improvement_id,
+        "text": body.suggestion.strip(),
+        "applied_at": datetime.now(tz=timezone.utc).isoformat(),
+        "based_on_count": body.based_on_count,
+        "actor": actor,
+    })
+    # Rebuild active_text as concat of all improvement texts
+    data["active_text"] = "\n\n".join(
+        imp["text"] for imp in data["improvements"] if imp.get("text")
+    )
+    _save_prompt_improvements(store_id, settings.data_root_obj, data)
+    return {"store_id": store_id, "improvement_id": improvement_id, "status": "applied"}

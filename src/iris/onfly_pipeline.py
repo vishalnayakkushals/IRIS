@@ -1003,10 +1003,11 @@ def _yolo_detect_full_result(detector: Any, image_bytes: bytes, image_name: str)
         tmp_path.unlink(missing_ok=True)
 
 
-def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str) -> dict[str, Any]:
+def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_extra: str = "") -> dict[str, Any]:
     """Call GPT vision API with the comprehensive retail analytics prompt.
 
     Returns a dict with customer_count, staff_count, conversions, bounce, notes, and walkins (list of 20-field dicts).
+    prompt_extra: store-specific rule text appended after the base prompt (Option B).
     """
     if not cfg.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY missing")
@@ -1014,13 +1015,14 @@ def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str) -> dict[
     if ext == "jpg":
         ext = "jpeg"
     data_uri = f"data:image/{ext};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    full_prompt = _RETAIL_WALKIN_PROMPT + (f"\n\nSTORE-SPECIFIC RULES:\n{prompt_extra}" if prompt_extra else "")
     body = {
         "model": cfg.openai_model,
         "input": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": _RETAIL_WALKIN_PROMPT},
+                    {"type": "input_text", "text": full_prompt},
                     {"type": "input_image", "image_url": data_uri},
                 ],
             }
@@ -1074,6 +1076,76 @@ def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str) -> dict[
     }
 
 
+def _load_qa_correction_map(store_id: str, data_root: Path) -> dict[tuple[str, str], str]:
+    """
+    Load confirmed QA corrections from the stable JSON written by trigger_retrain.
+    Returns {(filename_lower, track_id_lower): corrected_label} for O(1) lookup.
+    track_id 'frame' means: override ANY session coming from that image.
+    """
+    path = data_root / "models" / f"qa_corrections_{store_id}.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        out: dict[tuple[str, str], str] = {}
+        for c in data.get("corrections", []):
+            fn = str(c.get("filename") or "").strip().lower()
+            tid = str(c.get("track_id") or "").strip().lower()
+            label = str(c.get("corrected_label") or "").strip().lower()
+            if fn and label:
+                out[(fn, tid)] = label
+        return out
+    except Exception:
+        return {}
+
+
+def _apply_qa_corrections_to_run(
+    conn: sqlite3.Connection,
+    store_id: str,
+    run_id: str,
+    correction_map: dict[tuple[str, str], str],
+) -> int:
+    """
+    Post-processing: for every session written in this run, check if a human-verified
+    correction exists (exact walkin_id match or frame-level match) and override the role.
+    Returns the number of sessions corrected.
+    """
+    if not correction_map:
+        return 0
+    rows = conn.execute(
+        "SELECT id, source_image_name, walkin_id, role FROM onfly_walkin_sessions WHERE store_id=? AND run_id=?",
+        (store_id, run_id),
+    ).fetchall()
+    n = 0
+    for row in rows:
+        img_key = str(row["source_image_name"] or "").strip().lower()
+        wid_key = str(row["walkin_id"] or "").strip().lower()
+        corrected = correction_map.get((img_key, wid_key)) or correction_map.get((img_key, "frame"))
+        if corrected and corrected != str(row["role"] or "").strip().lower():
+            new_role = corrected.capitalize()
+            new_analytics = "Yes" if corrected == "customer" else "No"
+            conn.execute(
+                "UPDATE onfly_walkin_sessions SET role=?, included_in_analytics=? WHERE id=?",
+                (new_role, new_analytics, row["id"]),
+            )
+            n += 1
+    if n:
+        conn.commit()
+    return n
+
+
+def _load_prompt_improvement_text(store_id: str, data_root: Path) -> str:
+    """Load accumulated store-specific prompt additions approved by the user (Option B)."""
+    path = data_root / "models" / f"prompt_improvements_{store_id}.json"
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text())
+        return str(data.get("active_text") or "").strip()
+    except Exception:
+        return ""
+
+
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
     yolo_version = str(cfg.yolo_version or cfg.pipeline_version or "onfly_v1").strip()
@@ -1088,6 +1160,12 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     t_list = time.perf_counter()
     images = client.list_images(cfg.max_images)
     timings["list_ms"] = round((time.perf_counter() - t_list) * 1000.0, 2)
+
+    # ── Load QA artefacts (Option A + Option B) ──────────────────────────────
+    data_root = Path(cfg.db_path).parent  # db is in data_root
+    _correction_map = _load_qa_correction_map(cfg.store_id, data_root)
+    _prompt_extra = _load_prompt_improvement_text(cfg.store_id, data_root)
+
     conn = _connect(cfg.db_path)
     try:
         stage = PIPELINE_STAGES[0]
@@ -1179,7 +1257,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         round((time.perf_counter() - _g0) * 1000.0, 2),
                     )
                 try:
-                    _out = _openai_eval(cfg, _img_bytes, _item.image_name)
+                    _out = _openai_eval(cfg, _img_bytes, _item.image_name, prompt_extra=_prompt_extra)
                     _breaker.record_success()
                     return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
                 except Exception as _exc:
@@ -1885,6 +1963,9 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             report_actual_path = _safe_write_csv(report_csv, merged, run_id)
         else:
             report_actual_path = _safe_write_csv(report_csv, agg_df, run_id)
+        # ── Option A: apply human-verified corrections before CSV export ────────
+        _apply_qa_corrections_to_run(conn, cfg.store_id, run_id, _correction_map)
+
         # Export per-customer walk-in sessions for this store
         walkin_rows = conn.execute(
             """

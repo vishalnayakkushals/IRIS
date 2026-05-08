@@ -369,6 +369,10 @@ export const qaUpdateFeedback = (id: number, body: { review_status: string; corr
 export const qaDeleteFeedback = (id: number) => api.delete(`/qa/feedback/${id}`);
 export const qaRetrain = (storeId: string) => api.post<any>(`/qa/retrain/${storeId}`);
 export const qaAccuracy = (storeId: string) => api.get<any>(`/qa/accuracy/${storeId}`);
+export const qaImprovePrompt = (storeId: string) => api.post<any>(`/qa/improve-prompt/${storeId}`);
+export const qaApplyImprovement = (storeId: string, body: { suggestion: string; based_on_count: number }) =>
+  api.post<any>(`/qa/apply-prompt-improvement/${storeId}`, body);
+export const qaGetImprovements = (storeId: string) => api.get<any>(`/qa/prompt-improvements/${storeId}`);
 export const qaImageUrl = (path: string) =>
   `${(import.meta.env.VITE_API_URL ?? "/api")}/qa/image?path=${encodeURIComponent(path)}`;
 export const qaFrameImageUrl = (storeId: string, imageId: string) => {
