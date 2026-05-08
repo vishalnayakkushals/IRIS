@@ -22,6 +22,43 @@ import requests
 from iris.iris_analysis import build_detector
 from iris.store_registry import parse_drive_folder_id, parse_s3_location
 
+# ── Data normalization helpers ────────────────────────────────────────────────
+# Called at every write point so the DB never stores inconsistent casing or formats.
+
+_ROLE_MAP: dict[str, str] = {
+    "customer": "Customer",
+    "staff": "Staff",
+    "uncertain": "Uncertain",
+    "unknown": "Uncertain",
+    "passerby": "Passerby",
+    "banner": "Banner",
+    "poster": "Banner",
+    "poster non human": "Banner",
+    "poster_non_human": "Banner",
+    "poster or non-human": "Banner",
+    "inside active": "Customer",  # GPT sometimes returns this for active shoppers
+}
+
+
+def _norm_role(role: str) -> str:
+    """Normalize role to consistent title-case. Unknown variants → 'Uncertain'."""
+    r = str(role or "").strip()
+    return _ROLE_MAP.get(r.lower(), r.title() if r else "Uncertain")
+
+
+def _norm_date(date_str: str) -> str:
+    """Normalize date to YYYY-MM-DD. Converts DD-MM-YYYY → YYYY-MM-DD."""
+    d = str(date_str or "").strip()
+    if len(d) == 10 and d[2] == "-" and d[5] == "-":
+        # DD-MM-YYYY format
+        return f"{d[6:10]}-{d[3:5]}-{d[0:2]}"
+    return d
+
+
+def _norm_yn(val: str) -> str:
+    """Normalize Yes/No values to exactly 'Yes' or 'No'."""
+    return "Yes" if str(val or "").strip().lower() == "yes" else "No"
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 CAMERA_PATTERN = re.compile(r"_(D\d{2})[-_]", re.IGNORECASE)
@@ -358,7 +395,7 @@ class OnFlyConfig:
     run_id: str = ""
     detector_type: str = "yolo"
     conf_threshold: float = 0.18
-    max_images: int = 100
+    max_images: int = 0  # 0 = unlimited; caller sets actual limit via get_settings().max_images
     gpt_enabled: bool = False
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
@@ -1148,6 +1185,51 @@ def _load_prompt_improvement_text(store_id: str, data_root: Path) -> str:
         return ""
 
 
+# ── PostgreSQL sync ───────────────────────────────────────────────────────────
+_PG_WALKIN_COLS = [
+    "store_id", "run_id", "image_id", "source_image_name", "source_folder_name",
+    "camera_id", "business_date", "date", "event_type", "event_time", "walkin_id",
+    "group_id", "role", "entry_time", "exit_time", "time_spent_mins", "session_status",
+    "entry_type", "first_seen_time", "last_seen_time", "matched_session_id", "match_score",
+    "match_reason", "direction_confidence", "match_fingerprint", "debug_parsed_time",
+    "debug_gpt_event_type", "gender", "age_band", "attire_visual_marker", "primary_clothing",
+    "jewellery_load", "bag_type", "clothing_style_archetype", "engagement_type",
+    "engagement_depth", "purchase_signal_bag", "included_in_analytics",
+]
+
+
+def _sync_run_to_postgres(sqlite_conn: sqlite3.Connection, run_id: str, store_id: str) -> None:
+    """Sync walkin sessions for this run from SQLite → PostgreSQL.
+    Strategy: DELETE existing rows for run_id+store_id, then bulk INSERT fresh.
+    Avoids ON CONFLICT complexity on the RANGE-partitioned table (partition key
+    `created_at` cannot be part of a simple unique constraint).
+    Non-fatal: if PostgreSQL is unreachable, the pipeline still succeeds.
+    """
+    cols_sql = ", ".join(_PG_WALKIN_COLS)
+    rows = sqlite_conn.execute(
+        f"SELECT {cols_sql} FROM onfly_walkin_sessions WHERE run_id=? AND store_id=?",
+        (run_id, store_id),
+    ).fetchall()
+    if not rows:
+        return
+
+    from backend.app.db.session import engine_sync
+    from sqlalchemy import text as sa_text
+
+    placeholders = ", ".join([f":{c}" for c in _PG_WALKIN_COLS])
+    insert_sql = sa_text(f"""
+        INSERT INTO onfly_walkin_sessions ({cols_sql})
+        VALUES ({placeholders})
+    """)
+    batch = [dict(zip(_PG_WALKIN_COLS, row)) for row in rows]
+    with engine_sync.begin() as pg_conn:
+        pg_conn.execute(
+            sa_text("DELETE FROM onfly_walkin_sessions WHERE run_id=:run_id AND store_id=:store_id"),
+            {"run_id": run_id, "store_id": store_id},
+        )
+        pg_conn.execute(insert_sql, batch)
+
+
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
     yolo_version = str(cfg.yolo_version or cfg.pipeline_version or "onfly_v1").strip()
@@ -1188,7 +1270,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         stage = PIPELINE_STAGES[0]
         business_date = ""
         if images:
-            source_dates = sorted({str(img.date_display or "").strip() for img in images if str(img.date_display or "").strip()})
+            source_dates = sorted({_norm_date(str(img.date_display or "").strip()) for img in images if str(img.date_display or "").strip()})
             if len(source_dates) == 1:
                 business_date = source_dates[0]
             elif len(source_dates) > 1:
@@ -1722,11 +1804,12 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     return best_id, float(best_score if best_score > 0 else 0.0), best_reason
 
                 for walkin in walkins:
-                    role = str(walkin.get("Role", "") or "").strip() or "Uncertain"
+                    role = _norm_role(walkin.get("Role", "") or "")
                     event_type = _canonical_event_type(walkin)
                     direction_conf = str(walkin.get("Direction Confidence", "") or "").strip() or "NA"
                     match_fingerprint = str(walkin.get("Match Fingerprint", "") or "").strip() or _event_fingerprint(walkin, _item.camera_id)
-                    included = str(walkin.get("Included in Analytics", "") or "").strip() or ("Yes" if role.lower() == "customer" else "No")
+                    _raw_included = str(walkin.get("Included in Analytics", "") or "").strip()
+                    included = _norm_yn(_raw_included) if _raw_included else ("Yes" if role == "Customer" else "No")
                     gpt_event = str(walkin.get("Event Type", "") or "").strip()
 
                     if event_type in {"PASSERBY_OUTSIDE", "POSTER_NON_HUMAN", "STAFF", "UNCLEAR"}:
@@ -2200,6 +2283,12 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         )
         conn.execute("INSERT OR REPLACE INTO onfly_run_metrics(run_id,store_id,run_mode,source_provider,started_at,ended_at,total_listed,new_images,skipped_cached,yolo_done,yolo_relevant,gpt_done,total_ms,list_ms,download_ms,yolo_ms,gpt_ms,report_ms,status,summary_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (run_id, cfg.store_id, cfg.run_mode, client.provider, started_at, ended_at, len(images), new_images, skipped, yolo_done, yolo_relevant, gpt_done, total_ms, timings["list_ms"], timings["download_ms"], timings["yolo_ms"], timings["gpt_ms"], timings["report_ms"], "ok", json.dumps(summary, separators=(',', ':'))))
         conn.commit()
+        # ── Sync this run's sessions to PostgreSQL ─────────────────────────────
+        try:
+            _sync_run_to_postgres(conn, run_id, cfg.store_id)
+        except Exception as _pg_exc:
+            import logging
+            logging.getLogger(__name__).warning("Post-run PG sync failed (non-fatal): %s", _pg_exc)
         return summary
     except Exception as exc:
         err = str(exc)

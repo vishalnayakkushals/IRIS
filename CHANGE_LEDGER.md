@@ -181,6 +181,24 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
   - **UI fix**: `liveProgress.error` in Reports page now only renders when `liveProgress.is_running` is true. Previously showed stale error messages from dead/abandoned runs as if they were current.
   - **Orphaned server**: Killed PID 8596 (old server on port 8767 — orphaned from a prior restart and competing on the same SQLite DB, causing zombie run misdetection).
 
+### 2026-05-08 - Architecture Fix: Role/Date Normalization + GDrive Scan Fix + PG Sync
+
+- Changed paths:
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/api/routes_dashboard.py`
+  - `frontend/src/main.tsx`
+  - `scripts/fix_normalize_and_sync_walkins.py` (new — one-time data repair + PG sync)
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **Role normalization at write time**: `_norm_role()` maps all variants ('CUSTOMER', 'customer', 'inside active', 'poster non human', etc.) to canonical title-case ('Customer', 'Staff', 'Banner', 'Uncertain', 'Passerby') before writing to SQLite. Prevents role mismatches in analytics GROUP BY queries.
+  - **Date normalization at write time**: `_norm_date()` converts DD-MM-YYYY → YYYY-MM-DD at write point for `business_date` and `date` columns. Prevents all future runs from writing mixed-format dates.
+  - **`included_in_analytics` normalization**: `_norm_yn()` enforces 'Yes'/'No' (not 'yes'/'YES'/'no') at write time.
+  - **GDrive scan stuck fix**: `GDriveClient.list_images()` was counting already-processed Drive file IDs against `max_images` limit. When resuming a run, the DFS would hit the limit immediately using seen IDs, returning 0 new files. Fix: added `seen_ids: set[str] | None` parameter; DFS skips seen IDs entirely so `max_images` counts only genuinely new files. `RunConfig.max_images` default also changed from `100` → `0` (unlimited).
+  - **Post-run PostgreSQL sync**: `_sync_run_to_postgres()` added. Called at end of each successful run. Strategy: DELETE existing PG rows for `run_id + store_id`, then bulk INSERT fresh from SQLite. Avoids `ON CONFLICT` constraint on RANGE-partitioned table (`created_at` partition key).
+  - **One-time data repair script** (`scripts/fix_normalize_and_sync_walkins.py`): Normalizes all 9,470 existing SQLite walkin sessions in-place (role, business_date, date, included_in_analytics) and syncs all to PostgreSQL (was 120, now 9,470). Supports `--dry-run`.
+  - **ErrorBoundary**: React class component wrapping entire app catches chunk-load failures (`Failed to fetch dynamically imported module`) and render crashes. Shows "App updated — refresh" card for chunk errors; shows error message for other crashes. Prevents blank screen on stale bundle after deploy.
+  - **Overview route fixed**: `/dashboard/overview` endpoint now reads from SQLite via `_sqlite_analytics()` (same source as the frontend `/dashboard/analytics` call), not PostgreSQL `get_overview_metrics()`.
+
 ### 2026-05-07 - In-App ONNX Detection Boxes + Visual Review Script
 
 - Changed paths:
