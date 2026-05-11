@@ -5,8 +5,8 @@
 $TaskName  = "IRIS-BatchRetrieve"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
-$PythonExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-if (-not $PythonExe) { $PythonExe = "python" }
+$_pyCmd = Get-Command python -ErrorAction SilentlyContinue
+$PythonExe = if ($_pyCmd) { $_pyCmd.Source } else { "python" }
 
 $Script    = Join-Path $ScriptDir "batch_retrieve.py"
 $LogFile   = Join-Path $RepoRoot "data\batch_retrieve_task.log"

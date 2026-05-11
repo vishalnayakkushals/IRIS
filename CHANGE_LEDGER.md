@@ -49,32 +49,45 @@ The `GOOGLE_API_KEY` is a **Simple API Key** (not a service account JSON, not OA
 ### Key Files to Know
 | File | What it does |
 |---|---|
-| `src/iris/onfly_pipeline.py` | Core pipeline: list → skip-check → download → YOLO → GPT → report |
-| `backend/app/api/routes_onfly.py` | HTTP triggers for pipeline runs; thread-pool executor |
-| `backend/app/api/routes_admin.py` | User/store/employee/role CRUD |
-| `backend/app/api/routes_reports.py` | Footfall, walkins, QA, date-wise reports |
+| `src/iris/onfly_pipeline.py` | Core pipeline: list → skip-check → download → YOLO → GPT → report. `OnFlyConfig.gpt_batch_mode=True` routes GPT to overnight queue instead of real-time |
+| `src/iris/gpt_batch.py` | OpenAI Batch API module: queue / submit / retrieve / apply. Tables: `onfly_gpt_batch_queue`, `onfly_gpt_batches` |
+| `backend/app/api/routes_onfly.py` | HTTP triggers for pipeline runs; batch status/retrieve endpoints |
+| `backend/app/api/routes_admin.py` | User/store/employee/role/camera CRUD |
+| `backend/app/api/routes_reports.py` | Footfall, walkins, QA, date-wise, image-scans reports |
 | `backend/app/config.py` | All settings via pydantic-settings (reads `.env`) |
 | `frontend/src/context/StoreContext.tsx` | Global store selector — single source of truth for all pages |
 | `frontend/src/api/client.ts` | All Axios API calls with Bearer token interceptor |
+| `scripts/batch_retrieve.py` | Morning script: polls OpenAI + applies completed batch results |
+| `scripts/setup_morning_retrieval.ps1` | Registers Windows Task Scheduler job at 6 AM with wake-from-sleep |
+| `scripts/deploy_frontend.ps1` | Build + copy frontend to `backend/app/static/` in one step |
+| `docs/AI_HANDOVER_STORAGE.md` | Full GPT cost architecture, batch flow, SQLite tables, S3 notes |
 | `AGENTS.md` | Module registry and workflow rules for AI agents |
-| `release-notes/` | One `.md` per release date |
 
 ### Known Recurring Issues
 | Error | Root Cause | Fix |
 |---|---|---|
-| `GOOGLE_API_KEY is required for Drive on-the-fly ingestion` | `.env` missing or `GOOGLE_API_KEY=` empty | Create `.env` with the `AIzaSy…` key; restart server |
+| `GOOGLE_API_KEY is required for Drive on-the-fly ingestion` | `.env` missing or `GOOGLE_API_KEY=` empty | Create `.env` with the `AIzaSy…` key; restart service |
 | `UNIQUE constraint failed: onfly_image_state` | Two concurrent pipeline runs inserting same image | Fixed 2026-05-03: `INSERT OR IGNORE` applied |
 | `No module named 'iris'` | Server started without `src/` on `PYTHONPATH` | Set `PYTHONPATH=<repo>/src;<repo>` before starting uvicorn |
 | `getaddrinfo failed` | Machine has no internet when scheduler fires | Transient network failure — run will auto-retry next cycle |
 | Runs stuck in `running` state | Server was killed mid-run | Fixed 2026-05-08: `finally` block in pipeline marks run `abandoned` on SIGTERM; startup cleanup (`_cleanup_zombie_runs`) threshold 2 min |
 | QA Frame Review feedback appears to do nothing | API error (Postgres down or network) caught silently | Fixed 2026-05-08: error toast now shown; check Postgres is running |
 | QA approve/reject counts reset to 0 after navigation | `feedbackState` cleared on every cache load; FrameReview only fetched "pending" rows | Fixed 2026-05-08: feedbackState cached in sessionStorage alongside rows; FrameReview loads all statuses |
+| New batch endpoints return 404 after deploy | Service running old code | Restart IRIS-API: `net stop "IRIS-API" && net start "IRIS-API"` in admin PowerShell |
+| `setup_morning_retrieval.ps1` fails with `UnauthorizedAccess` | Windows execution policy blocks scripts | Run as: `powershell -ExecutionPolicy Bypass -File .\scripts\setup_morning_retrieval.ps1` |
 
 ### Two-Database Architecture (critical to understand)
 
-- **SQLite** (`data/store_registry.db`): pipeline writes walk-in sessions (`onfly_walkin_sessions`), image state (`onfly_image_state`), pipeline runs. All analytics (dashboard, detail, reports) read from SQLite.
-- **PostgreSQL** (`iris_db`): stores QA feedback (`qa_feedback`), model versions, user/store/employee tables. Platform data (`list_store_registry_stores`) also reads from PG.
-- `business_date` in SQLite is stored as `DD-MM-YYYY` by recent pipeline runs. All SQL date comparisons must normalize using `_ISO_DATE` CASE expression (defined in `routes_dashboard.py`, `routes_detail.py`, `routes_reports.py`). Do NOT use raw string comparison against `DATE('now', ...)`.
+- **SQLite** (`data/store_registry.db`): pipeline writes walk-in sessions (`onfly_walkin_sessions`), image state (`onfly_image_state`), pipeline runs, **batch queue** (`onfly_gpt_batch_queue`, `onfly_gpt_batches`). All analytics (dashboard, detail, reports) read from SQLite.
+- **PostgreSQL** (`iris_db`): stores QA feedback (`qa_feedback`), model versions, user/store/employee/camera tables. Platform data (`list_store_registry_stores`) also reads from PG.
+- `business_date` in SQLite is stored as `YYYY-MM-DD` (normalized at write time since 2026-05-08). All SQL date comparisons use `_ISO_DATE` CASE expression for older rows still in `DD-MM-YYYY` format.
+
+### Batch API — Critical Implementation Notes
+
+- OpenAI Batch API uses `/v1/chat/completions` format. The real-time pipeline uses `/v1/responses` (Responses API). These are **different** endpoints — do not mix them.
+- `custom_id` format in batch JSONL: `irisq_{queue_row_id}` — maps output lines back to `onfly_gpt_batch_queue.id`.
+- Image bytes stored as base64 in `onfly_gpt_batch_queue.image_b64`. For large stores this grows the SQLite file temporarily — rows are cleaned up after batch is applied.
+- Batch results are applied identically to real-time results: staff rule post-processing, walk-in session writes, PostgreSQL sync.
 
 ### Conversion Rule
 
@@ -82,19 +95,21 @@ Conversions = `entry_type = 'BILLING'` in `onfly_walkin_sessions`. This means th
 
 ### Build & Deploy Sequence
 ```powershell
+# Quick deploy (recommended)
+.\scripts\deploy_frontend.ps1
+
+# Manual steps if needed:
 # 1. Build frontend
 cd frontend && npm run build
 # 2. Copy to backend static
 cp -r dist/. ../backend/app/static/
-# 3. Kill old server PID and restart
-Stop-Process -Id (Get-Content deploy\no_docker\runtime_logs\pids\web.pid)
-# 4. Start (always set PYTHONPATH)
-$env:PYTHONPATH = "$pwd\src;$pwd"
-.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8766
+# 3. Restart service (Admin PowerShell)
+net stop "IRIS-API" && net start "IRIS-API"
 ```
 
 ### What NOT to Change Without Review
 - `src/iris/onfly_pipeline.py` Phase 3 session write logic — tightly coupled to `gpt_result_map` ordering
+- `src/iris/gpt_batch.py` `apply_batch_results` — mirrors the real-time session write logic; any change must be applied to both
 - `backend/app/auth/` — JWT flows are tested; breaking changes log users out
 - `deploy/docker-compose.yml` — port 8765 (Streamlit) must remain untouched alongside 8766
 
