@@ -509,7 +509,7 @@ def _sqlite_runtime_walkins(
 def _sqlite_runtime_image_scans(
     store_id: str | None = None,
     business_date: str | None = None,
-    limit: int = 200,
+    limit: int = 50000,
 ) -> list[dict[str, Any]]:
     db_path = get_settings().db_path_obj
     if not db_path.exists():
@@ -517,34 +517,49 @@ def _sqlite_runtime_image_scans(
     conn = _sqlite_connect(db_path)
     try:
         params: list[Any] = []
-        where: list[str] = ["date_display != ''"]
+        where: list[str] = []
         if store_id:
             where.append("store_id = ?")
             params.append(store_id)
         if business_date:
-            where.append("date_display = ?")
-            params.append(business_date)
-        where_sql = " AND ".join(where)
+            where.append("(date_display = ? OR date_source = ?)")
+            params.extend([business_date, business_date])
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         cur = conn.execute(
             f"""
             SELECT
                 store_id,
                 image_id,
                 image_name,
-                date_display AS business_date,
+                COALESCE(date_display, date_source, '') AS business_date,
                 camera_id,
                 timestamp_hint AS capture_time,
+                yolo_status,
                 yolo_relevant,
                 person_count,
+                COALESCE(yolo_error, '') AS yolo_error,
+                COALESCE(gpt_error, '') AS gpt_error,
                 gpt_status,
                 gpt_customer_count AS customer_count,
                 gpt_staff_count AS staff_count,
                 gpt_conversions AS conversion_count,
+                CASE
+                    WHEN yolo_status = 'camera_excluded'         THEN 'Camera type excluded'
+                    WHEN yolo_status = 'outside_hours'           THEN 'Outside store hours'
+                    WHEN yolo_status = 'skipped_irrelevant'      THEN 'No people detected'
+                    WHEN yolo_status = 'skipped_duplicate_sha256' THEN 'Duplicate image (skipped)'
+                    WHEN yolo_status = 'failed_download'         THEN 'Download failed'
+                    WHEN yolo_status IS NULL OR yolo_status = '' OR yolo_status = 'pending' THEN 'Pending'
+                    WHEN gpt_status  = 'cached_from_hash'        THEN 'GPT cached (duplicate)'
+                    WHEN gpt_status  = 'failed'                  THEN 'GPT analysis failed'
+                    WHEN yolo_status = 'done' AND gpt_status = 'done' THEN 'Processed'
+                    ELSE COALESCE(yolo_status, 'unknown')
+                END AS rejection_reason,
                 last_run_id,
                 discovered_at,
                 last_seen_at
             FROM onfly_image_state
-            WHERE {where_sql}
+            {where_sql}
             ORDER BY last_seen_at DESC, image_name DESC
             LIMIT ?
             """,
@@ -560,6 +575,9 @@ def _sqlite_runtime_image_scans(
                 "customer_count": int(row.get("customer_count") or 0),
                 "staff_count": int(row.get("staff_count") or 0),
                 "conversion_count": int(row.get("conversion_count") or 0),
+                "yolo_error": str(row.get("yolo_error") or ""),
+                "gpt_error": str(row.get("gpt_error") or ""),
+                "error_detail": str(row.get("gpt_error") or row.get("yolo_error") or ""),
             }
             for row in rows
         ]
@@ -692,7 +710,7 @@ async def get_store_day_summary(
 async def get_image_scans(
     store_id: str | None = None,
     business_date: str | None = None,
-    limit: int = 100,
+    limit: int = 50000,
     _: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     runtime_rows = _sqlite_runtime_image_scans(store_id=store_id, business_date=business_date, limit=limit)

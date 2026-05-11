@@ -259,6 +259,48 @@ async def update_store(store_id: str, body: StoreIn, actor: str = Depends(get_cu
     return {"store_id": store_id, "updated": True}
 
 
+class StoreHoursIn(BaseModel):
+    open_hour: int    # 0–23
+    open_minute: int = 0   # 0–59
+    close_hour: int   # 0–23 (or 24 for midnight end)
+    close_minute: int = 0  # 0–59
+
+
+@router.patch("/stores/{store_id}/hours")
+async def update_store_hours(store_id: str, body: StoreHoursIn, actor: str = Depends(get_current_user)) -> dict:
+    if not (0 <= body.open_hour <= 23):
+        raise HTTPException(status_code=422, detail="open_hour must be 0–23")
+    if not (0 <= body.open_minute <= 59):
+        raise HTTPException(status_code=422, detail="open_minute must be 0–59")
+    if not (0 <= body.close_hour <= 24):
+        raise HTTPException(status_code=422, detail="close_hour must be 0–24")
+    if not (0 <= body.close_minute <= 59):
+        raise HTTPException(status_code=422, detail="close_minute must be 0–59")
+    open_total = body.open_hour * 60 + body.open_minute
+    close_total = body.close_hour * 60 + body.close_minute
+    if open_total >= close_total:
+        raise HTTPException(status_code=422, detail="Open time must be before close time")
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            update(stores)
+            .where(stores.c.store_id == store_id)
+            .values(
+                open_hour=body.open_hour, open_minute=body.open_minute,
+                close_hour=body.close_hour, close_minute=body.close_minute,
+                updated_at=_now(),
+            )
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Store not found")
+        await session.commit()
+    await _log_activity(actor, "store.hours_update", store_id, {
+        "open_hour": body.open_hour, "open_minute": body.open_minute,
+        "close_hour": body.close_hour, "close_minute": body.close_minute,
+    })
+    return {"store_id": store_id, "open_hour": body.open_hour, "open_minute": body.open_minute,
+            "close_hour": body.close_hour, "close_minute": body.close_minute}
+
+
 @router.delete("/stores/{store_id}")
 async def delete_store(store_id: str, actor: str = Depends(get_current_user)) -> dict:
     async with AsyncSessionLocal() as session:
@@ -730,7 +772,7 @@ async def delete_employee_endpoint(
 # Camera configs
 # ---------------------------------------------------------------------------
 
-_CAMERA_TYPES = {"unlabeled", "floor", "entry", "external", "skip"}
+_CAMERA_TYPES = {"unlabeled", "floor", "entry", "external", "skip", "billing", "backroom"}
 
 
 class CameraIn(BaseModel):

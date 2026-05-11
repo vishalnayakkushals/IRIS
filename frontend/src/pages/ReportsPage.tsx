@@ -175,38 +175,113 @@ function WalkinTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string,
   );
 }
 
+function scanStatusColor(yoloStatus: string, gptStatus: string): "emerald" | "blue" | "amber" | "purple" | "rose" | "slate" {
+  if (yoloStatus === "done" && gptStatus === "done") return "emerald";
+  if (gptStatus === "cached_from_hash") return "blue";
+  if (yoloStatus === "camera_excluded") return "amber";
+  if (yoloStatus === "outside_hours") return "purple";
+  if (yoloStatus === "failed_download" || gptStatus === "failed") return "rose";
+  return "slate";
+}
+
+function rejectionColor(reason: string): "emerald" | "blue" | "amber" | "purple" | "rose" | "slate" {
+  if (reason === "Processed") return "emerald";
+  if (reason === "GPT cached (duplicate)") return "blue";
+  if (reason === "Camera type excluded") return "amber";
+  if (reason === "Outside store hours") return "purple";
+  if (reason === "Download failed" || reason === "GPT analysis failed") return "rose";
+  return "slate";
+}
+
 function ImageScanTable({ rows, storeMap }: { rows: any[]; storeMap: Record<string, string> }) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const TOTAL_COLS = 12;
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 38,
+    overscan: 10,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? (virtualRows[0]?.start ?? 0) : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0)
+    : 0;
+
   return (
-    <div className="overflow-x-auto">
+    <div
+      ref={parentRef}
+      className="overflow-auto"
+      style={{ height: rows.length > 20 ? "600px" : undefined, maxHeight: "600px" }}
+    >
       <table className="w-full text-sm text-left whitespace-nowrap">
-        <thead>
+        <thead className="sticky top-0 z-20">
           <tr className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider font-semibold">
-            <th className="px-5 py-3">Store</th>
-            <th className="px-5 py-3">Image</th>
-            <th className="px-5 py-3">Date</th>
-            <th className="px-5 py-3">Camera</th>
-            <th className="px-5 py-3">YOLO</th>
-            <th className="px-5 py-3">People</th>
-            <th className="px-5 py-3">GPT</th>
-            <th className="px-5 py-3">Customers</th>
-            <th className="px-5 py-3">Staff</th>
+            <th className="px-4 py-3 sticky left-0 bg-slate-50 z-10">Store</th>
+            <th className="px-4 py-3">Image</th>
+            <th className="px-4 py-3">Date</th>
+            <th className="px-4 py-3">Camera</th>
+            <th className="px-4 py-3">Time</th>
+            <th className="px-4 py-3">Scan Status</th>
+            <th className="px-4 py-3">People</th>
+            <th className="px-4 py-3">Rejection Reason</th>
+            <th className="px-4 py-3">GPT</th>
+            <th className="px-4 py-3">Customers</th>
+            <th className="px-4 py-3">Staff</th>
+            <th className="px-4 py-3">Error</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
-          {rows.map((r) => (
-            <tr key={r.id} className="hover:bg-slate-50/50">
-              <td className="px-5 py-3 font-medium">{storeMap[r.store_id] || r.store_id}</td>
-              <td className="px-5 py-3 max-w-[200px] truncate font-mono text-xs">{r.image_name}</td>
-              <td className="px-5 py-3">{r.business_date}</td>
-              <td className="px-5 py-3">{r.camera_id || "—"}</td>
-              <td className="px-5 py-3"><Badge color={r.yolo_relevant ? "emerald" : "slate"}>{r.yolo_relevant ? "Relevant" : "Skip"}</Badge></td>
-              <td className="px-5 py-3">{r.person_count}</td>
-              <td className="px-5 py-3"><Badge color={r.gpt_status === "done" ? "emerald" : r.gpt_status === "failed" ? "rose" : "slate"}>{r.gpt_status || "—"}</Badge></td>
-              <td className="px-5 py-3">{r.customer_count}</td>
-              <td className="px-5 py-3">{r.staff_count}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={9} className="px-5 py-10 text-center text-gray-400 text-sm">No image scan results found.</td></tr>}
+        <tbody>
+          {rows.length === 0 && (
+            <tr><td colSpan={TOTAL_COLS} className="px-5 py-10 text-center text-gray-400 text-sm">No image scan results found.</td></tr>
+          )}
+          {paddingTop > 0 && <tr><td colSpan={TOTAL_COLS} style={{ height: paddingTop }} /></tr>}
+          {virtualRows.map((virtualRow) => {
+            const r = rows[virtualRow.index];
+            const yoloStatus = String(r.yolo_status || "");
+            const gptStatus = String(r.gpt_status || "");
+            const rejReason = String(r.rejection_reason || "");
+            const captureTime = String(r.capture_time || "").slice(11, 19) || "—";
+            const errText = String(r.error_detail || r.yolo_error || r.gpt_error || "");
+            return (
+              <tr
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                className="border-b border-slate-100 hover:bg-slate-50/50"
+              >
+                <td className="px-4 py-2.5 font-medium text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-100">
+                  {storeMap[r.store_id] || r.store_id || "—"}
+                </td>
+                <td className="px-4 py-2.5 max-w-[180px] truncate font-mono text-xs text-slate-600" title={r.image_name}>{r.image_name || "—"}</td>
+                <td className="px-4 py-2.5 text-slate-700">{r.business_date || "—"}</td>
+                <td className="px-4 py-2.5 text-slate-700">{r.camera_id || "—"}</td>
+                <td className="px-4 py-2.5 text-slate-600 font-mono text-xs">{captureTime}</td>
+                <td className="px-4 py-2.5">
+                  <Badge color={scanStatusColor(yoloStatus, gptStatus)}>
+                    {yoloStatus || "pending"}
+                  </Badge>
+                </td>
+                <td className="px-4 py-2.5 text-slate-700">{r.person_count}</td>
+                <td className="px-4 py-2.5">
+                  {rejReason ? (
+                    <Badge color={rejectionColor(rejReason)}>{rejReason}</Badge>
+                  ) : "—"}
+                </td>
+                <td className="px-4 py-2.5">
+                  <Badge color={gptStatus === "done" ? "emerald" : gptStatus === "cached_from_hash" ? "blue" : gptStatus === "failed" ? "rose" : "slate"}>
+                    {gptStatus || "—"}
+                  </Badge>
+                </td>
+                <td className="px-4 py-2.5 text-slate-700">{r.customer_count}</td>
+                <td className="px-4 py-2.5 text-slate-700">{r.staff_count}</td>
+                <td className="px-4 py-2.5 max-w-[180px] truncate text-xs text-rose-500" title={errText}>{errText || ""}</td>
+              </tr>
+            );
+          })}
+          {paddingBottom > 0 && <tr><td colSpan={TOTAL_COLS} style={{ height: paddingBottom }} /></tr>}
         </tbody>
       </table>
     </div>
@@ -361,7 +436,7 @@ function writeCache(key: string, rows: any[]) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
-  const { storeId: selectedStore } = useStore();
+  const { storeId: selectedStore, stores } = useStore();
   const [reportBucket, setReportBucket] = useState<"main" | "validation">("main");
   const [reportView, setReportView] = useState("summary");
   const [page, setPage] = useState(0);
@@ -374,11 +449,16 @@ export default function ReportsPage() {
   const [liveProgress, setLiveProgress] = useState<any>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [exportingTab, setExportingTab] = useState<string | null>(null);
+  // Independent facility filter for Image Scan Results (not tied to global store context).
+  const [scanFacility, setScanFacility] = useState<string>("");
   // Tracks which tabs have already been fetched for the current store selection.
   // Switching tabs reuses cached data; store change clears everything.
   const [fetchedTabs, setFetchedTabs] = useState<Set<string>>(new Set());
 
-  const storeMap = useMemo<Record<string, string>>(() => ({}), []);
+  const storeMap = useMemo<Record<string, string>>(
+    () => Object.fromEntries(stores.map((s) => [s.store_id, s.store_name || s.store_id])),
+    [stores],
+  );
 
   const totalWalkins = useMemo(
     () => summaryRows.reduce((s, r) => s + Number(r.walkins || 0), 0),
@@ -422,7 +502,7 @@ export default function ReportsPage() {
       switch (view) {
         case "summary":     rows = (await reportsSummary(sid, 180)).data; break;
         case "walkins":     rows = (await reportsWalkins(sid, undefined, 2000)).data; break;
-        case "image_scans": rows = (await reportsImageScans(sid, undefined, 2000)).data; break;
+        case "image_scans": rows = (await reportsImageScans(sid, undefined, 100000)).data; break;
         case "validation":  rows = (await reportsValidationMap(sid, undefined, 5000)).data; break;
       }
       setTabRows(view, rows);
@@ -446,12 +526,25 @@ export default function ReportsPage() {
     setPage(0);
   }, [selectedStore]);
 
+  // When scanFacility changes, clear image_scans data so it refetches with new facility.
+  const prevScanFacilityRef = useRef<string>("");
+  useEffect(() => {
+    if (prevScanFacilityRef.current === scanFacility) return;
+    prevScanFacilityRef.current = scanFacility;
+    setScanRows([]);
+    setFetchedTabs((prev) => { const s = new Set(prev); s.delete("image_scans"); return s; });
+  }, [scanFacility]);
+
   // Fetch the active tab's data whenever tab or store changes, but only if not already cached.
+  // For image_scans, use scanFacility instead of selectedStore.
   useEffect(() => {
     if (!fetchedTabs.has(reportView)) {
-      void fetchTab(reportView, selectedStore || undefined);
+      const sid = reportView === "image_scans"
+        ? (scanFacility || undefined)
+        : (selectedStore || undefined);
+      void fetchTab(reportView, sid);
     }
-  }, [reportView, fetchedTabs, fetchTab, selectedStore]);
+  }, [reportView, fetchedTabs, fetchTab, selectedStore, scanFacility]);
 
   useEffect(() => {
     if (!selectedStore) { setLiveProgress(null); return; }
@@ -601,20 +694,37 @@ export default function ReportsPage() {
               ))}
             </select>
           </div>
-          <div>
-            <label className="iris-label">Rows Per Page</label>
-            <select
-              className="iris-select"
-              title="Rows Per Page"
-              value={pageSize}
-              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
-            >
-              <option value={10}>10 rows</option>
-              <option value={20}>20 rows</option>
-              <option value={50}>50 rows</option>
-              <option value={100}>100 rows</option>
-            </select>
-          </div>
+          {reportView === "image_scans" ? (
+            <div>
+              <label className="iris-label">Facility</label>
+              <select
+                className="iris-select"
+                title="Facility Filter"
+                value={scanFacility}
+                onChange={(e) => setScanFacility(e.target.value)}
+              >
+                <option value="">All Facilities</option>
+                {stores.map((s) => (
+                  <option key={s.store_id} value={s.store_id}>{s.store_name || s.store_id}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <label className="iris-label">Rows Per Page</label>
+              <select
+                className="iris-select"
+                title="Rows Per Page"
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
+              >
+                <option value={10}>10 rows</option>
+                <option value={20}>20 rows</option>
+                <option value={50}>50 rows</option>
+                <option value={100}>100 rows</option>
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -625,14 +735,16 @@ export default function ReportsPage() {
             <p className="text-xs text-slate-400">
               {reportView === "validation"
                 ? `${validationRows.length.toLocaleString()} rows — scrollable, virtualized.`
-                : activeRows.length > 0
-                  ? `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, activeRows.length)} of ${activeRows.length.toLocaleString()} rows`
-                  : loading ? "Loading…" : "No data"}
+                : reportView === "image_scans"
+                  ? `${scanRows.length.toLocaleString()} images — scrollable, virtualized.`
+                  : activeRows.length > 0
+                    ? `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, activeRows.length)} of ${activeRows.length.toLocaleString()} rows`
+                    : loading ? "Loading…" : "No data"}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {/* Pagination controls */}
-            {reportView !== "validation" && activeRows.length > pageSize && (
+            {reportView !== "validation" && reportView !== "image_scans" && activeRows.length > pageSize && (
               <div className="flex items-center gap-1 text-sm">
                 <button
                   type="button"
@@ -665,6 +777,21 @@ export default function ReportsPage() {
             </p>
           </Card>
         )}
+        {reportView === "image_scans" && (
+          <Card className="p-4 bg-slate-50 border-slate-100">
+            <p className="text-sm text-slate-800 font-medium">How to Read Image Scan Results</p>
+            <p className="text-xs text-slate-600 mt-1">
+              Every image the pipeline has ever scanned appears here — including rejected ones. <strong>Scan Status</strong> is the raw pipeline outcome.
+              <strong> Rejection Reason</strong> explains in plain English why an image was not fully analysed:
+              <em> "No people detected"</em> means YOLO found no one; <em>"Camera type excluded"</em> means external/backroom cameras are intentionally skipped;
+              <em> "Outside store hours"</em> means the image was captured before open or after close;
+              <em> "Duplicate image (skipped)"</em> means the same photo appeared twice.
+              Rows marked <strong>Processed</strong> (green) contributed to footfall counts.
+              Rows marked <strong>GPT cached (duplicate)</strong> (blue) reused an earlier result at zero GPT cost.
+              Use the <strong>Facility</strong> dropdown above to narrow down to a single store.
+            </p>
+          </Card>
+        )}
         {reportView === "walkins" && (
           <Card className="p-4 bg-amber-50 border-amber-100">
             <p className="text-sm text-amber-900 font-medium">How Footfall Detail Is Prepared</p>
@@ -680,7 +807,7 @@ export default function ReportsPage() {
           {loading ? <div className="p-8 text-center text-gray-400 text-sm">Loading…</div> : null}
           {!loading && reportView === "summary" ? <DaySummaryTable rows={visibleReportRows} storeMap={storeMap} /> : null}
           {!loading && reportView === "walkins" ? <WalkinTable rows={visibleReportRows} storeMap={storeMap} /> : null}
-          {!loading && reportView === "image_scans" ? <ImageScanTable rows={visibleReportRows} storeMap={storeMap} /> : null}
+          {!loading && reportView === "image_scans" ? <ImageScanTable rows={scanRows} storeMap={storeMap} /> : null}
           {!loading && reportView === "validation" ? <ValidationTable rows={validationRows} storeMap={storeMap} /> : null}
         </Card>
       </Card>

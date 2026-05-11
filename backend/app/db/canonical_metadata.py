@@ -17,6 +17,10 @@ stores = Table(
     Column("sync_enabled", Boolean, nullable=False, server_default="0"),
     Column("sync_interval_hours", Integer, nullable=False, server_default="1"),
     Column("gpt_enabled", Boolean, nullable=False, server_default="1"),
+    Column("open_hour", Integer, nullable=False, server_default="10"),
+    Column("open_minute", Integer, nullable=False, server_default="30"),
+    Column("close_hour", Integer, nullable=False, server_default="21"),
+    Column("close_minute", Integer, nullable=False, server_default="30"),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )

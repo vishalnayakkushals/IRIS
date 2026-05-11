@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { adminListStores, adminUpdateStore, adminToggleStoreSync, onFlyListStores, onFlySync } from "../api/client";
+import { adminListStores, adminUpdateStore, adminToggleStoreSync, adminUpdateStoreHours, onFlyListStores, onFlySync } from "../api/client";
 import { Card, Title, Text, Badge } from "@tremor/react";
-import { Pencil, X, Check, Play, Search, ChevronDown } from "lucide-react";
+import { Pencil, X, Check, Play, Search, ChevronDown, Clock } from "lucide-react";
 
 const EMPTY = { store_id: "", store_name: "", email: "", drive_folder_url: "" };
 
@@ -43,6 +43,68 @@ function StoreForm({ initial, onSave, onCancel, isNew }: {
   );
 }
 
+function toTimeStr(h: number, m: number) {
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function fromTimeStr(s: string): { h: number; m: number } {
+  const [h, m] = s.split(":").map(Number);
+  return { h: isNaN(h) ? 0 : h, m: isNaN(m) ? 0 : m };
+}
+
+function HoursEditor({ storeId, current, onSave, onCancel }: {
+  storeId: string;
+  current: { open_hour: number; open_minute: number; close_hour: number; close_minute: number };
+  onSave: (oh: number, om: number, ch: number, cm: number) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [openTime, setOpenTime] = useState(toTimeStr(current.open_hour, current.open_minute));
+  const [closeTime, setCloseTime] = useState(toTimeStr(current.close_hour, current.close_minute));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const o = fromTimeStr(openTime);
+    const c = fromTimeStr(closeTime);
+    if (o.h * 60 + o.m >= c.h * 60 + c.m) { setErr("Open time must be before close time"); return; }
+    setSaving(true); setErr("");
+    try { await onSave(o.h, o.m, c.h, c.m); } catch (ex: any) {
+      setErr(ex?.response?.data?.detail || "Save failed");
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <form onSubmit={submit} className="bg-amber-50 border border-amber-200 rounded-xl p-4 shadow-sm">
+      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-3">
+        <Clock size={12} className="inline mr-1" />Store Hours — {storeId}
+      </p>
+      <p className="text-[11px] text-amber-600 mb-3">
+        Images outside these hours are skipped (no YOLO, no GPT). Default: 10:30 AM – 9:30 PM.
+      </p>
+      <div className="flex items-end gap-4 flex-wrap">
+        <div>
+          <label className="iris-label">Opens at</label>
+          <input type="time" className="iris-input w-32" title="Store open time" value={openTime} onChange={(e) => setOpenTime(e.target.value)} />
+        </div>
+        <div>
+          <label className="iris-label">Closes at</label>
+          <input type="time" className="iris-input w-32" title="Store close time" value={closeTime} onChange={(e) => setCloseTime(e.target.value)} />
+        </div>
+        <div className="flex gap-2 pb-4">
+          <button type="submit" disabled={saving} className="iris-btn-primary text-xs">
+            <Check size={13} />{saving ? "Saving…" : "Save Hours"}
+          </button>
+          <button type="button" onClick={onCancel} className="iris-btn-secondary text-xs">
+            <X size={13} />Cancel
+          </button>
+        </div>
+      </div>
+      {err && <p className="text-xs text-rose-500 mt-1">{err}</p>}
+    </form>
+  );
+}
+
 function HeaderFilter({ label, options, value, onChange }: {
   label: string; options: { value: string; label: string }[]; value: string; onChange: (v: string) => void;
 }) {
@@ -50,6 +112,7 @@ function HeaderFilter({ label, options, value, onChange }: {
   return (
     <div className="relative inline-block">
       <button
+        type="button"
         onClick={() => setOpen((p) => !p)}
         className={`flex items-center gap-1 text-xs font-semibold uppercase tracking-wider transition-colors ${value ? "text-blue-600" : "text-slate-500"}`}
       >
@@ -60,6 +123,7 @@ function HeaderFilter({ label, options, value, onChange }: {
         <div className="absolute top-full left-0 mt-1 z-[200] bg-white border border-slate-200 rounded-lg shadow-xl min-w-[140px] py-1">
           {options.map((o) => (
             <button
+              type="button"
               key={o.value}
               onClick={() => { onChange(o.value); setOpen(false); }}
               className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${o.value === value ? "text-blue-600 font-semibold bg-blue-50" : "text-slate-700"}`}
@@ -76,6 +140,7 @@ function HeaderFilter({ label, options, value, onChange }: {
 export default function StoreMapping() {
   const [rows, setRows] = useState<any[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
+  const [editingHours, setEditingHours] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [syncData, setSyncData] = useState<Record<string, any>>({});
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -139,6 +204,24 @@ export default function StoreMapping() {
 
   async function handleUpdate(v: typeof EMPTY) { await adminUpdateStore(v.store_id, v); setEditing(null); flash("Store updated"); load(); }
 
+  async function handleHoursSave(storeId: string, oh: number, om: number, ch: number, cm: number) {
+    await adminUpdateStoreHours(storeId, { open_hour: oh, open_minute: om, close_hour: ch, close_minute: cm });
+    flash(`Hours updated: ${storeId} → ${toTimeStr(oh, om)} – ${toTimeStr(ch, cm)}`);
+    setEditingHours(null);
+    load();
+  }
+
+  function fmtHours(r: any) {
+    const oh = r.open_hour ?? 10, om = r.open_minute ?? 30;
+    const ch = r.close_hour ?? 21, cm = r.close_minute ?? 30;
+    const fmt = (h: number, m: number) => {
+      const ampm = h < 12 ? "AM" : "PM";
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+    };
+    return `${fmt(oh, om)} – ${fmt(ch, cm)}`;
+  }
+
   return (
     <div className="space-y-6">
       {toast && <div className="iris-toast">{toast}</div>}
@@ -167,6 +250,7 @@ export default function StoreMapping() {
           </div>
           {activeFilters > 0 && (
             <button
+              type="button"
               onClick={() => { setSearch(""); setDriveFilter(""); setSyncFilter(""); }}
               className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
             >
@@ -195,6 +279,7 @@ export default function StoreMapping() {
                     ]}
                   />
                 </th>
+                <th className="px-5 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold">Store Hours</th>
                 <th className="px-5 py-3 text-slate-500 text-xs uppercase tracking-wider font-semibold">Last Sync</th>
                 <th className="px-5 py-3">
                   <HeaderFilter
@@ -228,6 +313,9 @@ export default function StoreMapping() {
                         ) : <span className="text-rose-400">Not set</span>}
                       </td>
                       <td className="px-5 py-3">
+                        <span className="text-xs text-slate-600 font-mono">{fmtHours(r)}</span>
+                      </td>
+                      <td className="px-5 py-3">
                         {sync ? (
                           <div className="space-y-0.5">
                             <Badge color={sync.is_running ? "amber" : sync.last_status === "ok" ? "emerald" : sync.last_status === "error" ? "rose" : "slate"}>
@@ -245,6 +333,7 @@ export default function StoreMapping() {
                       <td className="px-5 py-3">
                         <div className="flex flex-col items-start gap-1">
                           <button
+                            type="button"
                             onClick={() => handleToggleSync(r.store_id, !r.sync_enabled, r.sync_interval_hours || 1)}
                             disabled={!r.drive_folder_url}
                             title={r.sync_enabled ? "Auto-sync ON — click to disable" : "Auto-sync OFF — click to enable"}
@@ -259,11 +348,31 @@ export default function StoreMapping() {
                       </td>
                       <td className="px-5 py-3 sticky right-0 bg-white shadow-[-8px_0_8px_-4px_rgba(0,0,0,0.05)]">
                         <div className="flex gap-2 items-center">
-                          <button onClick={() => handleSync(r.store_id)} disabled={syncing === r.store_id || !r.drive_folder_url} className="text-slate-400 hover:text-emerald-600 disabled:opacity-30" title="Sync now"><Play size={14} /></button>
-                          <button onClick={() => setEditing(editing === r.store_id ? null : r.store_id)} className="text-slate-400 hover:text-blue-600" title="Edit"><Pencil size={14} /></button>
+                          <button type="button" onClick={() => handleSync(r.store_id)} disabled={syncing === r.store_id || !r.drive_folder_url} className="text-slate-400 hover:text-emerald-600 disabled:opacity-30" title="Sync now"><Play size={14} /></button>
+                          <button
+                            type="button"
+                            onClick={() => { setEditingHours(editingHours === r.store_id ? null : r.store_id); setEditing(null); }}
+                            className={`${editingHours === r.store_id ? "text-amber-600" : "text-slate-400 hover:text-amber-600"}`}
+                            title="Set store hours"
+                          >
+                            <Clock size={14} />
+                          </button>
+                          <button type="button" onClick={() => { setEditing(editing === r.store_id ? null : r.store_id); setEditingHours(null); }} className="text-slate-400 hover:text-blue-600" title="Edit"><Pencil size={14} /></button>
                         </div>
                       </td>
                     </tr>
+                    {editingHours === r.store_id && (
+                      <tr key={`hours-${r.store_id}`}>
+                        <td colSpan={8} className="px-5 py-3">
+                          <HoursEditor
+                            storeId={r.store_id}
+                            current={{ open_hour: r.open_hour ?? 10, open_minute: r.open_minute ?? 30, close_hour: r.close_hour ?? 21, close_minute: r.close_minute ?? 30 }}
+                            onSave={(oh, om, ch, cm) => handleHoursSave(r.store_id, oh, om, ch, cm)}
+                            onCancel={() => setEditingHours(null)}
+                          />
+                        </td>
+                      </tr>
+                    )}
                     {editing === r.store_id && (
                       <tr key={`edit-${r.store_id}`}>
                         <td colSpan={8} className="px-5 py-3">

@@ -21,6 +21,12 @@ import requests
 
 from iris.iris_analysis import build_detector
 from iris.store_registry import parse_drive_folder_id, parse_s3_location
+from iris.gpt_batch import (
+    init_batch_tables,
+    queue_image_for_batch,
+    build_and_submit_batch,
+    get_batch_queue_count,
+)
 
 # ── Data normalization helpers ────────────────────────────────────────────────
 # Called at every write point so the DB never stores inconsistent casing or formats.
@@ -96,6 +102,7 @@ _WALKIN_COLUMNS = [
     "Engagement Type",
     "Engagement Depth",
     "Purchase Signal (Bag)",
+    "Conversion Signal",
     "Included in Analytics",
     "Event Type",
     "Direction Confidence",
@@ -120,8 +127,9 @@ _RETAIL_WALKIN_PROMPT = (
     "Create a NEW group if: time gap is more than about 2 minutes AND no clear visual continuity AND no coordinated movement/waiting/joint browsing.\n\n"
     "PEOPLE DETECTION & ROLE SEPARATION:\n"
     "Detect all visible people in every frame. Classify each as: Customer, Staff, or Uncertain.\n"
-    "Staff identification signals: repeated presence across frames, uniform/name tag/store dress, stationary near entrance or billing area,\n"
+    "Staff identification signals: repeated presence across frames, uniform/name tag/store dress, stationary near store entrance,\n"
     "door handling for others, counter-side positioning, repeated customer-facing interaction pattern.\n"
+    "NOTE: A person standing at a billing/checkout counter is NOT automatically staff — customers also stand at billing counters to pay.\n"
     "Special staff uniform rules (OVERRIDE clothing-alone restriction):\n"
     "  - Red shirt + black pant/trouser = Staff (floor staff)\n"
     "  - White shirt + black pant/trouser = Staff (managers, senior staff, supervisors)\n"
@@ -168,11 +176,18 @@ _RETAIL_WALKIN_PROMPT = (
     "Engagement Depth: Low / Medium / High / NA. If unclear prefer Low/NA.\n\n"
     "PURCHASE SIGNAL (EXIT ONLY):\n"
     "Purchase Signal (Bag): Yes / No / NA. Carry bag is only a proxy, not a guaranteed purchase.\n\n"
+    "CONVERSION SIGNAL (MANDATORY FOR EVERY ROW):\n"
+    "A conversion means the customer completed or is completing a purchase. Set Conversion Signal = Yes if ANY of these are true:\n"
+    "  1. This image is from a BILLING/CHECKOUT camera (camera context will be stated if so) AND the person is a Customer.\n"
+    "  2. The customer is visibly at a billing counter or payment terminal (Engagement Type = Billing).\n"
+    "  3. The customer exits with a carry bag (Purchase Signal (Bag) = Yes).\n"
+    "These are OR conditions — any single condition is sufficient. Set Conversion Signal = No if Role = Customer but none apply. "
+    "Set Conversion Signal = NA if Role = Staff or Uncertain.\n\n"
     "Included in Analytics: Yes if Role = Customer. No if Role = Staff or Uncertain.\n\n"
     "OUTPUT: Return strict JSON only with key 'rows' containing an array of objects — one object per detected person — with exactly these fields: "
     "Date, Walk-in ID, Group ID, Role, Entry Time, Exit Time, Time Spent (mins), Session Status, Entry Type, Gender, Age Band, "
     "Attire / Visual Marker, Primary Clothing, Jewellery Load, Bag Type, Primary Clothing Style Archetype, "
-    "Engagement Type, Engagement Depth, Purchase Signal (Bag), Included in Analytics, Event Type, Direction Confidence, Match Fingerprint. "
+    "Engagement Type, Engagement Depth, Purchase Signal (Bag), Conversion Signal, Included in Analytics, Event Type, Direction Confidence, Match Fingerprint. "
     "Prefer NA over guessing. Never invent data. Never output explanatory text outside the JSON."
 )
 
@@ -415,6 +430,7 @@ class OnFlyConfig:
     tracker_min_hits: int = 2
     gpt_parallel_workers: int = 5
     google_api_key: str = ""
+    gpt_batch_mode: bool = False  # When True, queue GPT work for overnight OpenAI Batch API
 
 
 class SourceClient(Protocol):
@@ -756,6 +772,7 @@ def init_onfly_tables(db_path: Path) -> None:
                 images_irrelevant INTEGER NOT NULL DEFAULT 0,
                 gpt_success_count INTEGER NOT NULL DEFAULT 0,
                 gpt_failed_count INTEGER NOT NULL DEFAULT 0,
+                gpt_cache_hits INTEGER NOT NULL DEFAULT 0,
                 report_image_results_csv TEXT NOT NULL DEFAULT '',
                 report_walkin_sessions_csv TEXT NOT NULL DEFAULT '',
                 report_store_date_csv TEXT NOT NULL DEFAULT '',
@@ -882,6 +899,10 @@ def init_onfly_tables(db_path: Path) -> None:
         ]:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE onfly_walkin_sessions ADD COLUMN {col_name} {col_def}")
+        # Additive column migrations for onfly_pipeline_runs
+        _pr_cols = {r[1] for r in conn.execute("PRAGMA table_info(onfly_pipeline_runs)").fetchall()}
+        if "gpt_cache_hits" not in _pr_cols:
+            conn.execute("ALTER TABLE onfly_pipeline_runs ADD COLUMN gpt_cache_hits INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     finally:
         conn.close()
@@ -1042,11 +1063,12 @@ def _yolo_detect_full_result(detector: Any, image_bytes: bytes, image_name: str)
         tmp_path.unlink(missing_ok=True)
 
 
-def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_extra: str = "") -> dict[str, Any]:
+def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_extra: str = "", is_billing_camera: bool = False) -> dict[str, Any]:
     """Call GPT vision API with the comprehensive retail analytics prompt.
 
-    Returns a dict with customer_count, staff_count, conversions, bounce, notes, and walkins (list of 20-field dicts).
+    Returns a dict with customer_count, staff_count, conversions, bounce, notes, and walkins (list of 21-field dicts).
     prompt_extra: store-specific rule text appended after the base prompt (Option B).
+    is_billing_camera: when True, injects billing context so GPT marks customers as conversions.
     """
     if not cfg.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY missing")
@@ -1054,7 +1076,12 @@ def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_e
     if ext == "jpg":
         ext = "jpeg"
     data_uri = f"data:image/{ext};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-    full_prompt = _RETAIL_WALKIN_PROMPT + (f"\n\nSTORE-SPECIFIC RULES:\n{prompt_extra}" if prompt_extra else "")
+    billing_ctx = (
+        "\n\nCAMERA CONTEXT — BILLING/CHECKOUT: This image is captured by a camera positioned at a "
+        "billing counter or checkout area. Any Customer visible here is at the payment point. "
+        "Apply Conversion Signal = Yes for all Customers in this image. Set Engagement Type = Billing."
+    ) if is_billing_camera else ""
+    full_prompt = _RETAIL_WALKIN_PROMPT + billing_ctx + (f"\n\nSTORE-SPECIFIC RULES:\n{prompt_extra}" if prompt_extra else "")
     body = {
         "model": cfg.openai_model,
         "input": [
@@ -1104,7 +1131,11 @@ def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_e
     walkins = _apply_staff_manager_rule(walkins)
     customer_count = sum(1 for w in walkins if w.get("Included in Analytics", "").lower() == "yes")
     staff_count = sum(1 for w in walkins if w.get("Role", "").lower() == "staff")
-    conversions = sum(1 for w in walkins if w.get("Purchase Signal (Bag)", "").lower() == "yes")
+    conversions = sum(
+        1 for w in walkins
+        if w.get("Conversion Signal", "").lower() == "yes"
+        or w.get("Purchase Signal (Bag)", "").lower() == "yes"
+    )
     return {
         "customer_count": customer_count,
         "staff_count": staff_count,
@@ -1198,7 +1229,48 @@ def _load_excluded_cameras(store_id: str) -> set[str]:
             rows = pg.execute(
                 sa_text(
                     "SELECT camera_id FROM camera_configs "
-                    "WHERE store_id=:sid AND camera_type IN ('external','skip')"
+                    "WHERE store_id=:sid AND camera_type IN ('external','skip','backroom')"
+                ),
+                {"sid": store_id},
+            ).fetchall()
+        return {str(r[0]) for r in rows if r[0]}
+    except Exception:
+        return set()
+
+
+def _load_store_hours(store_id: str) -> tuple[int, int]:
+    """Return (open_total_minutes, close_total_minutes) since midnight for store.
+    Non-fatal: returns default (630, 1290) = 10:30–21:30 if PG unreachable.
+    """
+    try:
+        from backend.app.db.session import engine_sync
+        from sqlalchemy import text as sa_text
+        with engine_sync.connect() as pg:
+            row = pg.execute(
+                sa_text("SELECT open_hour, open_minute, close_hour, close_minute FROM stores WHERE store_id=:sid"),
+                {"sid": store_id},
+            ).fetchone()
+        if row:
+            open_mins = int(row[0] or 10) * 60 + int(row[1] or 30)
+            close_mins = int(row[2] or 21) * 60 + int(row[3] or 30)
+            return (open_mins, close_mins)
+    except Exception:
+        pass
+    return (630, 1290)  # 10:30–21:30
+
+
+def _load_billing_cameras(store_id: str) -> set[str]:
+    """Return set of camera_ids marked billing in PostgreSQL camera_configs.
+    Non-fatal: returns empty set if PG is unreachable.
+    """
+    try:
+        from backend.app.db.session import engine_sync
+        from sqlalchemy import text as sa_text
+        with engine_sync.connect() as pg:
+            rows = pg.execute(
+                sa_text(
+                    "SELECT camera_id FROM camera_configs "
+                    "WHERE store_id=:sid AND camera_type = 'billing'"
                 ),
                 {"sid": store_id},
             ).fetchall()
@@ -1296,6 +1368,8 @@ def _sync_run_to_postgres(sqlite_conn: sqlite3.Connection, run_id: str, store_id
 
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
+    with sqlite3.connect(str(cfg.db_path)) as _btconn:
+        init_batch_tables(_btconn)
     yolo_version = str(cfg.yolo_version or cfg.pipeline_version or "onfly_v1").strip()
     gpt_version = str(cfg.gpt_version or cfg.pipeline_version or "onfly_v1").strip()
     started_at = _now()
@@ -1332,6 +1406,10 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     # ── Load camera exclusion list from PostgreSQL ────────────────────────────
     # Cameras labelled external or skip are excluded from YOLO + GPT entirely.
     _excluded_cameras: set[str] = _load_excluded_cameras(cfg.store_id)
+    # Billing cameras: full analysis, customers here count as conversions.
+    _billing_cameras: set[str] = _load_billing_cameras(cfg.store_id)
+    # Store hours: only process images taken during open hours (default 10–21).
+    _store_open_hour, _store_close_hour = _load_store_hours(cfg.store_id)
 
     conn = _connect(cfg.db_path)
     try:
@@ -1384,6 +1462,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_done = 0
         gpt_failed = 0
         gpt_retry_pending = 0
+        gpt_cache_hits = 0  # GPT calls saved by hash-based result cache
         gpt_quota_unavailable = False
         gpt_quota_error = ""
         gpt_work_list: list[tuple] = []
@@ -1424,7 +1503,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         round((time.perf_counter() - _g0) * 1000.0, 2),
                     )
                 try:
-                    _out = _openai_eval(cfg, _img_bytes, _item.image_name, prompt_extra=_prompt_extra)
+                    _is_billing = bool(_billing_cameras and _item.camera_id in _billing_cameras)
+                    _out = _openai_eval(cfg, _img_bytes, _item.image_name, prompt_extra=_prompt_extra, is_billing_camera=_is_billing)
                     _breaker.record_success()
                     return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
                 except Exception as _exc:
@@ -1487,6 +1567,28 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 )
                 conn.commit()
                 continue
+            # Store-hours filter: skip images taken outside open hours (no YOLO, no GPT)
+            _ts = str(item.timestamp_hint or "").strip()
+            if _ts:
+                try:
+                    # timestamp_hint format: YYYY-MM-DD HH:MM:SS
+                    _img_mins = int(_ts[11:13]) * 60 + int(_ts[14:16]) if len(_ts) >= 16 else -1
+                    if _img_mins >= 0 and not (_store_open_hour <= _img_mins < _store_close_hour):
+                        skipped += 1
+                        conn.execute(
+                            "INSERT OR IGNORE INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,"
+                            "source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,"
+                            "discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version,"
+                            "yolo_status,gpt_status) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'outside_hours','outside_hours')",
+                            (cfg.store_id, item.image_id, item.source_provider, cfg.source_uri, item.source_item_id,
+                             item.source_url, item.image_name, item.relative_path, item.date_source, item.date_display,
+                             item.camera_id, item.timestamp_hint, _now(), _now(), cfg.pipeline_version, "", ""),
+                        )
+                        conn.commit()
+                        continue
+                except (ValueError, IndexError):
+                    pass  # unparseable timestamp — proceed with analysis
             now = _now()
             row = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? AND image_id=?", (cfg.store_id, item.image_id)).fetchone()
             if row is None:
@@ -1589,18 +1691,84 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 continue
             timings["download_ms"] += round((time.perf_counter() - dl0) * 1000.0, 2)
 
-            # Layer 2: SHA256 exact-duplicate check
+            # Layer 2: SHA256 exact-duplicate check + GPT result cache
             _h = _sha256_of(image_bytes)
-            _is_dup = _h in _seen_hashes
-            if not _is_dup and _h:
-                _dup_row = conn.execute(
-                    "SELECT image_id FROM onfly_image_state"
-                    " WHERE store_id=? AND content_hash=? AND image_id!=?"
-                    " AND yolo_status NOT IN ('pending','skipped_duplicate_sha256')"
+            _is_within_run_dup = _h in _seen_hashes
+            _cached_gpt_row = None
+            if not _is_within_run_dup and _h:
+                # Priority 1: find a prior image with same bytes that already has GPT done → cache hit
+                _cached_gpt_row = conn.execute(
+                    "SELECT src.image_id AS src_image_id, src.yolo_relevant, src.person_count, src.yolo_conf, src.yolo_error,"
+                    " src.gpt_version, src.gpt_customer_count, src.gpt_staff_count, src.gpt_conversions, src.gpt_bounce, src.gpt_result_json"
+                    " FROM onfly_image_state src"
+                    " WHERE src.store_id=? AND src.content_hash=? AND src.image_id!=?"
+                    " AND src.gpt_status='done'"
                     " LIMIT 1",
                     (cfg.store_id, _h, item.image_id),
                 ).fetchone()
-                _is_dup = _dup_row is not None
+            if _cached_gpt_row is not None:
+                # Cache hit: copy YOLO + GPT results verbatim — zero GPT call
+                conn.execute(
+                    "UPDATE onfly_image_state SET content_hash=?, pipeline_version=?,"
+                    " yolo_version=?, yolo_status='done', yolo_relevant=?, person_count=?, yolo_conf=?, yolo_error=?,"
+                    " gpt_version=?, gpt_status='cached_from_hash',"
+                    " gpt_customer_count=?, gpt_staff_count=?, gpt_conversions=?, gpt_bounce=?, gpt_result_json=?,"
+                    " last_run_id=? WHERE store_id=? AND image_id=?",
+                    (
+                        _h, cfg.pipeline_version,
+                        yolo_version, int(_cached_gpt_row["yolo_relevant"] or 0),
+                        int(_cached_gpt_row["person_count"] or 0), float(_cached_gpt_row["yolo_conf"] or 0.0),
+                        str(_cached_gpt_row["yolo_error"] or ""),
+                        str(_cached_gpt_row["gpt_version"] or gpt_version),
+                        int(_cached_gpt_row["gpt_customer_count"] or 0), int(_cached_gpt_row["gpt_staff_count"] or 0),
+                        int(_cached_gpt_row["gpt_conversions"] or 0), int(_cached_gpt_row["gpt_bounce"] or 0),
+                        str(_cached_gpt_row["gpt_result_json"] or "{}"),
+                        run_id, cfg.store_id, item.image_id,
+                    ),
+                )
+                # Bulk-copy walkin sessions from original image — single INSERT...SELECT, no re-parsing
+                conn.execute(
+                    "INSERT OR IGNORE INTO onfly_walkin_sessions("
+                    " store_id, run_id, image_id, source_image_name, source_folder_name, camera_id,"
+                    " business_date, date, event_type, event_time, walkin_id, group_id, role,"
+                    " entry_time, exit_time, time_spent_mins, session_status, entry_type,"
+                    " first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,"
+                    " direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,"
+                    " gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,"
+                    " clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics"
+                    ") SELECT"
+                    " store_id, ?, ?, ?, source_folder_name, camera_id,"
+                    " business_date, date, event_type, event_time, walkin_id, group_id, role,"
+                    " entry_time, exit_time, time_spent_mins, session_status, entry_type,"
+                    " first_seen_time, last_seen_time, matched_session_id, match_score, 'cached_from_hash:' || match_reason,"
+                    " direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,"
+                    " gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,"
+                    " clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics"
+                    " FROM onfly_walkin_sessions WHERE store_id=? AND image_id=?",
+                    (run_id, item.image_id, item.image_name, cfg.store_id, str(_cached_gpt_row["src_image_id"])),
+                )
+                _seen_hashes.add(_h)
+                gpt_cache_hits += 1
+                skipped += 1
+                new_images -= 1
+                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="cached_from_hash")
+                _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="progress",
+                    image_id=item.image_id, image_name=item.image_name,
+                    message="GPT result loaded from hash cache — zero API call",
+                    payload={"src_image_id": str(_cached_gpt_row["src_image_id"]), "content_hash": _h[:16]})
+                conn.commit()
+                continue
+            # Priority 2: same hash, prior image processed but GPT not done → plain duplicate skip
+            _is_dup = _is_within_run_dup
+            if not _is_dup and _h:
+                _dup_exists = conn.execute(
+                    "SELECT 1 FROM onfly_image_state"
+                    " WHERE store_id=? AND content_hash=? AND image_id!=?"
+                    " AND yolo_status NOT IN ('pending','skipped_duplicate_sha256','outside_hours','camera_excluded')"
+                    " LIMIT 1",
+                    (cfg.store_id, _h, item.image_id),
+                ).fetchone()
+                _is_dup = _dup_exists is not None
             if _is_dup:
                 conn.execute(
                     "UPDATE onfly_image_state SET yolo_status='skipped_duplicate_sha256',"
@@ -1711,20 +1879,49 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             if relevant == 1 and cfg.gpt_enabled and gpt_needed:
                 stage = PIPELINE_STAGES[4]
                 _update_pipeline_run(conn, run_id, current_stage=stage)
-                _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="pending")
-                _append_pipeline_event(
-                    conn,
-                    run_id=run_id,
-                    stage=stage,
-                    event_type="start",
-                    image_id=item.image_id,
-                    image_name=item.image_name,
-                    message="GPT analysis queued for parallel processing",
-                )
-                gpt_work_list.append((item, image_bytes))
-                if _gpt_pool is not None:
-                    _fut = _gpt_pool.submit(_run_gpt, (item, image_bytes))
-                    _gpt_ordered.append((item, image_bytes, _fut))
+                if cfg.gpt_batch_mode:
+                    # Batch mode: queue for overnight OpenAI Batch API processing
+                    queue_image_for_batch(
+                        conn,
+                        store_id=cfg.store_id,
+                        image_id=item.image_id,
+                        run_id=run_id,
+                        image_name=item.image_name,
+                        camera_id=str(item.camera_id or ""),
+                        is_billing_camera=True,
+                        image_bytes=image_bytes,
+                        person_count=int(pcount),
+                        yolo_conf=float(max_conf),
+                    )
+                    conn.execute(
+                        "UPDATE onfly_image_state SET gpt_status='batch_queued', last_run_id=? WHERE store_id=? AND image_id=?",
+                        (run_id, cfg.store_id, item.image_id),
+                    )
+                    _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="batch_queued")
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=stage,
+                        event_type="progress",
+                        image_id=item.image_id,
+                        image_name=item.image_name,
+                        message="GPT queued for overnight batch processing",
+                    )
+                else:
+                    _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="pending")
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=stage,
+                        event_type="start",
+                        image_id=item.image_id,
+                        image_name=item.image_name,
+                        message="GPT analysis queued for parallel processing",
+                    )
+                    gpt_work_list.append((item, image_bytes))
+                    if _gpt_pool is not None:
+                        _fut = _gpt_pool.submit(_run_gpt, (item, image_bytes))
+                        _gpt_ordered.append((item, image_bytes, _fut))
             elif relevant == 1 and cfg.gpt_enabled and not gpt_needed:
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="skipped_version")
                 _append_pipeline_event(
@@ -2076,6 +2273,43 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             (cfg.store_id, run_id),
         )
 
+        # Batch mode: submit queued images to OpenAI Batch API
+        gpt_batch_db_id: str | None = None
+        gpt_batch_queued_count = 0
+        if cfg.gpt_batch_mode:
+            gpt_batch_queued_count = get_batch_queue_count(conn, cfg.store_id, run_id)
+            if gpt_batch_queued_count > 0:
+                try:
+                    _batch_prompt = _RETAIL_WALKIN_PROMPT + (
+                        f"\n\nSTORE-SPECIFIC RULES:\n{_prompt_extra}" if _prompt_extra else ""
+                    )
+                    gpt_batch_db_id = build_and_submit_batch(
+                        cfg.store_id,
+                        run_id,
+                        cfg.openai_api_key,
+                        cfg.openai_model,
+                        conn,
+                        _batch_prompt,
+                        openai_api_base=cfg.openai_api_base,
+                    )
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=PIPELINE_STAGES[4],
+                        event_type="success",
+                        message=f"OpenAI batch submitted: {gpt_batch_queued_count} images → batch_id={gpt_batch_db_id}",
+                        payload={"batch_db_id": gpt_batch_db_id, "queued_count": gpt_batch_queued_count},
+                    )
+                except Exception as _be:
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=PIPELINE_STAGES[4],
+                        event_type="failure",
+                        message=f"Batch submission failed: {_be}",
+                    )
+            conn.commit()
+
         t_rep = time.perf_counter()
         stage = PIPELINE_STAGES[5]
         _update_pipeline_run(conn, run_id, current_stage=stage)
@@ -2240,7 +2474,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             else ""
         )
         summary_status = "partial" if (gpt_retry_pending > 0 or gpt_failed > 0) else "success"
-        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_retry_pending": gpt_retry_pending, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
+        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_cache_hits": gpt_cache_hits, "gpt_retry_pending": gpt_retry_pending, "gpt_batch_mode": cfg.gpt_batch_mode, "gpt_batch_queued": gpt_batch_queued_count, "gpt_batch_db_id": gpt_batch_db_id, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
         # BoT-SORT tracker finalization — produces track_sessions CSV alongside run outputs
         if _tracker is not None:
             try:
@@ -2359,6 +2593,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             images_irrelevant=max(0, yolo_done - yolo_relevant),
             gpt_success_count=gpt_done,
             gpt_failed_count=gpt_failed,
+            gpt_cache_hits=gpt_cache_hits,
             report_image_results_csv=str(image_results_path.resolve()),
             report_walkin_sessions_csv=str(walkin_sessions_path.resolve()) if walkin_rows else "",
             report_store_date_csv=str(report_actual_path.resolve()),

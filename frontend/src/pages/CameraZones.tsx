@@ -14,13 +14,15 @@ import { Card, Title, Text, Button, TabGroup, TabList, Tab, TabPanels, TabPanel,
 import { Plus, Trash2, Check, X, ScanSearch, RefreshCw, ZoomIn } from "lucide-react";
 import { useStore } from "../context/StoreContext";
 
-const CAM_TYPES = ["unlabeled", "floor", "entry", "external", "skip"] as const;
+const CAM_TYPES = ["unlabeled", "floor", "entry", "billing", "backroom", "external", "skip"] as const;
 type CamType = typeof CAM_TYPES[number];
 
 const TYPE_META: Record<CamType, { label: string; color: string; desc: string }> = {
   unlabeled: { label: "Unlabeled", color: "gray",   desc: "Not yet classified — will be analysed" },
   floor:     { label: "Floor",     color: "blue",   desc: "Sales floor camera — full YOLO + GPT analysis" },
   entry:     { label: "Entry",     color: "green",  desc: "Entry / exit gate — full YOLO + GPT analysis" },
+  billing:   { label: "Billing",   color: "purple", desc: "Billing / checkout counter — full analysis, customer here = conversion" },
+  backroom:  { label: "Backroom",  color: "yellow", desc: "Stock room / backroom — SKIPPED by pipeline" },
   external:  { label: "External",  color: "orange", desc: "Outdoor / parking / non-retail — SKIPPED by pipeline" },
   skip:      { label: "Skip",      color: "red",    desc: "Explicitly excluded from all AI analysis" },
 };
@@ -84,14 +86,14 @@ function CameraThumb({ storeId, imageId }: { storeId: string; imageId: string })
 }
 
 function InlineTypeSelect({
-  storeId, cam, onSaved,
-}: { storeId: string; cam: any; onSaved: () => void }) {
+  storeId, cam, onSaved, onError,
+}: { storeId: string; cam: any; onSaved: (type: string) => void; onError: (msg: string) => void }) {
+  const [current, setCurrent] = useState<string>(cam.camera_type || "unlabeled");
   const [saving, setSaving] = useState(false);
-  const prev = useRef<string>(cam.camera_type || "unlabeled");
 
   async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const newType = e.target.value;
-    if (newType === prev.current) return;
+    if (newType === current) return;
     setSaving(true);
     try {
       await adminUpsertCamera(storeId, {
@@ -104,8 +106,10 @@ function InlineTypeSelect({
         camera_type: newType,
         sample_image_id: cam.sample_image_id || "",
       });
-      prev.current = newType;
-      onSaved();
+      setCurrent(newType);
+      onSaved(newType);
+    } catch (err: any) {
+      onError(err?.response?.data?.detail || `Failed to save — restart the IRIS-API service and try again.`);
     } finally {
       setSaving(false);
     }
@@ -115,8 +119,9 @@ function InlineTypeSelect({
     <div className="flex items-center gap-1.5">
       <select
         disabled={saving}
-        defaultValue={cam.camera_type || "unlabeled"}
+        value={current}
         onChange={handleChange}
+        title="Camera type"
         className="border rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:opacity-60"
       >
         {CAM_TYPES.map((t) => (
@@ -261,7 +266,7 @@ export default function CameraZones() {
     );
   }
 
-  const excluded = cameras.filter((c) => c.camera_type === "external" || c.camera_type === "skip");
+  const excluded = cameras.filter((c) => c.camera_type === "external" || c.camera_type === "skip" || c.camera_type === "backroom");
   const unlabeled = cameras.filter((c) => !c.camera_type || c.camera_type === "unlabeled");
 
   return (
@@ -282,7 +287,7 @@ export default function CameraZones() {
       {/* Summary strip */}
       {cameras.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {(["floor", "entry", "external", "skip"] as CamType[]).map((t) => {
+          {(["floor", "entry", "billing", "backroom", "external", "skip"] as CamType[]).map((t) => {
             const count = cameras.filter((c) => c.camera_type === t).length;
             const m = TYPE_META[t];
             return (
@@ -291,7 +296,7 @@ export default function CameraZones() {
                   <div className="text-xs text-slate-500 mb-0.5">{m.label}</div>
                   <div className="text-xl font-bold text-slate-800">{count}</div>
                 </div>
-                <Badge color={m.color as any} size="sm">{t === "external" || t === "skip" ? "Skipped" : "Active"}</Badge>
+                <Badge color={m.color as any} size="sm">{t === "external" || t === "skip" || t === "backroom" ? "Skipped" : "Active"}</Badge>
               </div>
             );
           })}
@@ -316,22 +321,32 @@ export default function CameraZones() {
         <TabPanels>
           <TabPanel>
             <div className="mt-4 space-y-3">
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  icon={ScanSearch}
-                  loading={discovering}
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  type="button"
                   onClick={discover}
-                  color="indigo"
+                  disabled={discovering}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                 >
-                  Discover from pipeline
-                </Button>
-                <Button size="sm" icon={Plus} variant="secondary" onClick={() => setShowCamForm(true)}>
+                  <ScanSearch size={14} className={discovering ? "animate-spin" : ""} />
+                  {discovering ? "Discovering…" : "Discover from pipeline"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCamForm(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  <Plus size={14} />
                   Add manually
-                </Button>
-                <Button size="sm" icon={RefreshCw} variant="secondary" onClick={reload}>
+                </button>
+                <button
+                  type="button"
+                  onClick={reload}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  <RefreshCw size={14} />
                   Refresh
-                </Button>
+                </button>
               </div>
 
               <p className="text-xs text-slate-500">
@@ -353,15 +368,12 @@ export default function CameraZones() {
                       <th className="px-4 py-3">Sample</th>
                       <th className="px-4 py-3">Camera ID</th>
                       <th className="px-4 py-3 min-w-[160px]">Type (click to change)</th>
-                      <th className="px-4 py-3">Role</th>
-                      <th className="px-4 py-3">Floor</th>
-                      <th className="px-4 py-3">Location</th>
                       <th className="px-4 py-3"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {cameras.map((c) => {
-                      const isExcluded = c.camera_type === "external" || c.camera_type === "skip";
+                      const isExcluded = c.camera_type === "external" || c.camera_type === "skip" || c.camera_type === "backroom";
                       return (
                         <tr key={c.camera_id} className={`hover:bg-slate-50/50 ${isExcluded ? "opacity-60" : ""}`}>
                           <td className="px-4 py-2">
@@ -369,13 +381,10 @@ export default function CameraZones() {
                           </td>
                           <td className="px-4 py-3 font-mono text-sm font-semibold text-slate-700">{c.camera_id}</td>
                           <td className="px-4 py-3">
-                            <InlineTypeSelect storeId={storeId} cam={c} onSaved={() => { flash(`${c.camera_id} → ${c.camera_type}`); reload(); }} />
+                            <InlineTypeSelect storeId={storeId} cam={c} onSaved={(t) => { flash(`${c.camera_id} → ${t}`); reload(); }} onError={flash} />
                           </td>
-                          <td className="px-4 py-3 text-xs text-slate-500">{c.camera_role || "—"}</td>
-                          <td className="px-4 py-3 text-xs">{c.floor_name || "—"}</td>
-                          <td className="px-4 py-3 text-xs">{c.location_name || "—"}</td>
                           <td className="px-4 py-3">
-                            <button onClick={() => delCamera(c.camera_id)} className="text-slate-300 hover:text-rose-600">
+                            <button type="button" onClick={() => delCamera(c.camera_id)} className="text-slate-300 hover:text-rose-600">
                               <Trash2 size={14} />
                             </button>
                           </td>
@@ -384,7 +393,7 @@ export default function CameraZones() {
                     })}
                     {cameras.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="text-center py-14 text-slate-400 text-sm">
+                        <td colSpan={4} className="text-center py-14 text-slate-400 text-sm">
                           <ScanSearch size={28} className="mx-auto mb-2 opacity-30" />
                           No cameras yet. Click <strong>Discover from pipeline</strong> after running at least one scan.
                         </td>

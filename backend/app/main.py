@@ -81,6 +81,10 @@ async def _run_migrations() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hint VARCHAR(255) DEFAULT ''",
         "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS camera_type VARCHAR(64) NOT NULL DEFAULT 'unlabeled'",
         "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS sample_image_id VARCHAR(255) NOT NULL DEFAULT ''",
+        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS open_hour INTEGER NOT NULL DEFAULT 10",
+        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS open_minute INTEGER NOT NULL DEFAULT 30",
+        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS close_hour INTEGER NOT NULL DEFAULT 21",
+        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS close_minute INTEGER NOT NULL DEFAULT 30",
     ]
     async with engine.begin() as conn:
         for sql in migrations:
@@ -168,10 +172,12 @@ _index_file = _static_dir / "index.html"
 if _assets_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
 
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+
 if _index_file.exists():
     @app.get("/", include_in_schema=False)
     def spa_index() -> FileResponse:
-        return FileResponse(_index_file)
+        return FileResponse(_index_file, headers=_NO_CACHE)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str) -> FileResponse:
@@ -186,4 +192,4 @@ if _index_file.exists():
 
         if requested.is_file():
             return FileResponse(requested)
-        return FileResponse(_index_file)
+        return FileResponse(_index_file, headers=_NO_CACHE)

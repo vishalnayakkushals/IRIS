@@ -395,6 +395,7 @@ def _run_pipeline_sync(
     use_tracker: bool,
     max_images: int,
     force_reprocess: bool,
+    gpt_batch_mode: bool = False,
 ) -> None:
     """Run OnFlyPipeline synchronously — called in thread pool worker."""
     import sys
@@ -441,6 +442,7 @@ def _run_pipeline_sync(
             pipeline_version="onfly_v2",
             use_tracker=use_tracker,
             force_reprocess=force_reprocess,
+            gpt_batch_mode=gpt_batch_mode,
         )
         summary = run_onfly_pipeline(cfg)
 
@@ -487,6 +489,7 @@ class SyncRequest(BaseModel):
     source_url: str = ""
     max_images: int | None = None
     force_reprocess: bool = False
+    gpt_batch_mode: bool = False
 
 
 @router.get("/stores")
@@ -638,6 +641,7 @@ async def trigger_onfly_sync(
         body.use_tracker,
         max_images,
         body.force_reprocess,
+        body.gpt_batch_mode,
     )
 
     return {
@@ -646,9 +650,10 @@ async def trigger_onfly_sync(
         "source_url": source_url,
         "max_images": max_images,
         "force_reprocess": bool(body.force_reprocess),
+        "gpt_batch_mode": bool(body.gpt_batch_mode),
         "status": "running",
         "message": (
-            f"Pipeline started for {store_id} — GPT: {'on' if body.gpt_enabled else 'off'} | "
+            f"Pipeline started for {store_id} — GPT: {'batch' if body.gpt_batch_mode else ('on' if body.gpt_enabled else 'off')} | "
             f"Source: {'override' if source_url != configured_source_url else 'configured'} | "
             f"Max images: {'full folder' if max_images == 0 else max_images}"
         ),
@@ -747,6 +752,68 @@ async def cancel_sync(store_id: str, _: str = Depends(get_current_user)) -> dict
         except Exception as exc:
             logger.warning("Cancel DB update failed: %s", exc)
     return {"store_id": store_id, "cancelled": bool(run_id), "run_id": run_id or ""}
+
+
+# ---------------------------------------------------------------------------
+# Batch API endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/batch/status/{store_id}")
+async def get_batch_status(store_id: str, _: str = Depends(get_current_user)) -> list[dict[str, Any]]:
+    """List all OpenAI batches for a store with current status."""
+    import sys
+    from pathlib import Path as _Path
+    repo_root = _Path(__file__).resolve().parents[4]
+    src_dir = repo_root / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    from iris.gpt_batch import get_pending_batches, init_batch_tables
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(str(db_path), timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_batch_tables(conn)
+        return get_pending_batches(conn, store_id=store_id)
+    finally:
+        conn.close()
+
+
+@router.post("/batch/retrieve/{store_id}")
+async def retrieve_batch_results(store_id: str, _: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Poll OpenAI and apply results for all completed batches for a store."""
+    import sys
+    from pathlib import Path as _Path
+    repo_root = _Path(__file__).resolve().parents[4]
+    src_dir = repo_root / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    from iris.gpt_batch import get_pending_batches, check_batch_status, apply_batch_results, init_batch_tables
+    db_path = get_settings().db_path_obj
+    settings = get_settings()
+    if not db_path.exists():
+        return {"applied": 0, "pending": 0, "results": []}
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_batch_tables(conn)
+        batches = get_pending_batches(conn, store_id=store_id)
+        applied = 0
+        results = []
+        for b in batches:
+            batch_db_id = b["batch_db_id"]
+            status_info = check_batch_status(batch_db_id, settings.openai_api_key, conn)
+            if status_info.get("openai_status") == "completed" and not b.get("results_applied"):
+                apply_info = apply_batch_results(batch_db_id, settings.openai_api_key, conn)
+                applied += 1
+                results.append({"batch_db_id": batch_db_id, "applied": True, **apply_info})
+            else:
+                results.append({"batch_db_id": batch_db_id, "applied": False, **status_info})
+        conn.commit()
+        return {"store_id": store_id, "applied": applied, "total": len(batches), "results": results}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

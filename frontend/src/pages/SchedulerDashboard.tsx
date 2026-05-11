@@ -57,6 +57,7 @@ export default function SchedulerDashboard() {
   const [adminStores, setAdminStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState(globalStoreId);
   const [gptEnabled, setGptEnabled] = useState(true);
+  const [gptBatchMode, setGptBatchMode] = useState(false);
   const [manualSource, setManualSource] = useState("");
   const [maxImages, setMaxImages] = useState(10000);
   const [forceReprocess, setForceReprocess] = useState(false);
@@ -168,6 +169,7 @@ export default function SchedulerDashboard() {
     try {
       const { data } = await onFlySync(selectedStore, {
         gpt_enabled: gptEnabled,
+        gpt_batch_mode: gptBatchMode,
         source_url: manualSource.trim() || undefined,
         max_images: maxImages,
         force_reprocess: forceReprocess,
@@ -309,6 +311,12 @@ export default function SchedulerDashboard() {
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
               <input type="checkbox" checked={gptEnabled} onChange={(e) => setGptEnabled(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
               GPT analysis
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2" title="Queue images for overnight OpenAI Batch API (50% cost saving). Results ready by morning.">
+              <input type="checkbox" checked={gptBatchMode} onChange={(e) => setGptBatchMode(e.target.checked)} className="rounded border-slate-300 text-purple-600" />
+              <span className="flex items-center gap-1">
+                Batch mode <span className="text-xs bg-purple-100 text-purple-700 px-1 rounded">50% cheaper</span>
+              </span>
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
               <input type="checkbox" checked={forceReprocess} onChange={(e) => setForceReprocess(e.target.checked)} className="rounded border-slate-300 text-blue-600" />

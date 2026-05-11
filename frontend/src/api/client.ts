@@ -194,6 +194,8 @@ export const adminUpdateStore = (id: string, body: any) => api.put(`/admin/store
 export const adminDeleteStore = (id: string) => api.delete(`/admin/stores/${id}`);
 export const adminToggleStoreSync = (id: string, body: { sync_enabled: boolean; sync_interval_hours?: number }) =>
   api.put(`/admin/stores/${id}/sync`, body);
+export const adminUpdateStoreHours = (id: string, body: { open_hour: number; open_minute: number; close_hour: number; close_minute: number }) =>
+  api.patch(`/admin/stores/${id}/hours`, body);
 
 // ── Admin — Users ─────────────────────────────────────────────────────────────
 export const adminListUsers = () => api.get<any[]>("/admin/users");
@@ -333,8 +335,10 @@ export const reportsExportDownload = (jobId: string) =>
 // ── On-fly pipeline (no Celery) ───────────────────────────────────────────────
 export const onFlyListStores = () => api.get<any[]>("/onfly/stores");
 export const onFlyStoreStatus = (storeId: string) => api.get<any>(`/onfly/status/${storeId}`);
-export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean; source_url?: string; max_images?: number; force_reprocess?: boolean }) =>
+export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean; source_url?: string; max_images?: number; force_reprocess?: boolean; gpt_batch_mode?: boolean }) =>
   api.post<any>(`/onfly/sync/${storeId}`, body);
+export const onFlyBatchStatus = (storeId: string) => api.get<any[]>(`/onfly/batch/status/${storeId}`);
+export const onFlyBatchRetrieve = (storeId: string) => api.post<any>(`/onfly/batch/retrieve/${storeId}`, {});
 export const onFlyLiveProgress = (storeId: string) => api.get<any>(`/onfly/live-progress/${storeId}`);
 export const onFlyDateReport = (storeId: string) => api.get<any[]>(`/onfly/date-report/${storeId}`);
 
