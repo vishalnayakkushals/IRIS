@@ -100,6 +100,49 @@ $env:PYTHONPATH = "$pwd\src;$pwd"
 
 ---
 
+### 2026-05-11 - OpenAI Batch API + Image Scans Overhaul + Overnight Automation
+
+- Changed paths:
+  - `src/iris/gpt_batch.py` (new)
+  - `src/iris/onfly_pipeline.py`
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/routes_reports.py`
+  - `backend/app/api/routes_admin.py`
+  - `backend/app/db/canonical_metadata.py`
+  - `backend/app/main.py`
+  - `frontend/src/pages/ReportsPage.tsx`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/pages/CameraZones.tsx`
+  - `frontend/src/pages/StoreMapping.tsx`
+  - `frontend/src/api/client.ts`
+  - `scripts/batch_retrieve.py` (new)
+  - `scripts/setup_morning_retrieval.ps1` (new)
+  - `scripts/deploy_frontend.ps1` (new)
+  - `scripts/list_tables.py` (new)
+  - `scripts/test_gpt_cache.py` (new)
+  - `docs/deployment/cost-optimization-plan.md`
+  - `backend/app/static/` (rebuilt React bundle)
+- Summary:
+  - **OpenAI Batch API (`src/iris/gpt_batch.py`)**: New self-contained module for overnight GPT at 50% cost. Tables: `onfly_gpt_batch_queue` (one row per queued image, stores base64 bytes) and `onfly_gpt_batches` (one row per submitted OpenAI batch job). Key functions: `queue_image_for_batch`, `build_and_submit_batch` (uploads JSONL to `/v1/files`, creates batch via `/v1/batches`), `check_batch_status`, `apply_batch_results` (parses chat completions output, writes walk-in sessions, syncs to PG), `get_pending_batches`, `get_batch_queue_count`. Uses `/v1/chat/completions` format (OpenAI Batch API only supports chat/completions, not /v1/responses). `custom_id = irisq_{queue_row_id}` for result mapping.
+  - **Pipeline batch mode (`onfly_pipeline.py`)**: `OnFlyConfig.gpt_batch_mode: bool = False` added. When True, relevant images are routed to `queue_image_for_batch()` (status: `batch_queued`) instead of the real-time GPT thread pool. At end of run, `build_and_submit_batch()` is called; submission takes <1 second then laptop can close. `gpt_batch_db_id` and `gpt_batch_queued` added to run summary dict. `init_batch_tables()` called at pipeline startup. Imports `gpt_batch` module at top.
+  - **New batch endpoints (`routes_onfly.py`)**: `SyncRequest.gpt_batch_mode: bool = False` threaded through to `OnFlyConfig`. New: `GET /api/onfly/batch/status/{store_id}` (list all pending batches), `POST /api/onfly/batch/retrieve/{store_id}` (poll OpenAI + apply completed results). Both endpoints call `init_batch_tables` defensively.
+  - **Image scans overhaul (`routes_reports.py`)**: `_sqlite_runtime_image_scans()` now returns `yolo_status`, `gpt_error`, `error_detail` (combines yolo_error + gpt_error), and a derived `rejection_reason` CASE expression (`Camera type excluded`, `Outside store hours`, `No people detected`, `Duplicate image (skipped)`, `Download failed`, `Pending`, `GPT cached (duplicate)`, `GPT analysis failed`, `Processed`). Removed `date_display != ''` filter that was blocking some images. Default limit raised from 100 → 50,000. Frontend uses separate `scanFacility` state (independent of global store selector) to avoid clearing other tab data when switching stores in the image-scans view.
+  - **ReportsPage.tsx — storeMap bug fixed**: `useMemo(() => ({}), [])` was returning a permanently empty object — all tables showed raw store IDs instead of names. Fixed by deriving from `useStore().stores`: `Object.fromEntries(stores.map(s => [s.store_id, s.store_name || s.store_id]))`.
+  - **ReportsPage.tsx — virtualized image_scans table**: `ImageScanTable` completely replaced with `@tanstack/react-virtual` row virtualizer (same pattern as ValidationTable). 12 columns: Store, Image, Date, Camera, Time, Scan Status, People, Rejection Reason, GPT, Customers, Staff, Error. Color-coded status badges. Facility selector dropdown replaces pagination when on image_scans tab. Row count shows `scanRows.length`. Explanation card explains status colors and rejection reasons.
+  - **SchedulerDashboard.tsx — batch mode toggle**: "Batch mode" checkbox with purple "50% cheaper" badge. `gpt_batch_mode` passed in `onFlySync` body. Tooltip explains overnight flow.
+  - **Morning retrieval scripts**: `scripts/batch_retrieve.py` — polls all pending batches for all stores (or `--store STORE_ID`), applies completed results, logs to `data/batch_retrieve.log`. `scripts/setup_morning_retrieval.ps1` — registers Windows Task Scheduler job `IRIS-BatchRetrieve` at 6:00 AM daily with `WakeToRun` flag. Run once with `powershell -ExecutionPolicy Bypass -File .\scripts\setup_morning_retrieval.ps1` (admin).
+  - **Laptop-off overnight flow**: Run sync with Batch mode → end of run submits JSONL to OpenAI in <1 second → close laptop → 6 AM Task Scheduler wakes laptop → `batch_retrieve.py` downloads and applies results → dashboard ready.
+  - **cost-optimization-plan.md updated**: Part 5 rewritten — all 4 optimizations (Store-Hours Filter, Camera-Type Exclusion, GPT Hash Cache, OpenAI Batch API) marked ✅ DONE with implementation details and usage instructions. Part 6 timeline updated to reflect completed work.
+
+### Known Issues (as of 2026-05-11)
+| Issue | Status |
+|---|---|
+| `batch_retrieve.py` morning script — Task Scheduler setup requires `powershell -ExecutionPolicy Bypass` due to default Windows execution policy | Documented — one-time setup |
+| Batch API endpoints return 404 until IRIS-API service is restarted | Fixed — admin must `net stop "IRIS-API" && net start "IRIS-API"` after each backend deploy |
+| `apply_batch_results` syncs to PostgreSQL — requires PG running at 6 AM retrieval time | Known — if PG is down, SQLite is still updated correctly; PG sync retried on next pipeline run |
+
+---
+
 ### 2026-05-08 - Fix Navigation Stuck on "Loading page..." After QA Pages
 
 - Changed paths:
