@@ -1,0 +1,28 @@
+[Unit]
+Description=IRIS Store Auto-Sync Worker
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=iris
+Group=iris
+WorkingDirectory=/opt/iris/app
+EnvironmentFile=/opt/iris/shared/iris.env
+Environment=IRIS_ENV_FILE=/opt/iris/shared/iris.env
+Environment=PYTHONPATH=/opt/iris/app:/opt/iris/app/src
+ExecStart=/opt/iris/app/.venv/bin/python /opt/iris/app/scripts/start_store_auto_sync_service.py --poll-seconds 60
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iris-store-auto-sync
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/iris/data /opt/iris/shared
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

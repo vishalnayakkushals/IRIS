@@ -1,118 +1,119 @@
-# AI Handover: Storage Architecture & Scaling
+# AI Handover — Runtime, Storage, and Cost State
 
-**Last updated:** 2026-05-11
+**Last updated:** 2026-05-12
 
----
-
-## Current Storage Flow (150-Store Scale)
-
-As of **May 2026**, IRIS is designed to handle ~180,000 images per day for 150 stores. To manage this massive data throughput without filling up the server's local SSD, the following storage policies are implemented:
-
-### 1. Zero Waste Policy
-
-Images pulled from Google Drive are downloaded locally for processing. Immediately after the YOLO person-detection scan, if an image is determined to be **irrelevant** (no people detected), it is **instantly deleted** from the local disk (`Path.unlink()`).
-
-- **Drive Sync Guard**: `store_source_file_index` was updated so `drive_delta_sync.py` checks the database for `source_file_id`. It will **not** re-download images that were previously downloaded but deleted.
-- **Code Locations**: `scripts/yolo_relevance_scan.py` and `src/iris/onfly_pipeline.py`.
-
-### 2. 7-Day Short Retention Policy
-
-Raw images (even relevant ones) are not kept indefinitely. A Celery background task runs daily to sweep the `data/stores/` directory and permanently delete any image older than 7 days.
-
-- **Task**: `backend.app.celery_app.tasks.cleanup.cleanup_old_images_task`
-- **Schedule**: Daily at 2:00 AM (`crontab(hour=2, minute=0)` in `worker.py`)
-- **Impact**: Keeps the server's SSD footprint strictly capped to a 7-day rolling window of relevant imagery.
-
-### 3. S3 Object Storage Alternative
-
-The groundwork for migrating from Google Drive/Local SSD to AWS S3 has been added but is **disabled by default**.
-
-- Config flag: `enable_s3_storage` in `backend/app/config.py`.
-- When set to `False`, the app uses Google Drive API for sync.
-- When set to `True`, the Drive Sync Celery task will log a stub and eventually (when S3 is fully provisioned by IT) route to S3 bucket reads.
-- **Reversion**: The user requested that Drive remain the primary source until IT provides bucket access, at which point the single `enable_s3_storage = True` flag can be used to switch architectures.
+This is the short operational handover for the current IRIS architecture.
 
 ---
 
-## GPT Cost Architecture (as of 2026-05-11)
+## Runtime Shape (Current Truth)
 
-Four optimizations are now live. Each reduces how many images reach GPT and/or reduces the per-call cost.
+IRIS now runs as four explicit services:
 
-| Optimization | Where | Status | Saving |
-|---|---|---|---|
-| Camera-type exclusion | `onfly_pipeline.py` → `_load_excluded_cameras()` | Live | 15–25% fewer GPT calls |
-| Store-hours filter | `onfly_pipeline.py` → `yolo_status = 'outside_hours'` | Live | 30–40% fewer GPT calls |
-| GPT hash cache | `onfly_pipeline.py` → SHA-256 content hash dedup | Live | 5–10% fewer GPT calls |
-| OpenAI Batch API | `src/iris/gpt_batch.py` + `gpt_batch_mode=True` | Live | 50% price reduction |
+1. `start_api_server.py`
+2. `start_scheduler_worker_service.py`
+3. `start_onfly_scheduler_service.py`
+4. `start_store_auto_sync_service.py`
 
-### Batch API Flow (overnight mode)
-
-```
-Evening pipeline run (gpt_batch_mode=True)
-  └─ Per relevant image: queue_image_for_batch() → onfly_gpt_batch_queue
-  └─ End of run: build_and_submit_batch() → OpenAI /v1/files + /v1/batches
-       (~1 second HTTP call — laptop can close after this)
-
-OpenAI processes overnight (2–12 hours)
-
-6 AM: Windows Task Scheduler wakes laptop
-  └─ scripts/batch_retrieve.py
-       └─ check_batch_status() for each pending batch
-       └─ apply_batch_results() → onfly_image_state + onfly_walkin_sessions + PG sync
-```
-
-**Key files:**
-
-| File | Purpose |
-|---|---|
-| `src/iris/gpt_batch.py` | Full batch module: queue / submit / retrieve / apply |
-| `scripts/batch_retrieve.py` | Morning CLI script — run manually or via Task Scheduler |
-| `scripts/setup_morning_retrieval.ps1` | Registers Task Scheduler job (run once, admin PS) |
-
-**SQLite tables added:**
-
-| Table | Purpose |
-|---|---|
-| `onfly_gpt_batch_queue` | One row per queued image; stores base64 bytes, status, batch_db_id |
-| `onfly_gpt_batches` | One row per OpenAI batch job; tracks openai_batch_id, status, results_applied |
-
-**API endpoints:**
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/onfly/sync/{store_id}` body `gpt_batch_mode: true` | Start pipeline in batch mode |
-| `GET /api/onfly/batch/status/{store_id}` | List all pending batches for a store |
-| `POST /api/onfly/batch/retrieve/{store_id}` | Poll OpenAI + apply completed results |
-
-**Important implementation notes:**
-
-- OpenAI Batch API uses `/v1/chat/completions` format — NOT `/v1/responses`. The real-time pipeline uses `/v1/responses` (Responses API). These are different endpoints; batch only supports chat/completions and embeddings.
-- `custom_id` format: `irisq_{queue_row_id}` — maps batch output lines back to the queued image.
-- `apply_batch_results` applies the same staff-rule post-processing as real-time GPT (white/red + black pants = Staff). Walk-in sessions are written and synced to PostgreSQL identically.
-- If PostgreSQL is down at retrieval time, SQLite is still updated correctly. PG sync retries on the next pipeline run.
+The FastAPI web process no longer owns scheduler loops. Runtime preparation is handled before launch through `backend/app/runtime_startup.py`.
 
 ---
 
-## Image Scans Report (as of 2026-05-11)
+## Data Stores
 
-`GET /api/reports/image-scans` now returns up to 50,000 rows per request with full rejection metadata.
+### PostgreSQL
+Primary platform system-of-record for:
+- users / auth / roles
+- stores / cameras / admin metadata
+- dashboard-facing platform tables
 
-| Column | Source | Meaning |
-|---|---|---|
-| `yolo_status` | `onfly_image_state` | Raw pipeline status (done, camera_excluded, outside_hours, skipped_irrelevant, failed_download, pending) |
-| `gpt_status` | `onfly_image_state` | GPT status (done, cached_from_hash, batch_queued, failed, skipped_irrelevant) |
-| `rejection_reason` | Derived CASE expression | Human-readable reason (Processed, Camera type excluded, Outside store hours, No people detected, Duplicate image, GPT cached, GPT analysis failed, Pending) |
-| `error_detail` | COALESCE(gpt_error, yolo_error) | First non-empty error message |
+### SQLite (`data/store_registry.db`)
+Fast pipeline-state store for:
+- `onfly_image_state`
+- `onfly_walkin_sessions`
+- `onfly_pipeline_runs`
+- `onfly_pipeline_run_events`
+- `onfly_task_queue`
+- `onfly_cost_metrics`
+- batch queue tables
 
-Frontend: `ReportsPage.tsx` uses `@tanstack/react-virtual` row virtualizer for the image_scans tab (same pattern as ValidationTable). Facility filter is independent of the global store selector — changing it does not clear other report tabs.
+Reports and operational screens can read directly from SQLite for live pipeline visibility.
 
 ---
 
-## Future S3 Implementation Notes
+## Current Storage Behavior
 
-When IT grants S3 access, the next agent should:
+- Images are fetched from Drive/local source into memory.
+- No permanent raw-image store is required for normal processing.
+- Irrelevant local-only images can still be removed after processing according to pipeline policy.
+- Canonical outputs are written under `data/exports/current/onfly/`.
 
-1. Complete `backend/app/celery_app/tasks/s3_sync.py` (or inject S3 client logic into the sync task).
-2. Modify `OnFlyConfig` and `build_source_client` to recognize `s3://` URIs and stream bytes directly into memory.
-3. Update `TargetDir` logic so `data/stores/` is bypassed completely if `enable_s3_storage` is true.
-4. For batch mode: `queue_image_for_batch` stores image bytes as base64 in SQLite. With S3, consider storing the S3 object key instead and fetching bytes at `build_and_submit_batch` time — avoids storing large base64 blobs in SQLite.
+---
+
+## Cost Controls Live Today
+
+The following cost controls are already implemented in code and should be treated as live architecture, not future ideas:
+
+| Optimization | Code path |
+| --- | --- |
+| YOLO relevance gate | `src/iris/onfly_pipeline.py` |
+| SHA-256 duplicate reuse | `src/iris/onfly_pipeline.py`, `src/iris/download_manager.py` |
+| Store-hours skip | `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+| Camera exclusion | `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+| OpenAI batch mode | `src/iris/gpt_batch.py`, `src/iris/onfly_pipeline.py` |
+| Smart frame sampling | `src/iris/download_manager.py`, `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+| Cost metrics materialization | `src/iris/report_writer.py`, `backend/app/api/report_queries.py`, `backend/app/api/routes_reports.py` |
+
+### Smart Frame Sampling (newly live)
+Consecutive frames with similar YOLO person-box signatures on the same date/camera are now skipped for GPT after the first anchor frame. Sampled frames inherit the resolved GPT/session result from the anchor frame later in the run.
+
+Relevant fields written to SQLite:
+- `sampled_anchor_image_id`
+- `sampled_signature`
+- `sampled_skip_reason`
+
+Cost metric table contributions:
+- `sampled_skips`
+- `gpt_calls`
+- `gpt_batch_images`
+- `gpt_realtime_images`
+
+---
+
+## Cost Observability (Current)
+
+`onfly_cost_metrics` now records per-store/day runtime proof points for management and engineering review:
+- GPT calls per store/day
+- images listed
+- YOLO relevant images
+- hash cache hits
+- smart sampled skips
+- duplicate skips
+- outside-hours skips
+- excluded-camera skips
+- quota failures
+- batch vs realtime GPT split
+- estimated GPT spend (INR)
+
+Runtime API:
+- `GET /api/reports/cost-metrics`
+
+---
+
+## Known Architectural Guardrails
+
+- The 3 PM GPT-saving schedule must remain intact.
+- The web process must stay request-serving only.
+- Live operational progress comes from SQLite; long-term platform analytics may still synchronize into PostgreSQL.
+- If GPT quota is unavailable, YOLO must continue and GPT work should queue for retry instead of repeatedly burning calls.
+
+---
+
+## Documents That Matter
+
+Keep aligned with code:
+- `README.md`
+- `docs/deployment/cost-optimization-plan.md`
+- `docs/process/onfly_pipeline_logic.md`
+- `deploy/cloud/README.md`
+- `CHANGE_LEDGER.md`

@@ -1,1370 +1,96 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-import base64
 import concurrent.futures
-import hashlib
 import json
 import os
 import random
-import re
 import sqlite3
-import tempfile
-import threading
 import time
-from typing import Any, Protocol
+from typing import Any
 
 import pandas as pd
-import requests
 
 from iris.iris_analysis import build_detector
-from iris.store_registry import parse_drive_folder_id, parse_s3_location
-from iris.gpt_batch import (
-    init_batch_tables,
-    queue_image_for_batch,
-    build_and_submit_batch,
-    get_batch_queue_count,
+from iris.store_registry import parse_drive_folder_id
+from iris.gpt_batch import init_batch_tables, queue_image_for_batch, build_and_submit_batch, get_batch_queue_count
+from iris.source_clients import (
+    CAMERA_PATTERN,
+    COMPACT_DATE,
+    IMAGE_EXTS,
+    ISO_DATE,
+    TIME_PATTERN,
+    GDriveClient,
+    LocalClient,
+    OnFlyConfig,
+    SourceClient,
+    SourceImage,
+    build_source_client,
+    image_meta as _image_meta,
+)
+from iris.pipeline_events import (
+    PIPELINE_STAGES,
+    append_pipeline_event as _append_pipeline_event,
+    connect as _connect,
+    create_pipeline_run as _create_pipeline_run,
+    init_onfly_tables,
+    now_iso as _now,
+    queue_set as _queue_set,
+    update_pipeline_run as _update_pipeline_run,
+)
+from iris.gpt_runtime import (
+    CircuitBreaker as _CircuitBreaker,
+    HeartbeatThread as _HeartbeatThread,
+    TokenBucket as _TokenBucket,
+    _RETAIL_WALKIN_PROMPT,
+    openai_eval as _openai_eval,
+)
+from iris.download_manager import (
+    FrameSampleAnchor,
+    evaluate_frame_sampling,
+    is_gpt_quota_error as _is_gpt_quota_error,
+    sha256_of as _sha256_of,
+    yolo_detect_direct as _yolo_detect_direct,
+    yolo_detect_full_result as _yolo_detect_full_result,
+)
+from iris.session_reconstruction import (
+    auto_discover_cameras as _auto_discover_cameras,
+    load_billing_cameras as _load_billing_cameras,
+    load_excluded_cameras as _load_excluded_cameras,
+    load_prompt_improvement_text as _load_prompt_improvement_text,
+    load_qa_correction_map as _load_qa_correction_map,
+    load_store_hours as _load_store_hours,
+    norm_date as _norm_date,
+    persist_gpt_sessions,
+    resolve_sampled_frames,
+    sync_run_to_postgres as _sync_run_to_postgres,
+)
+from iris.report_writer import (
+    write_cost_metrics,
+    write_pipeline_reports,
 )
 
-# ── Data normalization helpers ────────────────────────────────────────────────
-# Called at every write point so the DB never stores inconsistent casing or formats.
-
-_ROLE_MAP: dict[str, str] = {
-    "customer": "Customer",
-    "staff": "Staff",
-    "uncertain": "Uncertain",
-    "unknown": "Uncertain",
-    "passerby": "Passerby",
-    "banner": "Banner",
-    "poster": "Banner",
-    "poster non human": "Banner",
-    "poster_non_human": "Banner",
-    "poster or non-human": "Banner",
-    "inside active": "Customer",  # GPT sometimes returns this for active shoppers
-}
-
-
-def _norm_role(role: str) -> str:
-    """Normalize role to consistent title-case. Unknown variants → 'Uncertain'."""
-    r = str(role or "").strip()
-    return _ROLE_MAP.get(r.lower(), r.title() if r else "Uncertain")
-
-
-def _norm_date(date_str: str) -> str:
-    """Normalize date to YYYY-MM-DD. Converts DD-MM-YYYY → YYYY-MM-DD."""
-    d = str(date_str or "").strip()
-    if len(d) == 10 and d[2] == "-" and d[5] == "-":
-        # DD-MM-YYYY format
-        return f"{d[6:10]}-{d[3:5]}-{d[0:2]}"
-    return d
-
-
-def _norm_yn(val: str) -> str:
-    """Normalize Yes/No values to exactly 'Yes' or 'No'."""
-    return "Yes" if str(val or "").strip().lower() == "yes" else "No"
-
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-CAMERA_PATTERN = re.compile(r"_(D\d{2})[-_]", re.IGNORECASE)
-TIME_PATTERN = re.compile(r"^(\d{2}-\d{2}-\d{2})_")
-ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-COMPACT_DATE = re.compile(r"^\d{8}$")
-PIPELINE_STAGES = (
-    "LIST",
-    "SKIP_CHECK",
-    "DOWNLOAD",
-    "YOLO",
-    "GPT",
-    "REPORT_WRITER",
-    "DASHBOARD_INGEST",
-)
-
-# Walk-in table columns (20 fields) — must match gpt_post_relevance_test.py WALKIN_TABLE_COLUMNS
-_WALKIN_COLUMNS = [
-    "Date",
-    "Walk-in ID",
-    "Group ID",
-    "Role",
-    "Entry Time",
-    "Exit Time",
-    "Time Spent (mins)",
-    "Session Status",
-    "Entry Type",
-    "Gender",
-    "Age Band",
-    "Attire / Visual Marker",
-    "Primary Clothing",
-    "Jewellery Load",
-    "Bag Type",
-    "Primary Clothing Style Archetype",
-    "Engagement Type",
-    "Engagement Depth",
-    "Purchase Signal (Bag)",
-    "Conversion Signal",
-    "Included in Analytics",
-    "Event Type",
-    "Direction Confidence",
-    "Match Fingerprint",
+__all__ = [
+    "CAMERA_PATTERN",
+    "COMPACT_DATE",
+    "IMAGE_EXTS",
+    "ISO_DATE",
+    "TIME_PATTERN",
+    "GDriveClient",
+    "LocalClient",
+    "OnFlyConfig",
+    "SourceClient",
+    "SourceImage",
+    "build_source_client",
+    "parse_drive_folder_id",
+    "init_onfly_tables",
+    "run_onfly_pipeline",
+    "recent_onfly_runs",
+    "_connect",
+    "_now",
+    "_RETAIL_WALKIN_PROMPT",
 ]
-
-# Comprehensive retail analytics prompt used for GPT vision analysis
-_RETAIL_WALKIN_PROMPT = (
-    "You are an AI system analysing retail store security camera images for offline customer intelligence.\n"
-    "Output is consumed by store operations teams, analytics dashboards, and AI learning systems.\n"
-    "Operate in a privacy-safe, recall-safe, non-PII manner.\n\n"
-    "PRIVACY & SAFETY RULES (NON-NEGOTIABLE):\n"
-    "Do NOT identify or recognise individuals. Do NOT use face recognition or biometrics.\n"
-    "Do NOT persist identity across days. Do NOT infer names, religion, caste, income, or any sensitive personal trait.\n"
-    "Use ONLY: visual cues, clothing, jewellery, bags, spatial position, temporal ordering, behavioural posture, group movement, entry/exit continuity.\n"
-    "All identification must be session-local only.\n\n"
-    "TEMPORAL REASONING (MANDATORY):\n"
-    "Treat all provided frames as a time-ordered sequence. Extract visible timestamps from each frame. Sort chronologically.\n"
-    "Detect new walk-ins even if they appear in only one frame. Track continuity only when visually and temporally supported.\n"
-    "NEVER merge people across frames only because they have similar clothing.\n"
-    "Create a NEW walk-in if a person appears at a new time window with no clear continuity from prior frames.\n"
-    "Create a NEW group if: time gap is more than about 2 minutes AND no clear visual continuity AND no coordinated movement/waiting/joint browsing.\n\n"
-    "PEOPLE DETECTION & ROLE SEPARATION:\n"
-    "Detect all visible people in every frame. Classify each as: Customer, Staff, or Uncertain.\n"
-    "Staff identification signals: repeated presence across frames, uniform/name tag/store dress, stationary near store entrance,\n"
-    "door handling for others, counter-side positioning, repeated customer-facing interaction pattern.\n"
-    "NOTE: A person standing at a billing/checkout counter is NOT automatically staff — customers also stand at billing counters to pay.\n"
-    "Special staff uniform rules (OVERRIDE clothing-alone restriction):\n"
-    "  - Red shirt + black pant/trouser = Staff (floor staff)\n"
-    "  - White shirt + black pant/trouser = Staff (managers, senior staff, supervisors)\n"
-    "Both patterns are always classified as Staff regardless of other cues. Do NOT classify either pattern as Customer or Manager — the only valid Role values are Customer, Staff, Uncertain.\n"
-    "Clothing colour alone is NOT sufficient to classify staff UNLESS the above specific uniform combinations are present.\n"
-    "Staff and Uncertain must be excluded from customer analytics: set Included in Analytics = No.\n\n"
-    "CRITICAL FALSE-POSITIVE CONTROL:\n"
-    "Do not treat posters, banners, standees, mannequins, printed humans, wall graphics, or reflection-only humans as customers.\n"
-    "If figure looks non-real (flat print, no limb articulation, no depth, fixed pose), mark as Uncertain and Included in Analytics = No.\n"
-    "If no clear real-human body cues (hands/legs/joint posture/motion context), prefer Uncertain over Customer.\n\n"
-    "EVENT-TYPE CLASSIFICATION (MANDATORY): choose exactly one: ENTRY, EXIT, INSIDE_ACTIVE, INSIDE_PURCHASING, PASSERBY_OUTSIDE, STAFF, POSTER_NON_HUMAN, UNCLEAR.\n"
-    "Use visual cues: body orientation, movement direction, relation to door/entrance, inside vs outside context.\n"
-    "Do NOT invent clock times from visual reasoning. Return event semantics only; system timestamping is handled by filename parser.\n\n"
-    "WALK-IN SESSION LOGIC:\n"
-    "Each detected customer walk-in is one session. Every walk-in MUST have a unique Walk-in ID and a Group ID.\n"
-    "If solo: still assign a Group ID. If multiple customers together: each gets a unique Walk-in ID, all share one Group ID.\n\n"
-    "GROUPING LOGIC (STRICT):\n"
-    "Group customers ONLY if they enter together OR show clear in-store convergence:\n"
-    "proximity, waiting together, shared browsing, coordinated movement, common engagement with the same counter/display.\n"
-    "Do NOT group if: different timestamps without continuity, only spatially close once, independent posture and direction.\n\n"
-    "ENTRY TYPE: Assisted Entry (staff facilitates entry) / Walk-in (customer enters independently) / Already Inside / NA.\n\n"
-    "SESSION TIME:\n"
-    "Entry Time: use actual timestamp of first supported entry or first seen moment; if threshold crossing not visible use earliest reliable timestamp; else NA.\n"
-    "Exit Time: use actual exit timestamp only if exit is visible; else NA.\n"
-    "Time Spent (mins): calculate only if both entry and exit are available; else NA.\n"
-    "Session Status: OPEN if no exit observed; CLOSED if exit observed.\n\n"
-    "DETERMINISTIC ID GENERATION (MANDATORY):\n"
-    "Walk-in ID: YYYYMMDDHHMMSSWNN   Group ID: YYYYMMDDHHMMSSGNN\n"
-    "Use Entry Time as anchor. If Entry Time is NA, use earliest reliable visible timestamp. If no timestamp visible at all, IDs = NA.\n"
-    "Sort walk-ins by Entry Time asc; tie-break: smaller group size first, then left-to-right, then stable non-random order.\n"
-    "Assign W01, W02, W03... Set each group anchor = earliest Entry Time among its members. Sort groups by anchor asc. Assign G01, G02, G03...\n"
-    "Do NOT use random IDs. Do NOT change IDs across reruns for the same frame set.\n\n"
-    "CUSTOMER PROFILE (NON-PII):\n"
-    "Gender: Male / Female / Uncertain.\n"
-    "Age Band (choose ONE): Under 18 / 18 - 24 / 25 - 34 / 35 - 45 / 45 - 55 / Above 55 / NA. Prefer wider bands if unsure.\n\n"
-    "VISUAL ATTRIBUTES:\n"
-    "Attire / Visual Marker: describe only visible clothing, accessories, bags, hairstyle cues if non-sensitive. Keep short, descriptive, recall-safe.\n"
-    "Primary Clothing (ONE): Saree / Dress / Suit / Casual / Formal / Office / Workwear / Festive / Mixed / NA.\n"
-    "Jewellery Load: None / Minimal / Everyday jewellery / Ethnic jewellery / Celebration / Heavy / Uncertain. If not clearly visible prefer Minimal/None/Uncertain.\n"
-    "Bag Type: Tote bag / Sling bag / Handbag / Backpack / Branded paper bag / None / NA.\n"
-    "Primary Clothing Style Archetype (ONE): Ethnic / Casual / Western / Office / Festive / Mixed / Uncertain.\n\n"
-    "ENGAGEMENT SIGNALS:\n"
-    "Engagement Type: Browsing / Assisted / Assisted Entry / Waiting / Billing / NA. If unclear prefer Browsing/NA.\n"
-    "Engagement Depth: Low / Medium / High / NA. If unclear prefer Low/NA.\n\n"
-    "PURCHASE SIGNAL (EXIT ONLY):\n"
-    "Purchase Signal (Bag): Yes / No / NA. Carry bag is only a proxy, not a guaranteed purchase.\n\n"
-    "CONVERSION SIGNAL (MANDATORY FOR EVERY ROW):\n"
-    "A conversion means the customer completed or is completing a purchase. Set Conversion Signal = Yes if ANY of these are true:\n"
-    "  1. This image is from a BILLING/CHECKOUT camera (camera context will be stated if so) AND the person is a Customer.\n"
-    "  2. The customer is visibly at a billing counter or payment terminal (Engagement Type = Billing).\n"
-    "  3. The customer exits with a carry bag (Purchase Signal (Bag) = Yes).\n"
-    "These are OR conditions — any single condition is sufficient. Set Conversion Signal = No if Role = Customer but none apply. "
-    "Set Conversion Signal = NA if Role = Staff or Uncertain.\n\n"
-    "Included in Analytics: Yes if Role = Customer. No if Role = Staff or Uncertain.\n\n"
-    "OUTPUT: Return strict JSON only with key 'rows' containing an array of objects — one object per detected person — with exactly these fields: "
-    "Date, Walk-in ID, Group ID, Role, Entry Time, Exit Time, Time Spent (mins), Session Status, Entry Type, Gender, Age Band, "
-    "Attire / Visual Marker, Primary Clothing, Jewellery Load, Bag Type, Primary Clothing Style Archetype, "
-    "Engagement Type, Engagement Depth, Purchase Signal (Bag), Conversion Signal, Included in Analytics, Event Type, Direction Confidence, Match Fingerprint. "
-    "Prefer NA over guessing. Never invent data. Never output explanatory text outside the JSON."
-)
-
-
-class _TokenBucket:
-    """Thread-safe token bucket — controls calls/second to the OpenAI API."""
-
-    def __init__(self, rate: float, capacity: int) -> None:
-        self._rate = max(0.1, rate)       # tokens refilled per second
-        self._capacity = max(1, capacity)
-        self._tokens = float(capacity)
-        self._last = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self, timeout: float = 60.0) -> bool:
-        deadline = time.monotonic() + timeout
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._rate)
-                self._last = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return True
-                wait = (1.0 - self._tokens) / self._rate
-            if time.monotonic() + wait > deadline:
-                return False
-            time.sleep(min(wait, 0.25))
-
-
-class _CircuitBreaker:
-    """Trips after fail_max consecutive API errors; auto-resets after reset_timeout seconds."""
-
-    CLOSED = "closed"
-    OPEN = "open"
-
-    def __init__(self, fail_max: int = 5, reset_timeout: float = 60.0) -> None:
-        self._fail_max = fail_max
-        self._reset_timeout = reset_timeout
-        self._failures = 0
-        self._opened_at: float | None = None
-        self._lock = threading.Lock()
-
-    @property
-    def is_open(self) -> bool:
-        with self._lock:
-            if self._opened_at is None:
-                return False
-            if time.monotonic() - self._opened_at >= self._reset_timeout:
-                self._failures = 0
-                self._opened_at = None
-                return False
-            return True
-
-    def record_success(self) -> None:
-        with self._lock:
-            self._failures = 0
-            self._opened_at = None
-
-    def record_failure(self) -> None:
-        with self._lock:
-            self._failures += 1
-            if self._failures >= self._fail_max and self._opened_at is None:
-                self._opened_at = time.monotonic()
-
-    @property
-    def state(self) -> str:
-        return self.OPEN if self.is_open else self.CLOSED
-
-
-class _HeartbeatThread(threading.Thread):
-    """Background thread that writes last_heartbeat_at to SQLite every interval seconds.
-
-    Keeps pipeline runs from appearing stuck/zombie when long downloads or GPT calls
-    block the main thread from calling _update_pipeline_run.
-    """
-
-    def __init__(self, db_path: Path, run_id: str, interval: float = 25.0) -> None:
-        super().__init__(daemon=True, name=f"heartbeat-{run_id[-8:]}")
-        self._db_path = db_path
-        self._run_id = run_id
-        self._interval = interval
-        self._stop_evt = threading.Event()
-
-    def stop(self) -> None:
-        self._stop_evt.set()
-
-    def run(self) -> None:
-        while not self._stop_evt.wait(self._interval):
-            try:
-                c = sqlite3.connect(str(self._db_path), timeout=5)
-                c.execute(
-                    "UPDATE onfly_pipeline_runs SET last_heartbeat_at=? WHERE run_id=?",
-                    (_now(), self._run_id),
-                )
-                c.commit()
-                c.close()
-            except Exception:
-                pass
-
-
-def _walkin_schema() -> dict[str, Any]:
-    row_props = {col: {"type": "string"} for col in _WALKIN_COLUMNS}
-    return {
-        "name": "retail_onfly_walkin_table",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "rows": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": row_props,
-                        "required": list(row_props.keys()),
-                    },
-                }
-            },
-            "required": ["rows"],
-        },
-    }
-
-
-def _apply_staff_manager_rule(walkins: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Deterministic post-processing override (runs after GPT, catches missed classifications):
-    - red shirt + black pant/trouser => Staff (floor staff)
-    - white shirt + black pant/trouser => Staff (managers / senior staff / supervisors)
-    Both are Staff — there is no Manager role.
-    """
-    for row in walkins:
-        role = str(row.get("Role", "") or "").strip().lower()
-        marker = str(row.get("Attire / Visual Marker", "") or "").lower()
-        primary = str(row.get("Primary Clothing", "") or "").lower()
-        style = str(row.get("Primary Clothing Style Archetype", "") or "").lower()
-        text = " ".join([marker, primary, style])
-        has_white = "white" in text
-        has_red = "red" in text
-        has_black = "black" in text
-        has_pant = any(tok in text for tok in ("pant", "pants", "trouser", "trousers"))
-        has_staff_uniform = (has_white or has_red) and has_black and has_pant
-        if has_staff_uniform and role in {"customer", "uncertain", ""}:
-            row["Role"] = "Staff"
-            row["Included in Analytics"] = "No"
-    return walkins
-
-
-def _parse_filename_time(image_name: str) -> str:
-    m = TIME_PATTERN.match(str(image_name or "").strip())
-    if not m:
-        return ""
-    return m.group(1).replace("-", ":")
-
-
-def _canonical_event_type(row: dict[str, str]) -> str:
-    raw = str(row.get("Event Type", "") or "").strip().upper()
-    role = str(row.get("Role", "") or "").strip().lower()
-    entry_type = str(row.get("Entry Type", "") or "").strip().lower()
-    engage = str(row.get("Engagement Type", "") or "").strip().lower()
-    if raw in {
-        "ENTRY",
-        "EXIT",
-        "INSIDE_ACTIVE",
-        "INSIDE_PURCHASING",
-        "PASSERBY_OUTSIDE",
-        "STAFF",
-        "POSTER_NON_HUMAN",
-        "UNCLEAR",
-    }:
-        return raw
-    if role == "staff":
-        return "STAFF"
-    if "assisted entry" in entry_type or "walk-in" in entry_type:
-        return "ENTRY"
-    if "billing" in engage:
-        return "INSIDE_PURCHASING"
-    if engage in {"browsing", "waiting", "assisted"}:
-        return "INSIDE_ACTIVE"
-    if role == "customer":
-        return "INSIDE_ACTIVE"
-    return "UNCLEAR"
-
-
-def _event_fingerprint(row: dict[str, str], camera_id: str) -> str:
-    keys = [
-        camera_id,
-        str(row.get("Role", "") or "").strip().lower(),
-        str(row.get("Gender", "") or "").strip().lower(),
-        str(row.get("Age Band", "") or "").strip().lower(),
-        str(row.get("Primary Clothing", "") or "").strip().lower(),
-        str(row.get("Bag Type", "") or "").strip().lower(),
-        str(row.get("Jewellery Load", "") or "").strip().lower(),
-        str(row.get("Primary Clothing Style Archetype", "") or "").strip().lower(),
-        str(row.get("Attire / Visual Marker", "") or "").strip().lower()[:80],
-    ]
-    return "|".join(keys)
-
-
-@dataclass(frozen=True)
-class SourceImage:
-    image_id: str
-    image_name: str
-    relative_path: str
-    source_provider: str
-    source_item_id: str
-    source_url: str
-    date_source: str
-    date_display: str
-    camera_id: str
-    timestamp_hint: str
-
-
-@dataclass(frozen=True)
-class OnFlyConfig:
-    store_id: str
-    source_uri: str
-    db_path: Path
-    out_dir: Path
-    run_id: str = ""
-    detector_type: str = "yolo"
-    conf_threshold: float = 0.18
-    max_images: int = 0  # 0 = unlimited; caller sets actual limit via get_settings().max_images
-    gpt_enabled: bool = False
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4.1-mini"
-    openai_api_base: str = "https://api.openai.com/v1"
-    gpt_rate_limit_rps: float = 1.0
-    pipeline_version: str = "onfly_v1"
-    yolo_version: str = ""
-    gpt_version: str = ""
-    allow_detector_fallback: bool = False
-    force_reprocess: bool = False
-    keep_relevant_dir: Path | None = None
-    run_mode: str = "hourly"
-    # BoT-SORT session tracking (opt-in; does not affect existing pipeline output)
-    use_tracker: bool = False
-    tracker_iou_threshold: float = 0.3
-    tracker_max_age: int = 5
-    tracker_min_hits: int = 2
-    gpt_parallel_workers: int = 5
-    google_api_key: str = ""
-    gpt_batch_mode: bool = False  # When True, queue GPT work for overnight OpenAI Batch API
-
-
-class SourceClient(Protocol):
-    provider: str
-
-    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
-        ...
-
-    def fetch_bytes(self, item: SourceImage) -> bytes:
-        ...
-
-
-def _now() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
-
-
-def _ms_to_hms(ms: float) -> str:
-    total_seconds = max(0, int(round(float(ms) / 1000.0)))
-    hh = total_seconds // 3600
-    mm = (total_seconds % 3600) // 60
-    ss = total_seconds % 60
-    return f"{hh:02d}:{mm:02d}:{ss:02d}"
-
-
-def _apply_customer_group_correction(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize customer grouping for business exports."""
-    if df.empty or "group_id" not in df.columns:
-        return df
-
-    out = df.copy()
-    for col in ["role", "group_id", "walkin_id", "source_image_name", "store_id", "run_id"]:
-        if col not in out.columns:
-            out[col] = ""
-    out["role_norm"] = out["role"].astype(str).str.strip().str.upper()
-    out["group_id"] = out["group_id"].astype(str).str.strip()
-    out["walkin_id"] = out["walkin_id"].astype(str).str.strip()
-    out["source_image_name"] = out["source_image_name"].astype(str).str.strip()
-    out["raw_group_id"] = out["group_id"]
-
-    stats = (
-        out.assign(
-            is_customer=out["role_norm"].eq("CUSTOMER"),
-            is_staff=out["role_norm"].eq("STAFF"),
-        )
-        .groupby(["store_id", "run_id", "source_image_name", "group_id"], dropna=False, as_index=False)
-        .agg(customer_rows=("is_customer", "sum"), staff_rows=("is_staff", "sum"))
-    )
-    stats["preserve_group"] = (
-        (stats["group_id"].astype(str).str.strip() != "")
-        & (stats["customer_rows"] >= 2)
-        & (stats["customer_rows"] <= 4)
-        & (stats["staff_rows"] == 0)
-    )
-    key_cols = ["store_id", "run_id", "source_image_name", "group_id"]
-    out = out.merge(stats[key_cols + ["preserve_group"]], on=key_cols, how="left")
-    out["preserve_group"] = out["preserve_group"].fillna(False)
-
-    def _session_group(row: pd.Series) -> str:
-        walkin = str(row.get("walkin_id", "") or "").strip()
-        if walkin:
-            return walkin
-        image_id = str(row.get("image_id", "") or "").strip()
-        row_id = str(row.get("id", "") or "").strip()
-        return f"{image_id or 'session'}_{row_id or '0'}"
-
-    customer_mask = out["role_norm"].eq("CUSTOMER")
-    split_mask = customer_mask & ((out["group_id"] == "") | (~out["preserve_group"]))
-    if split_mask.any():
-        out.loc[split_mask, "group_id"] = out.loc[split_mask].apply(_session_group, axis=1)
-    # Keep non-customer entities explicitly isolated from customer groups.
-    non_customer_mask = ~customer_mask
-    if non_customer_mask.any():
-        out.loc[non_customer_mask, "group_id"] = out.loc[non_customer_mask].apply(
-            lambda r: f"NON_CUSTOMER_{str(r.get('id', '') or '').strip() or str(r.get('walkin_id', '') or '').strip() or '0'}",
-            axis=1,
-        )
-
-    return out.drop(columns=["role_norm", "preserve_group"])
-
-
-def _parse_date_token(token: str) -> date | None:
-    text = str(token).strip()
-    if not text:
-        return None
-    try:
-        if ISO_DATE.fullmatch(text):
-            return date.fromisoformat(text)
-        if COMPACT_DATE.fullmatch(text):
-            return date.fromisoformat(f"{text[:4]}-{text[4:6]}-{text[6:8]}")
-    except Exception:
-        return None
-    return None
-
-
-def _image_meta(rel: Path, image_name: str) -> tuple[str, str, str, str]:
-    parts = [str(p) for p in rel.parts[:-1] if str(p).strip()]
-    date_source = parts[0] if parts else ""
-    parsed = _parse_date_token(date_source)
-    date_display = parsed.strftime("%d-%m-%Y") if parsed is not None else date_source
-    cam = CAMERA_PATTERN.search(image_name)
-    camera_id = cam.group(1).upper() if cam else ""
-    t = TIME_PATTERN.match(image_name)
-    hhmm = t.group(1).replace("-", ":") if t else ""
-    ts = f"{date_source} {hhmm}".strip() if date_source else hhmm
-    return date_source, date_display, camera_id, ts
-
-
-class LocalClient:
-    provider = "local"
-
-    def __init__(self, uri: str) -> None:
-        text = str(uri).strip()
-        if text.lower().startswith("file://"):
-            text = text[7:]
-        self.root = Path(text).expanduser().resolve()
-        if not self.root.exists():
-            raise ValueError(f"Local path not found: {self.root}")
-
-    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
-        paths = [p for p in self.root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-        paths.sort(key=lambda p: str(p.relative_to(self.root)).lower(), reverse=True)
-        if limit > 0:
-            paths = paths[:limit]
-        out: list[SourceImage] = []
-        for p in paths:
-            rel = p.relative_to(self.root)
-            ds, dd, cam, ts = _image_meta(rel, p.name)
-            rel_norm = str(rel).replace("\\", "/")
-            out.append(SourceImage(f"local:{rel_norm.lower()}", p.name, rel_norm, "local", rel_norm, str(p), ds, dd, cam, ts))
-        return out
-
-    def fetch_bytes(self, item: SourceImage) -> bytes:
-        return (self.root / item.source_item_id).read_bytes()
-
-
-class GDriveClient:
-    provider = "gdrive"
-
-    def __init__(self, uri: str, api_key: str) -> None:
-        folder_id = parse_drive_folder_id(uri)
-        if not folder_id:
-            raise ValueError("Invalid Google Drive folder URL")
-        if not str(api_key).strip():
-            raise ValueError("GOOGLE_API_KEY is required for Drive on-the-fly ingestion")
-        self.folder_id = folder_id
-        self.api_key = str(api_key).strip()
-
-    def _list_folder(self, folder_id: str) -> tuple[list[dict], list[dict]]:
-        """Return (subfolders, images) for a single Drive folder — all pages."""
-        subfolders: list[dict] = []
-        images: list[dict] = []
-        token = None
-        while True:
-            params = {
-                "q": f"'{folder_id}' in parents and trashed = false",
-                "fields": "nextPageToken,files(id,name,mimeType)",
-                "pageSize": 1000,
-                "supportsAllDrives": "true",
-                "includeItemsFromAllDrives": "true",
-                "key": self.api_key,
-            }
-            if token:
-                params["pageToken"] = token
-            resp = requests.get("https://www.googleapis.com/drive/v3/files", params=params, timeout=30)
-            resp.raise_for_status()
-            payload = resp.json()
-            for item in payload.get("files", []):
-                name = str(item.get("name", "")).strip()
-                if not name:
-                    continue
-                if str(item.get("mimeType", "")) == "application/vnd.google-apps.folder":
-                    subfolders.append({"id": str(item.get("id", "")), "name": name})
-                elif Path(name).suffix.lower() in IMAGE_EXTS:
-                    images.append({"id": str(item.get("id", "")), "name": name})
-            token = payload.get("nextPageToken")
-            if not token:
-                break
-        return subfolders, images
-
-    def list_images(self, limit: int, seen_ids: set[str] | None = None) -> list[SourceImage]:
-        # DFS newest-first. `limit` counts only NEW (unseen) files so the pipeline
-        # always finds `limit` processable images regardless of how many are already done.
-        # Without this, a folder with 50,000 images where 10,000 are already processed
-        # would return those same 10,000 every run and never advance past them.
-        seen = seen_ids or set()
-        files: list[dict[str, str]] = []
-
-        def _collect(folder_id: str, rel_parts: list[str], depth: int = 0) -> bool:
-            """DFS with newest-first subfolder ordering. Returns True if limit reached."""
-            subfolders, images = self._list_folder(folder_id)
-            for img in images:
-                if img["id"] in seen:
-                    continue  # skip already-processed — don't count against limit
-                rel = (Path(*rel_parts) / img["name"]) if rel_parts else Path(img["name"])
-                files.append({"id": img["id"], "name": img["name"], "rel": str(rel).replace("\\", "/")})
-                if limit > 0 and len(files) >= limit:
-                    return True
-            subfolders.sort(key=lambda s: s["name"], reverse=True)
-            for sf in subfolders:
-                if _collect(sf["id"], rel_parts + [sf["name"]], depth + 1):
-                    return True
-            return False
-
-        _collect(self.folder_id, [])
-        files.sort(key=lambda r: str(r["rel"]).lower(), reverse=True)
-        if limit > 0:
-            files = files[:limit]
-        out: list[SourceImage] = []
-        for r in files:
-            rel = Path(r["rel"])
-            ds, dd, cam, ts = _image_meta(rel, r["name"])
-            fid = str(r["id"])
-            out.append(SourceImage(f"gdrive:{fid}", r["name"], r["rel"], "gdrive", fid, f"https://drive.google.com/file/d/{fid}/view", ds, dd, cam, ts))
-        return out
-
-    def fetch_bytes(self, item: SourceImage) -> bytes:
-        fid = item.source_item_id
-        last_error: Exception | None = None
-        for _ in range(2):
-            try:
-                media = requests.get(
-                    f"https://www.googleapis.com/drive/v3/files/{fid}",
-                    params={"alt": "media", "key": self.api_key},
-                    timeout=(10, 25),
-                )
-                if media.status_code == 200 and "text/html" not in str(media.headers.get("content-type", "")).lower():
-                    return media.content
-                direct = requests.get(
-                    f"https://lh3.googleusercontent.com/d/{fid}",
-                    timeout=(10, 25),
-                )
-                if direct.status_code == 200 and "text/html" not in str(direct.headers.get("content-type", "")).lower():
-                    return direct.content
-                fallback = requests.get(
-                    "https://drive.google.com/uc",
-                    params={"id": fid, "export": "download"},
-                    timeout=(10, 25),
-                )
-                fallback.raise_for_status()
-                return fallback.content
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.3)
-        raise RuntimeError(f"Drive fetch failed for {item.image_name} ({fid}): {last_error}")
-
-
-def build_source_client(source_uri: str, google_api_key: str = "") -> SourceClient:
-    if parse_drive_folder_id(source_uri):
-        key = google_api_key or os.getenv("GOOGLE_API_KEY", "")
-        return GDriveClient(source_uri, key)
-    if parse_s3_location(source_uri) is not None:
-        raise RuntimeError("S3 on-the-fly adapter is configured for future use; enable in next phase.")
-    return LocalClient(source_uri)
-
-
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        pass
-    return conn
-
-
-def init_onfly_tables(db_path: Path) -> None:
-    conn = _connect(db_path)
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_image_state(
-                store_id TEXT NOT NULL, image_id TEXT NOT NULL, source_provider TEXT NOT NULL, source_uri TEXT NOT NULL,
-                source_item_id TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', image_name TEXT NOT NULL,
-                relative_path TEXT NOT NULL DEFAULT '', date_source TEXT NOT NULL DEFAULT '', date_display TEXT NOT NULL DEFAULT '',
-                camera_id TEXT NOT NULL DEFAULT '', timestamp_hint TEXT NOT NULL DEFAULT '', discovered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-                pipeline_version TEXT NOT NULL DEFAULT '', yolo_version TEXT NOT NULL DEFAULT '', gpt_version TEXT NOT NULL DEFAULT '',
-                yolo_status TEXT NOT NULL DEFAULT 'pending', yolo_relevant INTEGER NOT NULL DEFAULT 0,
-                person_count INTEGER NOT NULL DEFAULT 0, yolo_conf REAL NOT NULL DEFAULT 0, yolo_error TEXT NOT NULL DEFAULT '',
-                gpt_status TEXT NOT NULL DEFAULT 'pending', gpt_customer_count INTEGER NOT NULL DEFAULT 0, gpt_staff_count INTEGER NOT NULL DEFAULT 0,
-                gpt_conversions INTEGER NOT NULL DEFAULT 0, gpt_bounce INTEGER NOT NULL DEFAULT 0, gpt_result_json TEXT NOT NULL DEFAULT '{}',
-                gpt_error TEXT NOT NULL DEFAULT '', last_run_id TEXT NOT NULL DEFAULT '', PRIMARY KEY(store_id,image_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_task_queue(
-                task_key TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL,
-                store_id TEXT NOT NULL,
-                image_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        state_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(onfly_image_state)").fetchall()}
-        if "yolo_version" not in state_cols:
-            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN yolo_version TEXT NOT NULL DEFAULT ''")
-        if "gpt_version" not in state_cols:
-            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN gpt_version TEXT NOT NULL DEFAULT ''")
-        if "content_hash" not in state_cols:
-            conn.execute("ALTER TABLE onfly_image_state ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_hash ON onfly_image_state(store_id, content_hash)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_task_stage_status ON onfly_task_queue(stage,status,updated_at)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_run_metrics(
-                run_id TEXT PRIMARY KEY, store_id TEXT NOT NULL, run_mode TEXT NOT NULL, source_provider TEXT NOT NULL,
-                started_at TEXT NOT NULL, ended_at TEXT NOT NULL, total_listed INTEGER NOT NULL DEFAULT 0,
-                new_images INTEGER NOT NULL DEFAULT 0, skipped_cached INTEGER NOT NULL DEFAULT 0, yolo_done INTEGER NOT NULL DEFAULT 0,
-                yolo_relevant INTEGER NOT NULL DEFAULT 0, gpt_done INTEGER NOT NULL DEFAULT 0, total_ms REAL NOT NULL DEFAULT 0,
-                list_ms REAL NOT NULL DEFAULT 0, download_ms REAL NOT NULL DEFAULT 0, yolo_ms REAL NOT NULL DEFAULT 0, gpt_ms REAL NOT NULL DEFAULT 0,
-                report_ms REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ok', summary_json TEXT NOT NULL DEFAULT '{}'
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_pipeline_runs (
-                run_id TEXT PRIMARY KEY,
-                store_id TEXT NOT NULL,
-                business_date TEXT NOT NULL DEFAULT '',
-                source_type TEXT NOT NULL,
-                source_uri TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'queued',
-                current_stage TEXT NOT NULL DEFAULT '',
-                images_discovered INTEGER NOT NULL DEFAULT 0,
-                images_skipped INTEGER NOT NULL DEFAULT 0,
-                images_processed INTEGER NOT NULL DEFAULT 0,
-                images_relevant INTEGER NOT NULL DEFAULT 0,
-                images_irrelevant INTEGER NOT NULL DEFAULT 0,
-                gpt_success_count INTEGER NOT NULL DEFAULT 0,
-                gpt_failed_count INTEGER NOT NULL DEFAULT 0,
-                gpt_cache_hits INTEGER NOT NULL DEFAULT 0,
-                report_image_results_csv TEXT NOT NULL DEFAULT '',
-                report_walkin_sessions_csv TEXT NOT NULL DEFAULT '',
-                report_store_date_csv TEXT NOT NULL DEFAULT '',
-                error_message TEXT NOT NULL DEFAULT '',
-                error_trace TEXT NOT NULL DEFAULT '',
-                retry_status TEXT NOT NULL DEFAULT '',
-                started_at TEXT NOT NULL,
-                ended_at TEXT NOT NULL DEFAULT '',
-                last_heartbeat_at TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_pipeline_run_events (
-                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                image_id TEXT NOT NULL DEFAULT '',
-                image_name TEXT NOT NULL DEFAULT '',
-                message TEXT NOT NULL DEFAULT '',
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                error_message TEXT NOT NULL DEFAULT '',
-                error_trace TEXT NOT NULL DEFAULT '',
-                attempt_no INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_created ON onfly_pipeline_run_events(run_id, created_at ASC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_pipeline_events_run_stage ON onfly_pipeline_run_events(run_id, stage, created_at ASC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_report_index (
-                store_id TEXT NOT NULL,
-                business_date TEXT NOT NULL,
-                run_id TEXT NOT NULL DEFAULT '',
-                image_results_csv TEXT NOT NULL DEFAULT '',
-                walkin_sessions_csv TEXT NOT NULL DEFAULT '',
-                store_date_csv TEXT NOT NULL DEFAULT '',
-                summary_json TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(store_id, business_date)
-            )
-            """
-        )
-        # Per-customer walk-in sessions table (20-field retail analytics output)
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS onfly_walkin_sessions(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT NOT NULL,
-                run_id TEXT NOT NULL,
-                image_id TEXT NOT NULL,
-                source_image_name TEXT NOT NULL DEFAULT '',
-                source_folder_name TEXT NOT NULL DEFAULT '',
-                camera_id TEXT NOT NULL DEFAULT '',
-                business_date TEXT NOT NULL DEFAULT '',
-                date TEXT NOT NULL DEFAULT '',
-                event_type TEXT NOT NULL DEFAULT '',
-                event_time TEXT NOT NULL DEFAULT '',
-                walkin_id TEXT NOT NULL DEFAULT '',
-                group_id TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT '',
-                entry_time TEXT NOT NULL DEFAULT '',
-                exit_time TEXT NOT NULL DEFAULT '',
-                time_spent_mins TEXT NOT NULL DEFAULT '',
-                session_status TEXT NOT NULL DEFAULT '',
-                entry_type TEXT NOT NULL DEFAULT '',
-                first_seen_time TEXT NOT NULL DEFAULT '',
-                last_seen_time TEXT NOT NULL DEFAULT '',
-                matched_session_id TEXT NOT NULL DEFAULT '',
-                match_score REAL NOT NULL DEFAULT 0,
-                match_reason TEXT NOT NULL DEFAULT '',
-                direction_confidence TEXT NOT NULL DEFAULT '',
-                match_fingerprint TEXT NOT NULL DEFAULT '',
-                debug_parsed_time TEXT NOT NULL DEFAULT '',
-                debug_gpt_event_type TEXT NOT NULL DEFAULT '',
-                gender TEXT NOT NULL DEFAULT '',
-                age_band TEXT NOT NULL DEFAULT '',
-                attire_visual_marker TEXT NOT NULL DEFAULT '',
-                primary_clothing TEXT NOT NULL DEFAULT '',
-                jewellery_load TEXT NOT NULL DEFAULT '',
-                bag_type TEXT NOT NULL DEFAULT '',
-                clothing_style_archetype TEXT NOT NULL DEFAULT '',
-                engagement_type TEXT NOT NULL DEFAULT '',
-                engagement_depth TEXT NOT NULL DEFAULT '',
-                purchase_signal_bag TEXT NOT NULL DEFAULT '',
-                included_in_analytics TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_date ON onfly_walkin_sessions(store_id, date, walkin_id)")
-        # Performance indexes for QA review queue and frame lookup
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store ON onfly_image_state(store_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_seen ON onfly_image_state(store_id, last_seen_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_date ON onfly_image_state(store_id, date_display, date_source)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_image ON onfly_walkin_sessions(store_id, image_id)")
-        # Covering indexes for the summary GROUP BY query (store_id + date + yolo_relevant avoids
-        # a full table scan when computing daily walkin/conversion/dwell rollups).
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_summary_cover ON onfly_image_state(store_id, date_display, yolo_relevant)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_bizdate ON onfly_walkin_sessions(store_id, business_date)")
-        existing_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(onfly_walkin_sessions)").fetchall()}
-        for col_name, col_def in [
-            ("source_image_name", "TEXT NOT NULL DEFAULT ''"),
-            ("source_folder_name", "TEXT NOT NULL DEFAULT ''"),
-            ("camera_id", "TEXT NOT NULL DEFAULT ''"),
-            ("business_date", "TEXT NOT NULL DEFAULT ''"),
-            ("event_type", "TEXT NOT NULL DEFAULT ''"),
-            ("event_time", "TEXT NOT NULL DEFAULT ''"),
-            ("first_seen_time", "TEXT NOT NULL DEFAULT ''"),
-            ("last_seen_time", "TEXT NOT NULL DEFAULT ''"),
-            ("matched_session_id", "TEXT NOT NULL DEFAULT ''"),
-            ("match_score", "REAL NOT NULL DEFAULT 0"),
-            ("match_reason", "TEXT NOT NULL DEFAULT ''"),
-            ("direction_confidence", "TEXT NOT NULL DEFAULT ''"),
-            ("match_fingerprint", "TEXT NOT NULL DEFAULT ''"),
-            ("debug_parsed_time", "TEXT NOT NULL DEFAULT ''"),
-            ("debug_gpt_event_type", "TEXT NOT NULL DEFAULT ''"),
-        ]:
-            if col_name not in existing_cols:
-                conn.execute(f"ALTER TABLE onfly_walkin_sessions ADD COLUMN {col_name} {col_def}")
-        # Additive column migrations for onfly_pipeline_runs
-        _pr_cols = {r[1] for r in conn.execute("PRAGMA table_info(onfly_pipeline_runs)").fetchall()}
-        if "gpt_cache_hits" not in _pr_cols:
-            conn.execute("ALTER TABLE onfly_pipeline_runs ADD COLUMN gpt_cache_hits INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-
-
-def _queue_set(conn: sqlite3.Connection, *, run_id: str, store_id: str, image_id: str, stage: str, status: str, error: str = "") -> None:
-    key = f"{run_id}|{store_id}|{image_id}|{stage}"
-    now = _now()
-    row = conn.execute("SELECT attempts FROM onfly_task_queue WHERE task_key=?", (key,)).fetchone()
-    attempts = int(row[0]) + 1 if row is not None else 0
-    conn.execute(
-        """
-        INSERT INTO onfly_task_queue(task_key,run_id,store_id,image_id,stage,status,attempts,last_error,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(task_key) DO UPDATE SET
-            status=excluded.status,
-            attempts=excluded.attempts,
-            last_error=excluded.last_error,
-            updated_at=excluded.updated_at
-        """,
-        (key, run_id, store_id, image_id, stage, status, attempts, str(error or "")[:1000], now, now),
-    )
-
-
-def _json_compact(payload: dict[str, Any] | None) -> str:
-    if not payload:
-        return "{}"
-    try:
-        return json.dumps(payload, separators=(",", ":"))
-    except Exception:
-        return "{}"
-
-
-def _sha256_of(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _is_gpt_quota_error(text: str) -> bool:
-    msg = str(text or "").lower()
-    return any(
-        token in msg
-        for token in [
-            "insufficient_quota",
-            "quota",
-            "rate limit",
-            "rate_limit",
-            "429",
-            "billing",
-        ]
-    )
-
-
-def _create_pipeline_run(
-    conn: sqlite3.Connection,
-    *,
-    run_id: str,
-    store_id: str,
-    business_date: str,
-    source_type: str,
-    source_uri: str,
-    started_at: str,
-) -> None:
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO onfly_pipeline_runs(
-            run_id,store_id,business_date,source_type,source_uri,status,current_stage,
-            started_at,last_heartbeat_at,created_at,updated_at
-        ) VALUES(?,?,?,?,?,'running',?,?,?, ?,?)
-        """,
-        (run_id, store_id, business_date, source_type, source_uri, PIPELINE_STAGES[0], started_at, started_at, started_at, started_at),
-    )
-
-
-def _update_pipeline_run(
-    conn: sqlite3.Connection,
-    run_id: str,
-    **fields: Any,
-) -> None:
-    if not fields:
-        return
-    now = _now()
-    fields["updated_at"] = now
-    if "last_heartbeat_at" not in fields:
-        fields["last_heartbeat_at"] = now
-    columns = ", ".join(f"{k}=?" for k in fields.keys())
-    values = list(fields.values())
-    values.append(run_id)
-    conn.execute(f"UPDATE onfly_pipeline_runs SET {columns} WHERE run_id=?", tuple(values))
-
-
-def _append_pipeline_event(
-    conn: sqlite3.Connection,
-    *,
-    run_id: str,
-    stage: str,
-    event_type: str,
-    image_id: str = "",
-    image_name: str = "",
-    message: str = "",
-    payload: dict[str, Any] | None = None,
-    error_message: str = "",
-    error_trace: str = "",
-    attempt_no: int = 1,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO onfly_pipeline_run_events(
-            run_id,stage,event_type,image_id,image_name,message,payload_json,error_message,error_trace,attempt_no,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            run_id,
-            stage,
-            event_type,
-            str(image_id or ""),
-            str(image_name or ""),
-            str(message or "")[:2000],
-            _json_compact(payload),
-            str(error_message or "")[:2000],
-            str(error_trace or "")[:4000],
-            max(1, int(attempt_no)),
-            _now(),
-        ),
-    )
-def _yolo_detect_direct(detector: Any, image_bytes: bytes, image_name: str) -> tuple[int, float, str]:
-    """Run YOLO/ONNX detection on raw bytes.
-
-    Uses OnnxPersonDetector.detect_bytes() when available (no temp file, no disk I/O).
-    Falls back to temp file only for detectors that require a filesystem path
-    (YoloPersonDetector, LegacyTf).
-    """
-    if hasattr(detector, "detect_bytes"):
-        r = detector.detect_bytes(image_bytes)
-        return int(r.person_count or 0), float(r.max_person_conf or 0.0), str(r.detection_error or "")
-    # Fallback path — detectors that need a file path
-    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(image_name).suffix or ".jpg") as tmp:
-        tmp.write(image_bytes)
-        tmp_path = Path(tmp.name)
-    try:
-        r = detector.detect(tmp_path)
-        return int(r.person_count or 0), float(r.max_person_conf or 0.0), str(r.detection_error or "")
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
-def _yolo_detect_full_result(detector: Any, image_bytes: bytes, image_name: str) -> Any:
-    """Like _yolo_detect_direct but returns the full DetectionResult (boxes + confidences)."""
-    if hasattr(detector, "detect_bytes"):
-        return detector.detect_bytes(image_bytes)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(image_name).suffix or ".jpg") as tmp:
-        tmp.write(image_bytes)
-        tmp_path = Path(tmp.name)
-    try:
-        return detector.detect(tmp_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
-def _openai_eval(cfg: OnFlyConfig, image_bytes: bytes, image_name: str, prompt_extra: str = "", is_billing_camera: bool = False) -> dict[str, Any]:
-    """Call GPT vision API with the comprehensive retail analytics prompt.
-
-    Returns a dict with customer_count, staff_count, conversions, bounce, notes, and walkins (list of 21-field dicts).
-    prompt_extra: store-specific rule text appended after the base prompt (Option B).
-    is_billing_camera: when True, injects billing context so GPT marks customers as conversions.
-    """
-    if not cfg.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY missing")
-    ext = Path(image_name).suffix.lower().lstrip(".") or "jpeg"
-    if ext == "jpg":
-        ext = "jpeg"
-    data_uri = f"data:image/{ext};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-    billing_ctx = (
-        "\n\nCAMERA CONTEXT — BILLING/CHECKOUT: This image is captured by a camera positioned at a "
-        "billing counter or checkout area. Any Customer visible here is at the payment point. "
-        "Apply Conversion Signal = Yes for all Customers in this image. Set Engagement Type = Billing."
-    ) if is_billing_camera else ""
-    full_prompt = _RETAIL_WALKIN_PROMPT + billing_ctx + (f"\n\nSTORE-SPECIFIC RULES:\n{prompt_extra}" if prompt_extra else "")
-    body = {
-        "model": cfg.openai_model,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": full_prompt},
-                    {"type": "input_image", "image_url": data_uri},
-                ],
-            }
-        ],
-        "text": {"format": {"type": "json_schema", **_walkin_schema()}},
-        "max_output_tokens": 2000,
-    }
-    resp = requests.post(
-        f"{cfg.openai_api_base.rstrip('/')}/responses",
-        headers={"Authorization": f"Bearer {cfg.openai_api_key}", "Content-Type": "application/json"},
-        json=body,
-        timeout=120,
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text[:500]}")
-    payload = resp.json()
-    # Extract output text from Responses API (supports both output_text and output[].content[].text)
-    text = payload.get("output_text")
-    if not isinstance(text, str) or not text.strip():
-        for item in payload.get("output", []):
-            if not isinstance(item, dict):
-                continue
-            for content in item.get("content", []):
-                if isinstance(content, dict) and content.get("type") in {"output_text", "text"}:
-                    chunk = content.get("text", "")
-                    if isinstance(chunk, str) and chunk.strip():
-                        text = chunk
-                        break
-            if isinstance(text, str) and text.strip():
-                break
-    if not isinstance(text, str) or not text.strip():
-        raise RuntimeError("Empty output_text from Responses API")
-    parsed = json.loads(text)
-    rows = parsed.get("rows", [])
-    walkins: list[dict[str, str]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        walkins.append({col: str(row.get(col, "NA") or "NA").strip() for col in _WALKIN_COLUMNS})
-    walkins = _apply_staff_manager_rule(walkins)
-    customer_count = sum(1 for w in walkins if w.get("Included in Analytics", "").lower() == "yes")
-    staff_count = sum(1 for w in walkins if w.get("Role", "").lower() == "staff")
-    conversions = sum(
-        1 for w in walkins
-        if w.get("Conversion Signal", "").lower() == "yes"
-        or w.get("Purchase Signal (Bag)", "").lower() == "yes"
-    )
-    return {
-        "customer_count": customer_count,
-        "staff_count": staff_count,
-        "conversions": conversions,
-        "bounce": 0,
-        "notes": f"{len(walkins)} persons detected ({customer_count} customers, {staff_count} staff)",
-        "walkins": walkins,
-    }
-
-
-def _load_qa_correction_map(store_id: str, data_root: Path) -> dict[tuple[str, str], str]:
-    """
-    Load confirmed QA corrections from the stable JSON written by trigger_retrain.
-    Returns {(filename_lower, track_id_lower): corrected_label} for O(1) lookup.
-    track_id 'frame' means: override ANY session coming from that image.
-    """
-    path = data_root / "models" / f"qa_corrections_{store_id}.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-        out: dict[tuple[str, str], str] = {}
-        for c in data.get("corrections", []):
-            fn = str(c.get("filename") or "").strip().lower()
-            tid = str(c.get("track_id") or "").strip().lower()
-            label = str(c.get("corrected_label") or "").strip().lower()
-            if fn and label:
-                out[(fn, tid)] = label
-        return out
-    except Exception:
-        return {}
-
-
-def _apply_qa_corrections_to_run(
-    conn: sqlite3.Connection,
-    store_id: str,
-    run_id: str,
-    correction_map: dict[tuple[str, str], str],
-) -> int:
-    """
-    Post-processing: for every session written in this run, check if a human-verified
-    correction exists (exact walkin_id match or frame-level match) and override the role.
-    Returns the number of sessions corrected.
-    """
-    if not correction_map:
-        return 0
-    rows = conn.execute(
-        "SELECT id, source_image_name, walkin_id, role FROM onfly_walkin_sessions WHERE store_id=? AND run_id=?",
-        (store_id, run_id),
-    ).fetchall()
-    n = 0
-    for row in rows:
-        img_key = str(row["source_image_name"] or "").strip().lower()
-        wid_key = str(row["walkin_id"] or "").strip().lower()
-        corrected = correction_map.get((img_key, wid_key)) or correction_map.get((img_key, "frame"))
-        if corrected and corrected != str(row["role"] or "").strip().lower():
-            new_role = corrected.capitalize()
-            new_analytics = "Yes" if corrected == "customer" else "No"
-            conn.execute(
-                "UPDATE onfly_walkin_sessions SET role=?, included_in_analytics=? WHERE id=?",
-                (new_role, new_analytics, row["id"]),
-            )
-            n += 1
-    if n:
-        conn.commit()
-    return n
-
-
-def _load_prompt_improvement_text(store_id: str, data_root: Path) -> str:
-    """Load accumulated store-specific prompt additions approved by the user (Option B)."""
-    path = data_root / "models" / f"prompt_improvements_{store_id}.json"
-    if not path.exists():
-        return ""
-    try:
-        data = json.loads(path.read_text())
-        return str(data.get("active_text") or "").strip()
-    except Exception:
-        return ""
-
-
-# ── Camera exclusion + auto-discovery ────────────────────────────────────────
-
-def _load_excluded_cameras(store_id: str) -> set[str]:
-    """Return set of camera_ids marked external or skip in PostgreSQL camera_configs.
-    Non-fatal: returns empty set if PG is unreachable or table doesn't exist.
-    """
-    try:
-        from backend.app.db.session import engine_sync
-        from sqlalchemy import text as sa_text
-        with engine_sync.connect() as pg:
-            rows = pg.execute(
-                sa_text(
-                    "SELECT camera_id FROM camera_configs "
-                    "WHERE store_id=:sid AND camera_type IN ('external','skip','backroom')"
-                ),
-                {"sid": store_id},
-            ).fetchall()
-        return {str(r[0]) for r in rows if r[0]}
-    except Exception:
-        return set()
-
-
-def _load_store_hours(store_id: str) -> tuple[int, int]:
-    """Return (open_total_minutes, close_total_minutes) since midnight for store.
-    Non-fatal: returns default (630, 1290) = 10:30–21:30 if PG unreachable.
-    """
-    try:
-        from backend.app.db.session import engine_sync
-        from sqlalchemy import text as sa_text
-        with engine_sync.connect() as pg:
-            row = pg.execute(
-                sa_text("SELECT open_hour, open_minute, close_hour, close_minute FROM stores WHERE store_id=:sid"),
-                {"sid": store_id},
-            ).fetchone()
-        if row:
-            open_mins = int(row[0] or 10) * 60 + int(row[1] or 30)
-            close_mins = int(row[2] or 21) * 60 + int(row[3] or 30)
-            return (open_mins, close_mins)
-    except Exception:
-        pass
-    return (630, 1290)  # 10:30–21:30
-
-
-def _load_billing_cameras(store_id: str) -> set[str]:
-    """Return set of camera_ids marked billing in PostgreSQL camera_configs.
-    Non-fatal: returns empty set if PG is unreachable.
-    """
-    try:
-        from backend.app.db.session import engine_sync
-        from sqlalchemy import text as sa_text
-        with engine_sync.connect() as pg:
-            rows = pg.execute(
-                sa_text(
-                    "SELECT camera_id FROM camera_configs "
-                    "WHERE store_id=:sid AND camera_type = 'billing'"
-                ),
-                {"sid": store_id},
-            ).fetchall()
-        return {str(r[0]) for r in rows if r[0]}
-    except Exception:
-        return set()
-
-
-def _auto_discover_cameras(sqlite_conn: sqlite3.Connection, store_id: str) -> None:
-    """After a pipeline run, register any new camera_ids found in onfly_image_state
-    into PostgreSQL camera_configs (camera_type='unlabeled'). Already-registered
-    cameras are untouched. Non-fatal.
-    """
-    try:
-        rows = sqlite_conn.execute(
-            """
-            SELECT camera_id, MIN(image_id) AS sample_image_id
-            FROM onfly_image_state
-            WHERE store_id=? AND camera_id IS NOT NULL AND camera_id != ''
-            GROUP BY camera_id
-            """,
-            (store_id,),
-        ).fetchall()
-        if not rows:
-            return
-        from backend.app.db.session import engine_sync
-        from sqlalchemy import text as sa_text
-        from datetime import datetime, timezone
-        now = datetime.now(tz=timezone.utc)
-        with engine_sync.begin() as pg:
-            for cam_id, sample_image_id in rows:
-                existing = pg.execute(
-                    sa_text("SELECT 1 FROM camera_configs WHERE store_id=:sid AND camera_id=:cid"),
-                    {"sid": store_id, "cid": cam_id},
-                ).first()
-                if not existing:
-                    pg.execute(
-                        sa_text(
-                            "INSERT INTO camera_configs "
-                            "(store_id, camera_id, camera_role, floor_name, location_name, "
-                            "entry_line_x, entry_direction, camera_type, sample_image_id, updated_at) "
-                            "VALUES (:sid, :cid, 'INSIDE', '', '', 0.5, 'OUTSIDE_TO_INSIDE', "
-                            "'unlabeled', :sample, :now)"
-                        ),
-                        {"sid": store_id, "cid": cam_id, "sample": sample_image_id or "", "now": now},
-                    )
-    except Exception:
-        pass
-
-
-# ── PostgreSQL sync ───────────────────────────────────────────────────────────
-_PG_WALKIN_COLS = [
-    "store_id", "run_id", "image_id", "source_image_name", "source_folder_name",
-    "camera_id", "business_date", "date", "event_type", "event_time", "walkin_id",
-    "group_id", "role", "entry_time", "exit_time", "time_spent_mins", "session_status",
-    "entry_type", "first_seen_time", "last_seen_time", "matched_session_id", "match_score",
-    "match_reason", "direction_confidence", "match_fingerprint", "debug_parsed_time",
-    "debug_gpt_event_type", "gender", "age_band", "attire_visual_marker", "primary_clothing",
-    "jewellery_load", "bag_type", "clothing_style_archetype", "engagement_type",
-    "engagement_depth", "purchase_signal_bag", "included_in_analytics",
-]
-
-
-def _sync_run_to_postgres(sqlite_conn: sqlite3.Connection, run_id: str, store_id: str) -> None:
-    """Sync walkin sessions for this run from SQLite → PostgreSQL.
-    Strategy: DELETE existing rows for run_id+store_id, then bulk INSERT fresh.
-    Avoids ON CONFLICT complexity on the RANGE-partitioned table (partition key
-    `created_at` cannot be part of a simple unique constraint).
-    Non-fatal: if PostgreSQL is unreachable, the pipeline still succeeds.
-    """
-    cols_sql = ", ".join(_PG_WALKIN_COLS)
-    rows = sqlite_conn.execute(
-        f"SELECT {cols_sql} FROM onfly_walkin_sessions WHERE run_id=? AND store_id=?",
-        (run_id, store_id),
-    ).fetchall()
-    if not rows:
-        return
-
-    from backend.app.db.session import engine_sync
-    from sqlalchemy import text as sa_text
-
-    placeholders = ", ".join([f":{c}" for c in _PG_WALKIN_COLS])
-    insert_sql = sa_text(f"""
-        INSERT INTO onfly_walkin_sessions ({cols_sql})
-        VALUES ({placeholders})
-    """)
-    batch = [dict(zip(_PG_WALKIN_COLS, row)) for row in rows]
-    with engine_sync.begin() as pg_conn:
-        pg_conn.execute(
-            sa_text("DELETE FROM onfly_walkin_sessions WHERE run_id=:run_id AND store_id=:store_id"),
-            {"run_id": run_id, "store_id": store_id},
-        )
-        pg_conn.execute(insert_sql, batch)
-
 
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
@@ -1376,6 +102,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     run_id = str(cfg.run_id or "").strip() or f"{cfg.store_id}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     perf0 = time.perf_counter()
     client = build_source_client(cfg.source_uri, cfg.google_api_key)
+    source_provider = client.provider
     detector = None
     detector_warning = ""
     timings = {"list_ms": 0.0, "detector_init_ms": 0.0, "download_ms": 0.0, "yolo_ms": 0.0, "gpt_ms": 0.0, "report_ms": 0.0}
@@ -1463,12 +190,19 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         gpt_failed = 0
         gpt_retry_pending = 0
         gpt_cache_hits = 0  # GPT calls saved by hash-based result cache
+        smart_sampled = 0
+        duplicate_skips = 0
+        outside_hours_skips = 0
+        excluded_camera_skips = 0
+        gpt_call_count = 0
+        gpt_batch_images = 0
         gpt_quota_unavailable = False
         gpt_quota_error = ""
         gpt_work_list: list[tuple] = []
         bytes_cache: dict[str, bytes] = {}
         gpt_result_map: dict[str, tuple] = {}
         _seen_hashes: set[str] = set()  # Layer 2: SHA256 dedup within this run
+        _sampling_anchors: dict[str, FrameSampleAnchor] = {}
 
         _GPT_EMPTY = {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []}
 
@@ -1504,7 +238,18 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     )
                 try:
                     _is_billing = bool(_billing_cameras and _item.camera_id in _billing_cameras)
-                    _out = _openai_eval(cfg, _img_bytes, _item.image_name, prompt_extra=_prompt_extra, is_billing_camera=_is_billing)
+                    try:
+                        _out = _openai_eval(
+                            cfg,
+                            _img_bytes,
+                            _item.image_name,
+                            prompt_extra=_prompt_extra,
+                            is_billing_camera=_is_billing,
+                        )
+                    except TypeError as _sig_exc:
+                        if "unexpected keyword argument" not in str(_sig_exc):
+                            raise
+                        _out = _openai_eval(cfg, _img_bytes, _item.image_name)
                     _breaker.record_success()
                     return (_item.image_id, _out, "done", "", round((time.perf_counter() - _g0) * 1000.0, 2))
                 except Exception as _exc:
@@ -1512,17 +257,23 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     _is_quota = _is_gpt_quota_error(_gerr)
                     if _is_quota:
                         _breaker.record_failure()
+                        return (
+                            _item.image_id,
+                            _GPT_EMPTY.copy(),
+                            "quota_pending_retry",
+                            _gerr,
+                            round((time.perf_counter() - _g0) * 1000.0, 2),
+                        )
                     if _attempt < _GPT_MAX_ATTEMPTS:
                         # Exponential backoff with jitter — prevents retry storms
                         _base = (2 ** _attempt) + random.uniform(0.0, 1.0)
-                        _delay = min(_base * (4 if _is_quota else 1), 120.0)
+                        _delay = min(_base, 120.0)
                         time.sleep(_delay)
                     else:
                         # Exhausted retries → dead letter queue
-                        _gstatus = "gpt_dlq" if not _is_quota else "quota_pending_retry"
                         return (
                             _item.image_id, _GPT_EMPTY.copy(),
-                            _gstatus, f"[attempt {_attempt}/{_GPT_MAX_ATTEMPTS}] {_gerr}",
+                            "gpt_dlq", f"[attempt {_attempt}/{_GPT_MAX_ATTEMPTS}] {_gerr}",
                             round((time.perf_counter() - _g0) * 1000.0, 2),
                         )
             # Should never reach here
@@ -1533,6 +284,15 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             concurrent.futures.ThreadPoolExecutor(max_workers=_max_w) if cfg.gpt_enabled else None
         )
         _gpt_ordered: list[tuple] = []  # (item, image_bytes, future) — in YOLO submission order
+
+        def _sync_interim_gpt_counts() -> None:
+            _done = 0
+            _failed = 0
+            for _result in gpt_result_map.values():
+                _status = _result[1]
+                _done += int(_status == "done")
+                _failed += int(_status != "done")
+            _update_pipeline_run(conn, run_id, gpt_success_count=_done, gpt_failed_count=_failed)
 
         # ── Parallel download pool ───────────────────────────────────────────
         # As soon as each image passes the skip-check, its download is submitted
@@ -1555,6 +315,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             # Camera exclusion: skip YOLO + GPT for cameras marked external or skip
             if _excluded_cameras and item.camera_id and item.camera_id in _excluded_cameras:
                 skipped += 1
+                excluded_camera_skips += 1
                 conn.execute(
                     "INSERT OR IGNORE INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,"
                     "source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,"
@@ -1575,6 +336,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     _img_mins = int(_ts[11:13]) * 60 + int(_ts[14:16]) if len(_ts) >= 16 else -1
                     if _img_mins >= 0 and not (_store_open_hour <= _img_mins < _store_close_hour):
                         skipped += 1
+                        outside_hours_skips += 1
                         conn.execute(
                             "INSERT OR IGNORE INTO onfly_image_state(store_id,image_id,source_provider,source_uri,source_item_id,"
                             "source_url,image_name,relative_path,date_source,date_display,camera_id,timestamp_hint,"
@@ -1781,6 +543,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     image_id=item.image_id, image_name=item.image_name,
                     message="Skipped — exact duplicate (SHA256 match)")
                 skipped += 1
+                duplicate_skips += 1
                 new_images -= 1
                 conn.commit()
                 continue
@@ -1820,16 +583,14 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     message="YOLO detection started",
                 )
                 y0 = time.perf_counter()
-                if _tracker is not None:
-                    _det = _yolo_detect_full_result(detector, image_bytes, item.image_name)
-                    pcount = int(_det.person_count or 0)
-                    max_conf = float(_det.max_person_conf or 0.0)
-                    yerr = str(_det.detection_error or "")
-                    if not yerr and _det.person_boxes:
-                        _confs = list(_det.person_confidences) if _det.person_confidences else [max_conf] * len(_det.person_boxes)
-                        _tracker.update(list(_det.person_boxes), _confs, image_id=item.image_id)
-                else:
-                    pcount, max_conf, yerr = _yolo_detect_direct(detector, image_bytes, item.image_name)
+                _det = _yolo_detect_full_result(detector, image_bytes, item.image_name)
+                pcount = int(_det.person_count or 0)
+                max_conf = float(_det.max_person_conf or 0.0)
+                yerr = str(_det.detection_error or "")
+                person_boxes = list(_det.person_boxes or [])
+                if _tracker is not None and not yerr and person_boxes:
+                    _confs = list(_det.person_confidences) if _det.person_confidences else [max_conf] * len(person_boxes)
+                    _tracker.update(person_boxes, _confs, image_id=item.image_id)
                 timings["yolo_ms"] += round((time.perf_counter() - y0) * 1000.0, 2)
                 relevant = int(pcount > 0 and not yerr)
                 yolo_relevant += int(relevant == 1)
@@ -1858,6 +619,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 pcount = int(row["person_count"] or 0)
                 max_conf = float(row["yolo_conf"] or 0.0)
                 yerr = str(row["yolo_error"] or "")
+                person_boxes = []
                 _append_pipeline_event(
                     conn,
                     run_id=run_id,
@@ -1869,6 +631,39 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     payload={"yolo_version": yolo_version, "stored_yolo_version": row_yolo_version, "relevant": int(relevant)},
                 )
             gpt_needed = bool(cfg.gpt_enabled and relevant == 1 and gpt_work_needed)
+            if gpt_needed and person_boxes:
+                sample_key = f"{str(item.date_display or item.date_source or '').strip()}|{str(item.camera_id or '').strip()}"
+                sampled, sample_reason, sample_signature, sample_anchor = evaluate_frame_sampling(
+                    _sampling_anchors.get(sample_key),
+                    item,
+                    person_boxes,
+                    pcount,
+                )
+                if sampled and _sampling_anchors.get(sample_key) is not None:
+                    anchor = _sampling_anchors[sample_key]
+                    conn.execute(
+                        "UPDATE onfly_image_state SET gpt_version=?, gpt_status='sampled_wait_anchor', sampled_anchor_image_id=?, sampled_signature=?, sampled_skip_reason=?, last_run_id=? WHERE store_id=? AND image_id=?",
+                        (gpt_version, anchor.image_id, sample_signature, sample_reason, run_id, cfg.store_id, item.image_id),
+                    )
+                    _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="sampled_wait_anchor")
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=PIPELINE_STAGES[4],
+                        event_type="progress",
+                        image_id=item.image_id,
+                        image_name=item.image_name,
+                        message="GPT skipped by smart frame sampling",
+                        payload={"anchor_image_id": anchor.image_id, "sampling_signature": sample_signature},
+                    )
+                    smart_sampled += 1
+                    skipped += 1
+                    new_images -= 1
+                    gpt_needed = False
+                    conn.commit()
+                    continue
+                if sample_anchor is not None:
+                    _sampling_anchors[sample_key] = sample_anchor
 
             if relevant == 1 and cfg.keep_relevant_dir is not None:
                 cfg.keep_relevant_dir.mkdir(parents=True, exist_ok=True)
@@ -1879,8 +674,33 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             if relevant == 1 and cfg.gpt_enabled and gpt_needed:
                 stage = PIPELINE_STAGES[4]
                 _update_pipeline_run(conn, run_id, current_stage=stage)
+                if gpt_quota_unavailable and not cfg.gpt_batch_mode:
+                    conn.execute(
+                        "UPDATE onfly_image_state SET gpt_version=?,gpt_status='quota_pending_retry',gpt_customer_count=0,gpt_staff_count=0,gpt_conversions=0,gpt_bounce=0,gpt_result_json='{}',gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
+                        (gpt_version, str(gpt_quota_error or "quota unavailable")[:1000], run_id, cfg.store_id, item.image_id),
+                    )
+                    _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="waiting_quota", error=gpt_quota_error)
+                    _append_pipeline_event(
+                        conn,
+                        run_id=run_id,
+                        stage=stage,
+                        event_type="retry",
+                        image_id=item.image_id,
+                        image_name=item.image_name,
+                        message="GPT quota already unavailable; queued for retry without new API call",
+                        error_message=str(gpt_quota_error or "")[:1000],
+                    )
+                    gpt_retry_pending += 1
+                    _update_pipeline_run(
+                        conn,
+                        run_id,
+                        retry_status=f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry",
+                    )
+                    conn.commit()
+                    continue
                 if cfg.gpt_batch_mode:
                     # Batch mode: queue for overnight OpenAI Batch API processing
+                    gpt_batch_images += 1
                     queue_image_for_batch(
                         conn,
                         store_id=cfg.store_id,
@@ -1908,6 +728,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         message="GPT queued for overnight batch processing",
                     )
                 else:
+                    gpt_call_count += 1
                     _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="chatgpt", status="pending")
                     _append_pipeline_event(
                         conn,
@@ -1962,14 +783,15 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                         try:
                             _r = _pf.result()
                             gpt_result_map[_r[0]] = _r[1:]
-                            gpt_done += int(_r[2] == "done")
-                            gpt_failed += int(_r[2] != "done")
+                            if _r[2] == "quota_pending_retry":
+                                gpt_quota_unavailable = True
+                                gpt_quota_error = str(_r[3] or "")
                         except Exception as _pe:
                             gpt_result_map[_pi.image_id] = (
                                 {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
                                 "failed", str(_pe), 0.0,
                             )
-                            gpt_failed += 1
+                _sync_interim_gpt_counts()
             _update_pipeline_run(
                 conn,
                 run_id,
@@ -1988,16 +810,16 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     try:
                         _r = _pf.result()
                         gpt_result_map[_r[0]] = _r[1:]
-                        gpt_done += int(_r[2] == "done")
-                        gpt_failed += int(_r[2] != "done")
+                        if _r[2] == "quota_pending_retry":
+                            gpt_quota_unavailable = True
+                            gpt_quota_error = str(_r[3] or "")
                     except Exception as _pe:
                         gpt_result_map[_pi.image_id] = (
                             {"customer_count": 0, "staff_count": 0, "conversions": 0, "bounce": 0, "notes": "gpt_failed", "walkins": []},
                             "failed", str(_pe), 0.0,
                         )
-                        gpt_failed += 1
             _gpt_pool.shutdown(wait=True)
-            _update_pipeline_run(conn, run_id, gpt_success_count=gpt_done, gpt_failed_count=gpt_failed)
+            _sync_interim_gpt_counts()
             conn.commit()
         # Shut down download pool — cancel any futures for images that ended up skipped
         _dl_pool.shutdown(wait=False, cancel_futures=True)
@@ -2023,205 +845,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     "UPDATE onfly_image_state SET gpt_version=?,gpt_status=?,gpt_customer_count=?,gpt_staff_count=?,gpt_conversions=?,gpt_bounce=?,gpt_result_json=?,gpt_error=?,last_run_id=? WHERE store_id=? AND image_id=?",
                     (gpt_version, gstatus, int(_gpt_dict.get("customer_count", 0)), int(_gpt_dict.get("staff_count", 0)), int(_gpt_dict.get("conversions", 0)), int(_gpt_dict.get("bounce", 0)), gpt_summary, str(gerr)[:1000], run_id, cfg.store_id, _item.image_id),
                 )
-                event_time = _parse_filename_time(_item.image_name) or str(_item.timestamp_hint or "").split(" ")[-1].strip()
-                business_date = str(_item.date_display or "").strip()
-
-                def _tsec(t: str) -> int:
-                    try:
-                        hh, mm, ss = [int(x) for x in str(t or "").split(":")]
-                        return hh * 3600 + mm * 60 + ss
-                    except Exception:
-                        return -1
-
-                def _find_best_open_session(row: dict[str, str]) -> tuple[int | None, float, str]:
-                    candidates = conn.execute(
-                        """
-                        SELECT id, camera_id, gender, age_band, primary_clothing, bag_type,
-                               clothing_style_archetype, jewellery_load, attire_visual_marker, last_seen_time
-                        FROM onfly_walkin_sessions
-                        WHERE store_id=? AND business_date=? AND role='Customer'
-                          AND session_status IN ('OPEN','INFERRED_INSIDE_OPEN')
-                        ORDER BY id DESC
-                        """,
-                        (cfg.store_id, business_date),
-                    ).fetchall()
-                    best_id: int | None = None
-                    best_score = -1.0
-                    best_reason = "no_open_session"
-                    now_sec = _tsec(event_time)
-                    for cand in candidates:
-                        score = 0.0
-                        reasons: list[str] = []
-                        if str(cand["camera_id"] or "") == str(_item.camera_id or ""):
-                            score += 2.0
-                            reasons.append("camera")
-                        for key in ["gender", "age_band", "primary_clothing", "bag_type", "clothing_style_archetype", "jewellery_load"]:
-                            rv = str(row.get({
-                                "gender": "Gender",
-                                "age_band": "Age Band",
-                                "primary_clothing": "Primary Clothing",
-                                "bag_type": "Bag Type",
-                                "clothing_style_archetype": "Primary Clothing Style Archetype",
-                                "jewellery_load": "Jewellery Load",
-                            }[key], "") or "").strip().lower()
-                            cv = str(cand[key] or "").strip().lower()
-                            if rv and cv and rv == cv:
-                                score += 1.0
-                                reasons.append(key)
-                        last_sec = _tsec(str(cand["last_seen_time"] or ""))
-                        if now_sec >= 0 and last_sec >= 0:
-                            gap = abs(now_sec - last_sec)
-                            if gap <= 120:
-                                score += 2.0
-                                reasons.append("time<=120s")
-                            elif gap <= 300:
-                                score += 1.0
-                                reasons.append("time<=300s")
-                        if score > best_score:
-                            best_score = score
-                            best_id = int(cand["id"])
-                            best_reason = ",".join(reasons) if reasons else "weak_match"
-                    return best_id, float(best_score if best_score > 0 else 0.0), best_reason
-
-                for walkin in walkins:
-                    role = _norm_role(walkin.get("Role", "") or "")
-                    event_type = _canonical_event_type(walkin)
-                    direction_conf = str(walkin.get("Direction Confidence", "") or "").strip() or "NA"
-                    match_fingerprint = str(walkin.get("Match Fingerprint", "") or "").strip() or _event_fingerprint(walkin, _item.camera_id)
-                    _raw_included = str(walkin.get("Included in Analytics", "") or "").strip()
-                    included = _norm_yn(_raw_included) if _raw_included else ("Yes" if role == "Customer" else "No")
-                    gpt_event = str(walkin.get("Event Type", "") or "").strip()
-
-                    if event_type in {"PASSERBY_OUTSIDE", "POSTER_NON_HUMAN", "STAFF", "UNCLEAR"}:
-                        conn.execute(
-                            """INSERT INTO onfly_walkin_sessions(
-                                   store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                   event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                   session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                   direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                   gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                   clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
-                                event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, "", "", "",
-                                "CLOSED", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "non_customer_event",
-                                direction_conf, match_fingerprint, event_time, gpt_event,
-                                walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), "No",
-                            ),
-                        )
-                        continue
-
-                    match_id, match_score, match_reason = _find_best_open_session(walkin)
-                    strong_entry_match = match_id is not None and match_score >= 6.0
-                    strong_match = match_id is not None and match_score >= 4.0
-
-                    if event_type == "ENTRY":
-                        if strong_entry_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
-                                (event_time, match_score, f"entry_attach:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
-                                    "OPEN", "ENTRY", event_time, event_time, "", 0.0, "new_entry",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    if event_type in {"INSIDE_ACTIVE", "INSIDE_PURCHASING"}:
-                        if strong_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET last_seen_time=?, match_score=?, match_reason=? WHERE id=?",
-                                (event_time, match_score, f"inside_update:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", event_time, "NA", "NA",
-                                    "INFERRED_INSIDE_OPEN", "INFERRED_INSIDE", event_time, event_time, "", 0.0, "inferred_inside",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    if event_type == "EXIT":
-                        if strong_match:
-                            conn.execute(
-                                "UPDATE onfly_walkin_sessions SET exit_time=?, last_seen_time=?, session_status='CLOSED', match_score=?, match_reason=? WHERE id=?",
-                                (event_time, event_time, match_score, f"exit_match:{match_reason}", int(match_id)),
-                            )
-                        else:
-                            conn.execute(
-                                """INSERT INTO onfly_walkin_sessions(
-                                       store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                                       event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                                       session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                                       direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                                       gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                                       clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (
-                                    cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
-                                    event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), "Customer", "NA", event_time, "NA",
-                                    "UNMATCHED_EXIT", "NA", event_time, event_time, "", 0.0, "no_open_match",
-                                    direction_conf, match_fingerprint, event_time, gpt_event,
-                                    walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                                    walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                                    walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                                ),
-                            )
-                        continue
-
-                    # Fallback deterministic record
-                    conn.execute(
-                        """INSERT INTO onfly_walkin_sessions(
-                               store_id, run_id, image_id, source_image_name, source_folder_name, camera_id, business_date, date,
-                               event_type, event_time, walkin_id, group_id, role, entry_time, exit_time, time_spent_mins,
-                               session_status, entry_type, first_seen_time, last_seen_time, matched_session_id, match_score, match_reason,
-                               direction_confidence, match_fingerprint, debug_parsed_time, debug_gpt_event_type,
-                               gender, age_band, attire_visual_marker, primary_clothing, jewellery_load, bag_type,
-                               clothing_style_archetype, engagement_type, engagement_depth, purchase_signal_bag, included_in_analytics
-                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            cfg.store_id, run_id, _item.image_id, _item.image_name, business_date, _item.camera_id, business_date, business_date,
-                            event_type, event_time, walkin.get("Walk-in ID", ""), walkin.get("Group ID", ""), role, event_time, "NA", "NA",
-                            "OPEN", walkin.get("Entry Type", ""), event_time, event_time, "", 0.0, "fallback",
-                            direction_conf, match_fingerprint, event_time, gpt_event,
-                            walkin.get("Gender", ""), walkin.get("Age Band", ""), walkin.get("Attire / Visual Marker", ""), walkin.get("Primary Clothing", ""),
-                            walkin.get("Jewellery Load", ""), walkin.get("Bag Type", ""), walkin.get("Primary Clothing Style Archetype", ""),
-                            walkin.get("Engagement Type", ""), walkin.get("Engagement Depth", ""), walkin.get("Purchase Signal (Bag)", ""), included,
-                        ),
-                    )
+                persist_gpt_sessions(
+                    conn,
+                    store_id=cfg.store_id,
+                    run_id=run_id,
+                    item=_item,
+                    walkins=walkins,
+                )
                 queue_status = "waiting_quota" if gstatus == "quota_pending_retry" else gstatus
                 _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=_item.image_id, stage="chatgpt", status=queue_status, error=gerr)
                 _append_pipeline_event(
@@ -2255,6 +885,19 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     gpt_success_count=gpt_done,
                     gpt_failed_count=gpt_failed,
                     retry_status=retry_status,
+                )
+                conn.commit()
+
+        if smart_sampled:
+            _resolved_sampled = resolve_sampled_frames(conn, store_id=cfg.store_id, run_id=run_id)
+            if _resolved_sampled:
+                _append_pipeline_event(
+                    conn,
+                    run_id=run_id,
+                    stage=PIPELINE_STAGES[4],
+                    event_type="success",
+                    message="Smart-sampled frames resolved from anchor GPT results",
+                    payload={"resolved_frames": int(_resolved_sampled)},
                 )
                 conn.commit()
 
@@ -2310,171 +953,41 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     )
             conn.commit()
 
-        t_rep = time.perf_counter()
-        stage = PIPELINE_STAGES[5]
-        _update_pipeline_run(conn, run_id, current_stage=stage)
-        _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="start", message="Writing report artifacts")
-        cfg.out_dir.mkdir(parents=True, exist_ok=True)
-        store_out = cfg.out_dir / cfg.store_id
-        store_out.mkdir(parents=True, exist_ok=True)
-        rows = conn.execute("SELECT * FROM onfly_image_state WHERE store_id=? ORDER BY date_display,image_name", (cfg.store_id,)).fetchall()
-        frame_df = pd.DataFrame([dict(r) for r in rows])
-        listed_image_ids = {img.image_id for img in images}
-        if not frame_df.empty and listed_image_ids:
-            frame_df = frame_df[frame_df["image_id"].astype(str).isin(listed_image_ids)].copy()
-        if frame_df.empty:
-            frame_df = pd.DataFrame(columns=["store_id", "date_display", "image_name", "source_url", "camera_id", "timestamp_hint", "yolo_relevant", "person_count", "gpt_customer_count", "gpt_staff_count", "gpt_conversions", "gpt_bounce"])
-        frame_df = frame_df.rename(columns={"date_display": "Date", "yolo_relevant": "relevant", "gpt_customer_count": "customer_count", "gpt_staff_count": "staff_count", "gpt_conversions": "conversions", "gpt_bounce": "bounce"})
-        def _folder_from_rel(rel: Any) -> str:
-            txt = str(rel or "").strip().replace("\\", "/")
-            if not txt:
-                return ""
-            first = txt.split("/", 1)[0].strip()
-            parsed = _parse_date_token(first)
-            return parsed.strftime("%d-%m-%Y") if parsed is not None else first
-
-        if "relative_path" in frame_df.columns:
-            frame_df["folder_name"] = frame_df["relative_path"].map(_folder_from_rel)
-        else:
-            frame_df["folder_name"] = frame_df.get("Date", "")
-        if "date_source" in frame_df.columns:
-            frame_df = frame_df.drop(columns=["date_source"])
-        preferred = [
-            "store_id",
-            "image_id",
-            "relative_path",
-            "folder_name",
-            "Date",
-            "image_name",
-            "camera_id",
-            "timestamp_hint",
-        ]
-        ordered = [c for c in preferred if c in frame_df.columns] + [c for c in frame_df.columns if c not in preferred]
-        frame_df = frame_df[ordered]
-        write_warnings: list[str] = []
-
-        def _safe_write_csv(target: Path, df: pd.DataFrame, run_id_value: str) -> Path:
-            target = Path(target)
-            try:
-                df.to_csv(target, index=False)
-                return target
-            except PermissionError:
-                # Keep pipeline non-blocking when host tools (e.g. Excel) lock canonical files.
-                # Write run-scoped fallback so run artifacts are still produced.
-                fallback = target.with_name(f"{target.stem}_{run_id_value}{target.suffix}")
-                df.to_csv(fallback, index=False)
-                write_warnings.append(
-                    f"Locked canonical file '{target.name}', wrote fallback '{fallback.name}' instead."
-                )
-                return fallback
-
-        image_results_path = _safe_write_csv(store_out / "onfly_image_results.csv", frame_df, run_id)
-        agg_df = frame_df.groupby(["store_id", "Date"], as_index=False).agg(total_images=("image_id", "count"), relevant_images=("relevant", "sum"), customer_count=("customer_count", "sum"), conversions=("conversions", "sum"), bounce=("bounce", "sum")) if not frame_df.empty else pd.DataFrame(columns=["store_id", "Date", "total_images", "relevant_images", "customer_count", "conversions", "bounce"])
-        report_csv = cfg.out_dir / "onfly_store_date_report.csv"
-        report_actual_path = report_csv
-        if report_csv.exists():
-            prev = pd.read_csv(report_csv)
-            dates = set(agg_df["Date"].astype(str).tolist())
-            mask = ~((prev.get("store_id", "") == cfg.store_id) & (prev.get("Date", "").astype(str).isin(dates)))
-            merged = pd.concat([prev[mask], agg_df], ignore_index=True)
-            report_actual_path = _safe_write_csv(report_csv, merged, run_id)
-        else:
-            report_actual_path = _safe_write_csv(report_csv, agg_df, run_id)
-        # ── Option A: apply human-verified corrections before CSV export ────────
-        _apply_qa_corrections_to_run(conn, cfg.store_id, run_id, _correction_map)
-
-        # Export per-customer walk-in sessions for this store
-        walkin_rows = conn.execute(
-            """
-            SELECT
-                w.id,
-                w.store_id,
-                w.run_id,
-                w.image_id,
-                w.source_folder_name AS folder_name,
-                w.source_image_name AS image_name,
-                w.camera_id AS camera_id,
-                w.business_date AS business_date,
-                w.date,
-                w.event_type,
-                w.event_time,
-                w.walkin_id,
-                w.group_id,
-                w.role,
-                w.entry_time,
-                w.exit_time,
-                w.time_spent_mins,
-                w.session_status,
-                w.entry_type,
-                w.first_seen_time,
-                w.last_seen_time,
-                w.matched_session_id,
-                w.match_score,
-                w.match_reason,
-                w.direction_confidence,
-                w.match_fingerprint,
-                w.debug_parsed_time,
-                w.debug_gpt_event_type,
-                w.gender,
-                w.age_band,
-                w.attire_visual_marker,
-                w.primary_clothing,
-                w.jewellery_load,
-                w.bag_type,
-                w.clothing_style_archetype,
-                w.engagement_type,
-                w.engagement_depth,
-                w.purchase_signal_bag,
-                w.included_in_analytics,
-                w.created_at
-            FROM onfly_walkin_sessions w
-            WHERE w.store_id=? AND w.run_id=?
-            ORDER BY w.date, w.walkin_id, w.id
-            """,
-            (cfg.store_id, run_id),
-        ).fetchall()
-        if walkin_rows:
-            walkin_df = pd.DataFrame([dict(r) for r in walkin_rows])
-            walkin_df = _apply_customer_group_correction(walkin_df)
-            # Keep canonical export business-friendly by default.
-            # Full audit trail remains available in a dedicated audit CSV.
-            audit_only_cols = [
-                "matched_session_id",
-                "match_score",
-                "match_reason",
-                "direction_confidence",
-                "match_fingerprint",
-                "debug_parsed_time",
-                "created_at",
-            ]
-            business_df = walkin_df.drop(columns=[c for c in ["debug_gpt_event_type", *audit_only_cols] if c in walkin_df.columns])
-            walkin_sessions_path = _safe_write_csv(store_out / "onfly_walkin_sessions.csv", business_df, run_id)
-            _safe_write_csv(store_out / "onfly_walkin_sessions_audit.csv", walkin_df, run_id)
-        else:
-            walkin_sessions_path = store_out / "onfly_walkin_sessions.csv"
-        timings["report_ms"] = round((time.perf_counter() - t_rep) * 1000.0, 2)
-        _append_pipeline_event(
+        summary = write_pipeline_reports(
             conn,
+            cfg=cfg,
             run_id=run_id,
-            stage=stage,
-            event_type="success",
-            message="Report writer completed",
-            payload={
-                "image_results_csv": str(image_results_path.resolve()),
-                "store_date_csv": str(report_actual_path.resolve()),
-                "walkin_rows": int(len(walkin_rows)),
-                "warnings": write_warnings,
-            },
+            source_provider=source_provider,
+            images=images,
+            timings=timings,
+            perf0=perf0,
+            started_at=started_at,
+            yolo_version=yolo_version,
+            gpt_version=gpt_version,
+            detector_warning=detector_warning,
+            skipped=skipped,
+            new_images=new_images,
+            yolo_done=yolo_done,
+            yolo_relevant=yolo_relevant,
+            gpt_done=gpt_done,
+            gpt_failed=gpt_failed,
+            gpt_cache_hits=gpt_cache_hits,
+            smart_sampled=smart_sampled,
+            gpt_retry_pending=gpt_retry_pending,
+            gpt_batch_db_id=gpt_batch_db_id,
+            gpt_batch_queued_count=gpt_batch_queued_count,
+            correction_map=_correction_map,
         )
-        total_ms = round((time.perf_counter() - perf0) * 1000.0, 2)
-        ended_at = _now()
-        retry_status = (
-            f"GPT quota unavailable; {gpt_retry_pending} image(s) queued for retry"
-            if gpt_retry_pending > 0
-            else ""
-        )
-        summary_status = "partial" if (gpt_retry_pending > 0 or gpt_failed > 0) else "success"
-        summary = {"run_id": run_id, "store_id": cfg.store_id, "source_uri": cfg.source_uri, "source_provider": client.provider, "run_mode": cfg.run_mode, "pipeline_version": cfg.pipeline_version, "yolo_version": yolo_version, "gpt_version": gpt_version, "started_at": started_at, "ended_at": ended_at, "total_listed": len(images), "new_images": new_images, "skipped_cached": skipped, "yolo_done": yolo_done, "yolo_relevant": yolo_relevant, "gpt_done": gpt_done, "gpt_failed": gpt_failed, "gpt_cache_hits": gpt_cache_hits, "gpt_retry_pending": gpt_retry_pending, "gpt_batch_mode": cfg.gpt_batch_mode, "gpt_batch_queued": gpt_batch_queued_count, "gpt_batch_db_id": gpt_batch_db_id, "status": summary_status, "retry_status": retry_status, "timings_ms": {**timings, "total_ms": total_ms}, "detector_warning": detector_warning, "write_warnings": write_warnings, "outputs": {"image_results_csv": str(image_results_path.resolve()), "store_report_csv": str(report_actual_path.resolve()), "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else ""}}
+        image_results_path = Path(summary["outputs"]["image_results_csv"])
+        report_actual_path = Path(summary["outputs"]["store_report_csv"])
+        walkin_sessions_path = Path(summary["outputs"]["walkin_sessions_csv"]) if summary["outputs"].get("walkin_sessions_csv") else (cfg.out_dir / cfg.store_id / "onfly_walkin_sessions.csv")
+        ended_at = summary["ended_at"]
+        total_ms = float(summary["timings_ms"]["total_ms"])
+        retry_status = summary.get("retry_status", "")
+        summary_status = summary.get("status", "success")
+        store_out = cfg.out_dir / cfg.store_id
+        summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
+
         # BoT-SORT tracker finalization — produces track_sessions CSV alongside run outputs
         if _tracker is not None:
             try:
@@ -2510,97 +1023,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     summary["outputs"]["track_sessions_csv"] = str(_track_csv.resolve())
             except Exception as _te:
                 summary["tracker_error"] = str(_te)[:500]
-
-        summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         summary["outputs"]["run_summary_json"] = str(summary_path.resolve())
-        timings_df = pd.DataFrame(
-            [
-                {
-                    "run_id": run_id,
-                    "store_id": cfg.store_id,
-                    "pipeline_version": cfg.pipeline_version,
-                    "yolo_version": yolo_version,
-                    "gpt_version": gpt_version,
-                    "started_at": started_at,
-                    "ended_at": ended_at,
-                    "list_ms": float(timings["list_ms"]),
-                    "download_ms": float(timings["download_ms"]),
-                    "yolo_ms": float(timings["yolo_ms"]),
-                    "gpt_ms": float(timings["gpt_ms"]),
-                    "report_ms": float(timings["report_ms"]),
-                    "total_ms": float(total_ms),
-                    "list_hms": _ms_to_hms(float(timings["list_ms"])),
-                    "download_hms": _ms_to_hms(float(timings["download_ms"])),
-                    "yolo_hms": _ms_to_hms(float(timings["yolo_ms"])),
-                    "gpt_hms": _ms_to_hms(float(timings["gpt_ms"])),
-                    "report_hms": _ms_to_hms(float(timings["report_ms"])),
-                    "total_hms": _ms_to_hms(float(total_ms)),
-                }
-            ]
-        )
-        timings_path = store_out / "onfly_process_timings.csv"
-        if timings_path.exists():
-            try:
-                prev_timings = pd.read_csv(timings_path)
-                timings_df = pd.concat([prev_timings, timings_df], ignore_index=True)
-            except Exception:
-                pass
-        _safe_write_csv(timings_path, timings_df, run_id)
-        summary["outputs"]["process_timings_csv"] = str(timings_path.resolve())
-        stage = PIPELINE_STAGES[6]
-        _update_pipeline_run(conn, run_id, current_stage=stage)
-        _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="start", message="Updating dashboard ingestion index")
-        for report_row in agg_df.to_dict(orient="records"):
-            report_date = str(report_row.get("Date", "")).strip()
-            if not report_date:
-                continue
-            conn.execute(
-                """
-                INSERT INTO onfly_report_index(
-                    store_id,business_date,run_id,image_results_csv,walkin_sessions_csv,store_date_csv,summary_json,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(store_id,business_date) DO UPDATE SET
-                    run_id=excluded.run_id,
-                    image_results_csv=excluded.image_results_csv,
-                    walkin_sessions_csv=excluded.walkin_sessions_csv,
-                    store_date_csv=excluded.store_date_csv,
-                    summary_json=excluded.summary_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    cfg.store_id,
-                    report_date,
-                    run_id,
-                    str(image_results_path.resolve()),
-                    str(walkin_sessions_path.resolve()) if walkin_rows else "",
-                    str(report_actual_path.resolve()),
-                    str(summary_path.resolve()),
-                    _now(),
-                ),
-            )
-        _append_pipeline_event(conn, run_id=run_id, stage=stage, event_type="success", message="Dashboard ingestion index updated")
-        _update_pipeline_run(
-            conn,
-            run_id,
-            status=summary_status,
-            current_stage=stage,
-            ended_at=ended_at,
-            images_discovered=len(images),
-            images_skipped=skipped,
-            images_processed=skipped + new_images,
-            images_relevant=yolo_relevant,
-            images_irrelevant=max(0, yolo_done - yolo_relevant),
-            gpt_success_count=gpt_done,
-            gpt_failed_count=gpt_failed,
-            gpt_cache_hits=gpt_cache_hits,
-            report_image_results_csv=str(image_results_path.resolve()),
-            report_walkin_sessions_csv=str(walkin_sessions_path.resolve()) if walkin_rows else "",
-            report_store_date_csv=str(report_actual_path.resolve()),
-            retry_status=retry_status,
-        )
-        conn.execute("INSERT OR REPLACE INTO onfly_run_metrics(run_id,store_id,run_mode,source_provider,started_at,ended_at,total_listed,new_images,skipped_cached,yolo_done,yolo_relevant,gpt_done,total_ms,list_ms,download_ms,yolo_ms,gpt_ms,report_ms,status,summary_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (run_id, cfg.store_id, cfg.run_mode, client.provider, started_at, ended_at, len(images), new_images, skipped, yolo_done, yolo_relevant, gpt_done, total_ms, timings["list_ms"], timings["download_ms"], timings["yolo_ms"], timings["gpt_ms"], timings["report_ms"], "ok", json.dumps(summary, separators=(',', ':'))))
-        conn.commit()
         # ── Sync this run's sessions + discover cameras in PostgreSQL ──────────
         try:
             _sync_run_to_postgres(conn, run_id, cfg.store_id)
@@ -2612,6 +1036,29 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
         except Exception as _cam_exc:
             import logging
             logging.getLogger(__name__).warning("Camera auto-discover failed (non-fatal): %s", _cam_exc)
+        metric_day = business_date if business_date and business_date != "MULTI_DATE" else started_at[:10]
+        est_cost_inr = round((gpt_call_count * 0.06) + (gpt_batch_images * 0.045), 2)
+        write_cost_metrics(
+            conn,
+            metric_day=metric_day,
+            store_id=cfg.store_id,
+            run_id=run_id,
+            counters={
+                "images_listed": len(images),
+                "yolo_relevant": yolo_relevant,
+                "gpt_calls": gpt_call_count,
+                "hash_cache_hits": gpt_cache_hits,
+                "sampled_skips": smart_sampled,
+                "duplicate_skips": duplicate_skips,
+                "outside_hours_skips": outside_hours_skips,
+                "excluded_camera_skips": excluded_camera_skips,
+                "quota_failures": gpt_retry_pending,
+                "gpt_batch_images": gpt_batch_images,
+                "gpt_realtime_images": gpt_call_count,
+                "est_cost_inr": est_cost_inr,
+            },
+        )
+        conn.commit()
         return summary
     except Exception as exc:
         err = str(exc)

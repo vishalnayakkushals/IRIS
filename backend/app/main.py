@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -17,7 +16,7 @@ from backend.app.api.routes_dashboard import router as dashboard_router
 from backend.app.api.routes_detail import router as detail_router
 from backend.app.api.routes_health import router as health_router
 from backend.app.api.routes_jobs import router as jobs_router
-from backend.app.api.routes_onfly import auto_sync_loop, router as onfly_router
+from backend.app.api.routes_onfly import router as onfly_router
 from backend.app.api.routes_qa import router as qa_router
 from backend.app.api.routes_reports import router as reports_router
 from backend.app.api.routes_runs import router as runs_router
@@ -27,13 +26,9 @@ from backend.app.limiter import limiter
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
-
 app = FastAPI(title="IRIS API", version="1.0.0", docs_url="/api/docs", redoc_url=None)
-
-# Attach limiter state and its 429 handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -66,90 +61,6 @@ async def startup_checks() -> None:
         if cfg.environment.lower() == "production":
             raise RuntimeError(f"[FATAL] {msg}")
         logger.warning(msg)
-    # Clean up any zombie runs from a previous process that died mid-run
-    _cleanup_zombie_runs(cfg)
-    _run_sqlite_migrations(cfg)
-    await _run_migrations()
-    asyncio.create_task(auto_sync_loop())
-
-
-async def _run_migrations() -> None:
-    """Apply additive schema migrations that are safe to run on every startup."""
-    from backend.app.db.session import engine
-    from sqlalchemy import text
-    migrations = [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hint VARCHAR(255) DEFAULT ''",
-        "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS camera_type VARCHAR(64) NOT NULL DEFAULT 'unlabeled'",
-        "ALTER TABLE camera_configs ADD COLUMN IF NOT EXISTS sample_image_id VARCHAR(255) NOT NULL DEFAULT ''",
-        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS open_hour INTEGER NOT NULL DEFAULT 10",
-        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS open_minute INTEGER NOT NULL DEFAULT 30",
-        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS close_hour INTEGER NOT NULL DEFAULT 21",
-        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS close_minute INTEGER NOT NULL DEFAULT 30",
-    ]
-    async with engine.begin() as conn:
-        for sql in migrations:
-            try:
-                await conn.execute(text(sql))
-            except Exception as exc:
-                logger.warning("Migration skipped: %s — %s", sql[:60], exc)
-
-
-def _run_sqlite_migrations(cfg) -> None:
-    """Create missing SQLite indexes on startup to speed up all analytics queries."""
-    import sqlite3
-    db_path = cfg.db_path_obj
-    if not db_path.exists():
-        return
-    indexes = [
-        "CREATE INDEX IF NOT EXISTS idx_walkin_store_date ON onfly_walkin_sessions(store_id, business_date)",
-        "CREATE INDEX IF NOT EXISTS idx_walkin_business_date ON onfly_walkin_sessions(business_date)",
-        "CREATE INDEX IF NOT EXISTS idx_walkin_created_at ON onfly_walkin_sessions(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_image_state_store_date ON onfly_image_state(store_id, date_source)",
-    ]
-    try:
-        conn = sqlite3.connect(str(db_path), timeout=10)
-        for sql in indexes:
-            try:
-                conn.execute(sql)
-            except Exception as exc:
-                logger.warning("SQLite index skipped: %s", exc)
-        conn.commit()
-        conn.close()
-        logger.info("SQLite indexes verified.")
-    except Exception as exc:
-        logger.warning("SQLite migration failed: %s", exc)
-
-
-def _cleanup_zombie_runs(cfg) -> None:
-    import sqlite3
-    from datetime import datetime, timezone
-    db_path = cfg.db_path_obj
-    if not db_path.exists():
-        return
-    try:
-        conn = sqlite3.connect(str(db_path), timeout=10)
-        now = datetime.now(timezone.utc).isoformat()
-        result = conn.execute(
-            """
-            UPDATE onfly_pipeline_runs
-            SET status='abandoned',
-                error_message='Process died — API restarted while run was active',
-                ended_at=?, updated_at=?
-            WHERE status='running'
-              AND (
-                last_heartbeat_at IS NULL
-                OR last_heartbeat_at < datetime('now', '-2 minutes')
-              )
-            """,
-            (now, now),
-        )
-        count = result.rowcount
-        conn.commit()
-        conn.close()
-        if count:
-            logger.info("Startup cleanup: marked %d zombie run(s) as abandoned", count)
-    except Exception as exc:
-        logger.warning("Startup zombie cleanup failed: %s", exc)
 
 
 app.include_router(health_router, prefix="/api")
@@ -163,7 +74,6 @@ app.include_router(reports_router, prefix="/api")
 app.include_router(onfly_router, prefix="/api")
 app.include_router(qa_router, prefix="/api")
 
-# Serve React build from /app/backend/app/static with SPA fallback
 _static_dir = Path(__file__).parent / "static"
 _static_dir.mkdir(exist_ok=True)
 _assets_dir = _static_dir / "assets"
@@ -183,13 +93,11 @@ if _index_file.exists():
     def spa_fallback(full_path: str) -> FileResponse:
         if full_path.startswith("api"):
             raise HTTPException(status_code=404, detail="Not found")
-
         requested = (_static_dir / full_path).resolve()
         try:
             requested.relative_to(_static_dir.resolve())
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="Not found") from exc
-
         if requested.is_file():
             return FileResponse(requested)
         return FileResponse(_index_file, headers=_NO_CACHE)

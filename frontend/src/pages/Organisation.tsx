@@ -243,12 +243,12 @@ export default function Organisation() {
         </div>
       </Card>
 
-      {/* Legacy/Access */}
+      {/* Admin recovery */}
       <Card className="p-6 space-y-5">
-        <h3 className="font-semibold text-slate-700 text-sm">Legacy / Access Settings</h3>
+        <h3 className="font-semibold text-slate-700 text-sm">Admin Recovery Settings</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { key: "streamlit_password", label: "Fallback Admin Password" },
+            { key: "streamlit_password", label: "Emergency Admin Password" },
             { key: "admin_password_hint", label: "Admin Password Hint (display only)" },
           ].map(({ key, label }) => (
             <div key={key}>

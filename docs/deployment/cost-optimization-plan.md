@@ -2,231 +2,209 @@
 **Prepared by:** Engineering Team  
 **For:** Management Review  
 **Date:** May 2026  
-**Version:** 3.0 (All major optimizations completed)
+**Version:** 4.0
 
 ---
 
 ## The One-Sentence Summary
 
-> IRIS costs ~₹9,000/month today (1 store pilot). At 150 stores without optimization it would cost ₹80–90 lakh/month. With all optimizations now live, we bring that down to **₹8–12 lakh/month — an 85–90% reduction** — already built and running.
+> IRIS costs ~₹9,000/month today (1 store pilot). At 150 stores without optimization it would cost ₹80–90 lakh/month. With the optimizations already implemented, the operating range is now **~₹8–12 lakh/month**, with one more next-wave optimization plan available beyond that.
 
 ---
 
 ## Part 1 — What Costs Money (Simple Breakdown)
 
-Think of IRIS like a 3-layer sandwich. Each layer has a cost.
+| Layer | Cost driver | Why it matters |
+| --- | --- | --- |
+| GPT layer | OpenAI image analysis | highest variable cost |
+| Detection layer | YOLO inference + downloads | compute + runtime duration |
+| Infrastructure layer | servers, DB, networking | mostly fixed monthly cost |
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  LAYER 3 — GPT API (OpenAI)                                 │
-│  The most expensive part. Reads each relevant image and      │
-│  says "this is a customer / staff / passerby".               │
-│  Cost: ~₹0.50 per 1,000 images analysed.                    │
-│  At 150 stores → 54,000 images/day → BIG number.            │
-├─────────────────────────────────────────────────────────────┤
-│  LAYER 2 — AI Scanner (YOLO, runs on server)                │
-│  Scans every image first. Only ~30% have a person.           │
-│  Images without people NEVER reach GPT.                      │
-│  Cost: Server electricity / EC2 compute.                     │
-├─────────────────────────────────────────────────────────────┤
-│  LAYER 1 — Infrastructure (Server + Database + Storage)      │
-│  Always-on servers, database, load balancer.                 │
-│  Fixed monthly cost. Doesn't grow with image volume.         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**The rule is simple: Reduce what reaches Layer 3, and Layer 3 cost falls.**
+The rule remains simple: **the more intelligently we stop frames before GPT, the lower the operating cost.**
 
 ---
 
 ## Part 2 — What We Have Already Fixed (Done ✅)
 
-All of the following are live in production today. No further engineering work needed on any of these.
+All items below are already developed and reflected in the current codebase.
 
-| # | What We Fixed | How It Saves Money | Saving |
-|---|---|---|---|
-| 1 | **YOLO filter gates GPT** | Only images with a person detected go to GPT. 70% of images are skipped entirely. Without this, every image would cost GPT money. | **70% fewer GPT calls** |
-| 2 | **Duplicate image skip (SHA-256 hash cache)** | Each image has a fingerprint. If the same image appears again — Drive re-sync, camera glitch, retry — GPT result is reused for free. Walk-in sessions are also copied automatically. Visible in Reports > Image Scans as `cached_from_hash`. | **5–10% fewer GPT calls** |
-| 3 | **Already-processed skip** | When a pipeline run restarts, it remembers which images it already scanned. Previously, a restart would re-scan everything and re-pay GPT. Fixed. | **Saves full re-run cost** |
-| 4 | **Switched from GPT-4o → GPT-4.1-mini** | Same quality for retail classification. GPT-4.1-mini costs ~70% less than GPT-4o. | **~₹5 lakh/month saved at 150 stores** |
-| 5 | **Removed GPU requirement** | YOLO now runs on ONNX Runtime (CPU-only). Previously required GPU instances (2.5× more expensive). Server is now a standard compute instance. | **~₹29,000/month saved** |
-| 6 | **Circuit breaker on GPT failures** | If GPT returns errors 5 times in a row, the system pauses automatically. Previously, a GPT outage caused 100s of retries — each retry still costs money even if it fails. | **Eliminates cost storms** |
-| 7 | **Memory management** | After GPT analyses an image, the image bytes are immediately cleared from memory. Without this, a 5,000-image run would consume 1.5 GB of RAM and crash, triggering a costly full re-run. | **Prevents crash → re-run costs** |
-| 8 | **Parallel image downloads** | 8 downloads happen simultaneously instead of one-by-one. A run that took 41 minutes now takes ~5 minutes. Less server time per run = less EC2 cost. | **~8× faster per run** |
-| 9 | **Role/date normalization** | Fixes data quality at write time. Prevents corrupted analytics that require re-running the pipeline to fix. | **Prevents expensive re-runs** |
-| 10 | **SQLite → PostgreSQL sync** | Pipeline data flows correctly to the dashboard database. Previously missing data meant manual investigation time. | **Saves engineering time** |
-| 11 | **Store-Hours Filter** | Images taken outside store operating hours (set per-store in Admin > Camera Zones) are auto-marked `outside_hours` — no YOLO download, no GPT call. At 150 stores, cuts images processed per day from ~1,200 to ~550 per store. Visible in Reports > Image Scans. | **30–40% fewer GPT calls** |
-| 12 | **Camera-Type Exclusion** | Cameras labelled `external`, `parking`, or `skip` in Admin > Camera Zones are completely excluded from the pipeline. Auto-discovery registers new cameras for admin review after each scan run. Status shows as `camera_excluded` in Reports. | **15–25% fewer GPT calls** |
-| 13 | **OpenAI Batch API (overnight mode)** | Instead of paying full real-time price, images are queued during the evening pipeline run and submitted as a batch to OpenAI. Results are ready by 6 AM at exactly **50% of the real-time price**. One checkbox toggle in Scheduler Dashboard. Laptop can close after submission — a Task Scheduler job wakes it at 6 AM to retrieve results. | **50% of all GPT cost** |
+| # | Optimization | How it saves money | Evidence / code path |
+| --- | --- | --- | --- |
+| 1 | YOLO relevance gate | only relevant frames go to GPT | `src/iris/onfly_pipeline.py` |
+| 2 | SHA-256 duplicate reuse | exact duplicate frames reuse GPT result for free | `src/iris/download_manager.py`, `src/iris/onfly_pipeline.py` |
+| 3 | Already-processed/version skip | prevents full rerun charges on retries/restarts | `src/iris/onfly_pipeline.py`, `src/iris/pipeline_events.py` |
+| 4 | GPT-4.1-mini instead of GPT-4o | lower price per semantic call | runtime config + prompt path |
+| 5 | CPU-only ONNX Runtime | removes mandatory GPU instances | `src/iris/iris_analysis.py` |
+| 6 | Circuit breaker + quota-aware retry | avoids retry storms during GPT outages/quota issues | `src/iris/gpt_runtime.py`, `src/iris/onfly_pipeline.py` |
+| 7 | Memory cleanup after GPT | prevents OOM → rerun waste | `src/iris/onfly_pipeline.py` |
+| 8 | Parallel downloads | reduces runtime and worker occupancy | `src/iris/onfly_pipeline.py`, `src/iris/download_manager.py` |
+| 9 | Role/date normalization | avoids bad data and reprocessing work | `src/iris/session_reconstruction.py` |
+| 10 | SQLite → PostgreSQL sync path | avoids manual recovery work | `src/iris/session_reconstruction.py` |
+| 11 | Store-hours filter | excludes outside-hours frames before expensive stages | `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+| 12 | Camera exclusion | excludes non-business cameras | `src/iris/session_reconstruction.py`, `src/iris/onfly_pipeline.py` |
+| 13 | OpenAI Batch API | 50% price reduction for overnight GPT work | `src/iris/gpt_batch.py`, `src/iris/onfly_pipeline.py` |
+| 14 | **Frame Sampling (Smart Skip)** | skips repetitive consecutive frames after the anchor frame is analyzed | `src/iris/download_manager.py`, `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+
+### Frame Sampling (Smart Skip) — now live
+
+**What changed:**
+- consecutive frames on the same camera/date with similar YOLO box signatures now reuse the first “anchor” frame
+- only the anchor goes to GPT
+- later sampled frames are marked and resolved from the anchor result
+
+**Expected saving:**
+- **20–30% of the remaining GPT cost** after the earlier filters
+- At 150 stores, this is expected to remove another **₹5–12 lakh/month** from the pre-optimization GPT envelope, depending on store density and repeat-frame frequency
 
 ---
 
-## Part 3 — Current Cost (Today, 1 Store Pilot — BLRRRN)
+## Part 3 — Current Cost (Pilot)
 
 | Item | Monthly Cost | Notes |
-|---|---|---|
-| Server (development mode, no AWS yet) | ₹0 | Running locally |
-| OpenAI GPT API | ~₹1,500–3,000 | Based on 3,702 GPT calls made so far |
-| Google Drive API | ₹0 | Free within quota |
-| PostgreSQL (local) | ₹0 | Running locally |
-| **Total today** | **~₹1,500–3,000/month** | Pilot scale only |
+| --- | --- | --- |
+| Server | ₹0 | local/dev mode |
+| OpenAI GPT | ~₹1,500–3,000 | pilot-scale activity |
+| Google Drive API | ₹0 | within quota |
+| PostgreSQL | ₹0 | local/dev mode |
+| **Total** | **~₹1,500–3,000/month** | pilot scale |
 
 ---
 
-## Part 4 — Projected Cost at Scale (Without vs With Optimization)
+## Part 4 — Projected Cost at Scale (150 Stores)
 
-This is the key table for the manager.
-
-### At 150 Stores Full Production
-
-| Cost Item | Without Optimization | With All Optimizations (Now Live) | Saving |
-|---|---|---|---|
-| **OpenAI GPT API** | ₹54–1,05,000/day | ₹7,000–14,000/day | **~87% less** |
-| **AWS Infrastructure** | ₹63,000/month | ₹45,075/month | **28% less** |
-| **Google Drive** | ₹0 | ₹0 | — |
-| **Total Monthly** | **₹82–1,20 lakh/month** | **₹8–12 lakh/month** | **~87% saving** |
-
-> **How is GPT ~87% less?**
-> Compounding filters already live: YOLO removes 70% of images → store-hours filter removes another 54% of remainder → camera exclusion removes 15–25% → hash cache eliminates duplicates → Batch API cuts remaining price by 50%. Each filter multiplies on the previous one.
+| Cost Item | Without optimization | With implemented optimizations | Estimated reduction |
+| --- | --- | --- | --- |
+| GPT API | ₹54–1,05,000/day | ₹7,000–14,000/day | ~87% lower |
+| Infrastructure | ₹63,000/month | ₹45,075/month | 28% lower |
+| **Total monthly** | **₹82–1,20 lakh/month** | **₹8–12 lakh/month** | **~87% lower variable cost** |
 
 ---
 
-## Part 5 — Remaining Optimization (1 item left)
+## Part 5 — What Still Needs Instrumentation / Proof
 
-All major optimizations are complete. One engineering item remains, plus the AWS contract savings are already being captured.
+The engineering work is largely live. The remaining maturity gap is **visibility**, not missing optimization code.
 
----
+The app now writes the following per-store/day proof points into `onfly_cost_metrics`:
+- GPT calls/store/day
+- images listed
+- YOLO relevant images
+- hash cache hits
+- smart sampled skips
+- duplicate skips
+- outside-hours skips
+- excluded-camera skips
+- quota failures / paused retries
+- batch vs realtime image split
+- estimated GPT spend (INR)
 
-### Frame Sampling (Smart Skip) — Planned
-**Difficulty:** Medium (~1 week) | **Saving:** 20–30% of remaining GPT cost
+Runtime API:
+- `GET /api/reports/cost-metrics`
 
-Cameras take a photo every 30 seconds. A customer shopping for 10 minutes generates 20 images of the same person — each one currently sent to GPT. We only need 2–3 to confirm the visit.
-
-**How it works:** Detect consecutive frames with similar YOLO bounding box positions (same person, same region). Analyse the first frame only; mark the rest as `sampled` — no GPT call. Walk-in session uses data from the analysed frame.
-
-**Expected impact at 150 stores:** ₹5–12 lakh/month additional saving on top of existing optimizations.
-
----
-
-### AWS Reserved Instances — Savings Already Being Captured
-
-AWS implementation is under way. For reference, the exact savings:
-
-| Instance | On-Demand/month | 1-Year Reserved/month | Monthly Saving |
-|---|---|---|---|
-| App Server (c6i.large) | ₹5,165 | ₹3,330 | ₹1,835 |
-| AI Worker (c6i.2xlarge) | ₹28,580 | ₹18,415 | ₹10,165 |
-| Database (db.t4g.medium) | ₹16,345 | ₹10,420 | ₹5,925 |
-| Load Balancer + misc | ₹12,910 | ₹12,910 | — |
-| **Total** | **₹63,000/month** | **₹45,075/month** | **₹17,925/month** |
-
-**Annual saving: ₹2,15,100** — captured from day one of committed billing with zero engineering work.
+This is the bridge from “good engineering idea” to “management-trustworthy measurement.”
 
 ---
 
-## Part 6 — Implementation Timeline (Final Status)
+## Part 6 — Implementation Status Timeline
 
-```
-COMPLETED ✅  (all live, no further action needed)
-──────────────────────────────────────────────────────
-  YOLO Filter                 → 70% of images never reach GPT
-  GPT-4o → GPT-4.1-mini       → 70% cheaper per GPT call
-  GPU → CPU-only (ONNX)       → ₹29,000/month infra saving
-  Parallel downloads           → 8× faster runs
-  Already-processed skip       → zero re-run cost
-  Circuit breaker              → eliminates quota cost storms
-  SHA-256 Hash Cache           → 5–10% duplicate elimination
-  Store-Hours Filter           → 30–40% fewer images processed
-  Camera-Type Exclusion        → 15–25% fewer images processed
-  OpenAI Batch API             → 50% off all remaining GPT calls
-  AWS Reserved Instances       → ₹17,925/month saved (in progress)
+```text
+COMPLETED ✅
+─────────────────────────────────────────────
+YOLO relevance gate
+GPT-4.1-mini switch
+CPU-only ONNX Runtime
+Parallel downloads
+Already-processed skip
+SHA-256 duplicate reuse
+Circuit breaker + quota queueing
+Store-hours filter
+Camera exclusion
+OpenAI Batch API
+Frame Sampling (Smart Skip)
+Cost-metric writes
 
-NEXT  (Month 2 — one item remaining)
-──────────────────────────────────────────────────────
-  Frame Sampling               → 20–30% of remaining GPT
-                                 (cameras take photo every 30s;
-                                  skip frames of same person)
+NEXT WAVE (planning)
+─────────────────────────────────────────────
+store/day anomaly alerts
+adaptive sampling by camera density
+business-priority GPT routing
+regional cost dashboard
 ```
 
-**Total achieved reduction: ~87% of GPT cost + 28% of infra cost, through compounding filters already live.**
+---
+
+## Part 7 — ROI Summary
+
+| Item | Value |
+| --- | --- |
+| Conservative monthly IRIS run cost (150 stores) | ~₹3–5.5 lakh |
+| Manual counting replacement + staffing gains | ~₹50 lakh/month or more |
+| Conservative monthly ROI | ~9× |
 
 ---
 
-## Part 7 — ROI Analysis
+## Part 8 — Measured Facts vs Assumptions
 
-### Is IRIS Worth Building?
+### Measured facts (from system behavior / current implementation)
+- GPT calls are reduced before inference by multiple live filters.
+- Batch mode halves the price for images processed through the OpenAI batch path.
+- Smart sampling is now implemented in the pipeline and writes `sampled_skips` metrics.
+- Cost metrics are persisted into SQLite in `onfly_cost_metrics`.
 
-**What IRIS costs to run (150 stores, all optimizations live):**
+### Projected assumptions (management planning numbers)
+- 150-store scale ranges
+- ₹5–12 lakh/month incremental saving attributed to smart sampling
+- total monthly range of ₹8–12 lakh at scale
 
-| Item | Monthly |
-|---|---|
-| AWS Infrastructure (reserved, in progress) | ₹45,075 |
-| OpenAI GPT (with all filters + batch mode) | ₹2,10,000–4,20,000 |
-| Engineering maintenance | ₹50,000 (est.) |
-| **Total** | **~₹3–5.5 lakh/month** |
-
-**What IRIS generates for the business:**
-
-| Benefit | How It Works | Value |
-|---|---|---|
-| **Avoid over-staffing** | Know exactly when footfall peaks. Schedule staff to match. A store with 12 staff when it needs 8 saves ₹50,000/month in salary waste per store. | **₹75 lakh/month at 150 stores** |
-| **Catch under-conversion** | If 500 people walked in but only 50 bought, something is wrong. IRIS flags it. Store manager investigates. Improving conversion 1% at ₹5 lakh/day store = ₹50,000/day. | **₹1–5 crore/month potential** |
-| **Merchandising decisions** | Which display gets attention? Which corner is dead? Real footfall heatmaps replace guesswork in planogram decisions. | **Reduces markdown waste** |
-| **Theft / security correlation** | High footfall, low billing → flag for security review. | **Reduces shrinkage** |
-| **Replace manual counting** | Currently stores hire 1 person to stand and count customers. ₹15,000–20,000/month/store × 150 stores = ₹22.5–30 lakh/month just in manual counters. | **₹25 lakh/month saved** |
-
-**Simple ROI math:**
-
-```
-Monthly cost of IRIS (all optimizations live, 150 stores):  ₹3–5.5 lakh
-Value from better staffing alone:                           ₹25–75 lakh/month
-Value from replacing manual counters:                       ₹25 lakh/month
-
-Even the most conservative estimate:
-  Savings: ₹50 lakh/month
-  Cost:    ₹5.5 lakh/month
-  ROI:     ~9× return every month
-```
-
-**Payback period:** If we invest ₹50 lakh in development and setup costs, the platform pays that back within **1 month** of running at full scale.
+These assumptions should continue to be validated against live `cost-metrics` exports as more real stores go online.
 
 ---
 
-## Part 8 — Decision Summary for Management
+## Part 9 — Engineering Appendix
 
-| Question | Answer |
-|---|---|
-| What is the #1 cost? | OpenAI GPT API calls (~80% of total cost) |
-| Have we optimized it? | **Yes — all major optimizations are live.** 87% GPT cost reduction achieved. |
-| How long did optimization take? | Completed within the pilot phase — no additional timeline needed |
-| Does optimization affect data quality? | No — same accuracy, smarter about which images to analyse |
-| Is IRIS worth the investment? | Yes — conservative ROI is 9× monthly at 150 stores |
-| What would it have cost without optimization? | ₹80–1,20 lakh/month GPT cost alone at 150 stores |
-| What does it cost now with optimization? | ₹3–5.5 lakh/month total (GPT + infra + maintenance) |
-| AWS infrastructure cost? | ₹45,075/month (reserved) — saving ₹17,925/month vs on-demand. Implementation under way. |
-| What engineering is still pending? | Frame Sampling only (~1 week) — 20–30% additional GPT saving |
+### Exact code paths per optimization
 
----
+| Optimization | Primary code path |
+| --- | --- |
+| Relevance gate | `src/iris/onfly_pipeline.py` |
+| Duplicate reuse | `src/iris/download_manager.py`, `src/iris/onfly_pipeline.py` |
+| Smart sampling | `src/iris/download_manager.py`, `src/iris/session_reconstruction.py`, `src/iris/onfly_pipeline.py` |
+| Cost metrics | `src/iris/report_writer.py`, `backend/app/api/report_queries.py`, `backend/app/api/routes_reports.py` |
+| Batch mode | `src/iris/gpt_batch.py`, `src/iris/onfly_pipeline.py` |
+| Store-hours skip | `src/iris/session_reconstruction.py`, `src/iris/onfly_pipeline.py` |
+| Camera exclusion | `src/iris/session_reconstruction.py`, `src/iris/onfly_pipeline.py` |
 
-## Part 9 — What Remains
-
-Only one engineering item and one operational task remain.
-
-**Engineering (1 week):** Frame Sampling — skip consecutive frames of the same person detected by YOLO. Saves 20–30% of remaining GPT cost. Existing team, no external spend.
-
-**AWS:** Infrastructure migration is under way. Committed reserved pricing saves ₹17,925/month (₹2,15,100/year) vs on-demand. No further decisions needed — implementation in progress.
-
-**OpenAI API** is pay-as-you-go — cost scales exactly with usage and is already reduced by ~87% through live optimizations. No contract or commitment required.
-
-### Cost Summary — Before vs After
-
-| | Before optimization | After (all live now) | Remaining saving (Frame Sampling) |
-|---|---|---|---|
-| GPT cost (150 stores) | ₹54–1,05,000/day | ₹7,000–14,000/day | ₹1,400–4,200/day more |
-| AWS infra | ₹63,000/month | ₹45,075/month | — |
-| **Total monthly** | **₹82–1,20 lakh** | **₹8–12 lakh** | **₹6–9 lakh target** |
+### Measurement basis
+- Source of proof: `onfly_cost_metrics`
+- Granularity: per store, per day, per run
+- Sample stores used in the current code path: pilot / RR Nagar / test-store flows where available
 
 ---
 
-*Document path: `docs/deployment/cost-optimization-plan.md`*  
-*Engineering contact: Vishal Nayak — vishal.nayak@kushals.com*
+## Part 10 — Next Cost Optimization Plan (Proposal)
+
+These are the next opportunities **after** the currently shipped savings.
+
+| Priority | Opportunity | Why it matters | Complexity |
+| --- | --- | --- | --- |
+| P0 | Adaptive sampling by camera density | aggressive sampling on slow-changing static cameras, conservative sampling on billing/entry cameras | Medium |
+| P0 | Store-priority routing | force realtime only for billing/entry cameras and queue the rest to batch by policy | Medium |
+| P1 | Prompt compaction / schema slimming | reduce tokens per GPT call while keeping required fields stable | Medium |
+| P1 | Cross-run visual fingerprint reuse | reuse GPT output for “same attire + same camera + short interval” even when SHA hash differs | High |
+| P1 | Regional cost anomaly dashboard | catch runaway stores/cameras before the month-end bill | Low |
+| P2 | Hybrid lightweight classifier before GPT | add a cheap internal non-GPT semantic gate for banner/pedestrian/staff-heavy frames | High |
+
+### Recommended next move
+Start with:
+1. adaptive sampling by camera density
+2. store-priority realtime-vs-batch routing
+3. cost dashboard on top of `GET /api/reports/cost-metrics`
+
+These give the best next ROI without destabilizing the main app.
+
+---
+
+## Part 11 — Document Notes
+
+- This file is a source-of-truth cost document.
+- Update it whenever a cost-saving optimization becomes live.
+- Do not move implemented work back into “planned” sections.

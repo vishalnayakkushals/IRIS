@@ -170,8 +170,8 @@ def test_onfly_runs_gpt_when_current_yolo_turns_stale_irrelevant_row_relevant(tm
 def test_onfly_marks_quota_errors_for_retry_without_changing_yolo_role(tmp_path: Path, monkeypatch) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True, exist_ok=True)
-    for name in ["2026-04-23_09-30-19_D01-1.jpg", "2026-04-23_09-31-20_D01-2.jpg"]:
-        Image.new("RGB", (32, 32), color="white").save(source_dir / name)
+    Image.new("RGB", (32, 32), color="white").save(source_dir / "2026-04-23_09-30-19_D01-1.jpg")
+    Image.new("RGB", (32, 32), color="black").save(source_dir / "2026-04-23_10-31-20_D02-2.jpg")
 
     db_path = tmp_path / "store_registry.db"
     out_dir = tmp_path / "exports"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import asyncio
 from pathlib import Path
 import subprocess
 
@@ -40,11 +41,13 @@ def main() -> None:
         sys.path.insert(0, str(repo_root))
 
     from iris.runtime_bootstrap import load_env_file, resolve_runtime_paths
+    from backend.app.runtime_startup import prepare_runtime
 
     env_file = load_env_file()
     runtime = resolve_runtime_paths()
     runtime["data_dir"].mkdir(parents=True, exist_ok=True)
     runtime["db_path"].parent.mkdir(parents=True, exist_ok=True)
+    asyncio.run(prepare_runtime(runtime["db_path"]))
 
     pid_file = repo_root / "deploy" / "no_docker" / "runtime_logs" / "pids" / "web.pid"
     _kill_old_server(pid_file)

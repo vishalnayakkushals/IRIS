@@ -1,34 +1,49 @@
 # IRIS Cloud Deployment Guide
 
-Single-service production shape for IRIS:
+This is the supported production deployment story for IRIS.
 
-- one FastAPI process
-- one embedded React build
-- one internal application port: `8767`
-- one primary database: PostgreSQL
+## Canonical Production Shape
 
-This folder is the supported production deployment path for the app you are demoing on `http://localhost:8767`.
+IRIS is now a **multi-service Python application** with one web process and three dedicated background workers:
 
-## Target Shape
+| Service | Responsibility | Systemd unit |
+| --- | --- | --- |
+| FastAPI + React SPA | User-facing web/API app | `iris-api.service` |
+| Core scheduler worker | operational recurring jobs | `iris-core-scheduler.service` |
+| On-fly scheduler worker | store scan schedule, retries, run orchestration | `iris-onfly-scheduler.service` |
+| Store auto-sync worker | mapped parent-folder polling | `iris-store-auto-sync.service` |
+| PostgreSQL | platform metadata + dashboard truth | managed or self-hosted |
+| Nginx | TLS and reverse proxy | `nginx` |
 
-| Component | Purpose |
-|---|---|
-| `iris-api.service` | FastAPI + embedded React SPA on `127.0.0.1:8767` |
-| PostgreSQL 16/17 | Primary database |
-| Nginx | Public reverse proxy and TLS |
+The web process does **not** run scheduler loops in-process anymore.
 
-Redis, Celery, and Streamlit are not part of the supported deployment story in this folder.
+---
 
-## Port Map
+## Ports
 
 | Port | Service | Exposure |
-|---|---|---|
+| --- | --- | --- |
 | 80 | Nginx HTTP | Public |
 | 443 | Nginx HTTPS | Public |
-| 8767 | IRIS app (FastAPI + React) | Internal only |
+| 8767 | IRIS web/API | Internal only |
 | 5432 | PostgreSQL | Internal only |
 
-Expose only `80` and `443` publicly.
+---
+
+## Files In This Directory
+
+| File | Purpose |
+| --- | --- |
+| `setup_ubuntu.sh` | VM bootstrap |
+| `.env.production.example` | production environment template |
+| `iris-api.service` | web/API systemd unit |
+| `iris-core-scheduler.service` | recurring scheduler worker |
+| `iris-onfly-scheduler.service` | on-fly scheduler worker |
+| `iris-store-auto-sync.service` | mapped-store polling worker |
+| `nginx.conf` | reverse proxy configuration |
+| `postgres_init.sql` | manual PostgreSQL bootstrap |
+
+---
 
 ## Deployment Steps
 
@@ -36,12 +51,6 @@ Expose only `80` and `443` publicly.
 
 ```bash
 sudo bash /path/to/deploy/cloud/setup_ubuntu.sh
-```
-
-Optional password injection:
-
-```bash
-sudo IRIS_DB_PASSWORD='your_secure_password' bash setup_ubuntu.sh
 ```
 
 ### 2. Copy the code
@@ -70,15 +79,12 @@ sudo nano /opt/iris/shared/iris.env
 ```
 
 Minimum required values:
-
-```text
-POSTGRES_URL
-POSTGRES_SYNC_URL
-JWT_SECRET
-OPENAI_API_KEY
-GOOGLE_API_KEY
-IRIS_DATA_ROOT
-```
+- `POSTGRES_URL`
+- `POSTGRES_SYNC_URL`
+- `JWT_SECRET`
+- `OPENAI_API_KEY`
+- `GOOGLE_API_KEY`
+- `IRIS_DATA_ROOT`
 
 ### 5. Prepare the database schema
 
@@ -90,25 +96,20 @@ sudo -u iris bash -c "
 "
 ```
 
-This is the supported production-safe schema bootstrap path. Do not use `alembic upgrade head` here.
-
-### 6. Seed the first admin user
+### 6. Install and enable all services
 
 ```bash
-cd /opt/iris/app
-sudo -u iris bash -c "
-  IRIS_ENV_FILE=/opt/iris/shared/iris.env \
-  /opt/iris/app/.venv/bin/python scripts/add_user.py \
-    --email admin@yourdomain.com \
-    --password 'ChangeMe123!'
-"
+sudo cp /opt/iris/app/deploy/cloud/iris-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable iris-api iris-core-scheduler iris-onfly-scheduler iris-store-auto-sync
+sudo systemctl start iris-api iris-core-scheduler iris-onfly-scheduler iris-store-auto-sync
 ```
 
-### 7. Start the app
+### 7. Validate
 
 ```bash
-sudo systemctl start iris-api
-sudo systemctl status iris-api
+curl http://127.0.0.1:8767/api/health
+sudo systemctl status iris-api iris-core-scheduler iris-onfly-scheduler iris-store-auto-sync
 ```
 
 ### 8. Enable TLS
@@ -119,58 +120,32 @@ sudo certbot --nginx -d iris.your-domain.com
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-## Validation
+---
+
+## Operational Notes
+
+- `scripts/start_api_server.py` runs runtime preparation first (`backend/app/runtime_startup.py`) before spawning uvicorn.
+- `scripts/start_scheduler_worker_service.py`, `scripts/start_onfly_scheduler_service.py`, and `scripts/start_store_auto_sync_service.py` are the supported worker entry points.
+- SQLite remains the fast pipeline-state store; PostgreSQL remains the dashboard/platform source-of-truth.
+- The 3 PM batch-saving schedule remains untouched and continues to run through the worker model.
+
+---
+
+## Restarts
 
 ```bash
-# Quick health check
-curl http://localhost:8767/api/health
-sudo systemctl status iris-api
-
-# Full smoke test (run from /opt/iris/app)
-sudo -u iris /opt/iris/app/.venv/bin/python scripts/smoke_test.py \
-  --url http://localhost:8767 \
-  --email admin@yourdomain.com \
-  --password 'YourAdminPassword'
-
-# After TLS is up, re-run against the public domain
-python scripts/smoke_test.py \
-  --url https://iris.your-domain.com \
-  --email admin@yourdomain.com \
-  --password 'YourAdminPassword'
-```
-
-All 7 checks must pass before handing over to users:
-
-- Health endpoint responds 200
-- React SPA loads (HTML served)
-- Login returns a JWT token
-- Dashboard overview loads
-- Store list returns data
-- Pipeline run history accessible
-- Security headers present (X-Frame-Options, X-Content-Type-Options)
-
-## Restarting
-
-```bash
-sudo systemctl restart iris-api
+sudo systemctl restart iris-api iris-core-scheduler iris-onfly-scheduler iris-store-auto-sync
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-## Backups
+---
+
+## Smoke Test
 
 ```bash
-sudo mkdir -p /opt/iris/data/backups
-sudo chown iris:iris /opt/iris/data/backups
-sudo -u postgres pg_dump -Fc iris_db -f /opt/iris/data/backups/iris_db_$(date +%Y%m%d_%H%M%S).dump
+cd /opt/iris/app
+sudo -u iris IRIS_ENV_FILE=/opt/iris/shared/iris.env /opt/iris/app/.venv/bin/python scripts/smoke_test.py \
+  --url http://127.0.0.1:8767 \
+  --email admin@yourdomain.com \
+  --password 'YourAdminPassword'
 ```
-
-## Files In This Directory
-
-| File | Purpose |
-|---|---|
-| `setup_ubuntu.sh` | Ubuntu bootstrap for the single-service deployment |
-| `postgres_init.sql` | Manual Postgres role/database bootstrap |
-| `nginx.conf` | Reverse proxy config to internal port `8767` |
-| `iris-api.service` | Systemd unit for the supported app service |
-| `.env.production.example` | Environment template |
-| `README.md` | This guide |
