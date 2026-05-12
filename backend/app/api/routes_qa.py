@@ -29,6 +29,13 @@ from iris.onfly_pipeline import GDriveClient, LocalClient, SourceImage, parse_dr
 router = APIRouter(prefix="/qa", tags=["qa"])
 _bearer = HTTPBearer(auto_error=False)
 _indexes_ensured = False
+_IMAGE_ISO_DATE = """
+    CASE
+        WHEN COALESCE(img.date_source, '') != '' THEN img.date_source
+        WHEN COALESCE(img.date_display, '') GLOB '??-??-????' THEN SUBSTR(img.date_display,7,4)||'-'||SUBSTR(img.date_display,4,2)||'-'||SUBSTR(img.date_display,1,2)
+        ELSE COALESCE(img.date_display, '')
+    END
+"""
 
 
 def _now() -> datetime:
@@ -78,6 +85,7 @@ def _ensure_qa_indexes(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_seen ON onfly_image_state(store_id, last_seen_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_image_store_date ON onfly_image_state(store_id, date_display, date_source)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_image ON onfly_walkin_sessions(store_id, image_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_onfly_walkin_store_date ON onfly_walkin_sessions(store_id, business_date)")
         conn.commit()
     except Exception:
         pass
@@ -158,7 +166,7 @@ def _review_queue_rows(
     *,
     store_id: str,
     business_date: str | None = None,
-    limit: int = 200,
+    gpt_status: str | None = None,
 ) -> list[dict[str, Any]]:
     db_path = get_settings().db_path_obj
     if not db_path.exists():
@@ -168,9 +176,11 @@ def _review_queue_rows(
         params: list[Any] = [store_id]
         where = ["img.store_id = ?"]
         if business_date:
-            display_date = _iso_to_display(business_date)
-            where.append("(img.date_display = ? OR img.date_source = ?)")
-            params.extend([display_date, business_date])
+            where.append(f"{_IMAGE_ISO_DATE} = ?")
+            params.append(business_date)
+        if gpt_status:
+            where.append("LOWER(COALESCE(img.gpt_status, 'pending')) = ?")
+            params.append(str(gpt_status).strip().lower())
         where_sql = " AND ".join(where)
         cur = conn.execute(
             f"""
@@ -207,11 +217,42 @@ def _review_queue_rows(
             WHERE {where_sql}
             GROUP BY img.store_id, img.image_id
             ORDER BY img.last_seen_at DESC, img.image_name DESC
-            LIMIT ?
             """,
-            tuple(params + [max(1, int(limit))]),
+            tuple(params),
         )
         return _row_dicts(cur)
+    finally:
+        conn.close()
+
+
+def _review_queue_date_options(store_id: str) -> list[dict[str, Any]]:
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect(db_path)
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT
+                {_IMAGE_ISO_DATE} AS iso_date,
+                COUNT(*) AS image_count
+            FROM onfly_image_state img
+            WHERE img.store_id = ?
+              AND {_IMAGE_ISO_DATE} != ''
+            GROUP BY iso_date
+            ORDER BY iso_date DESC
+            """,
+            (store_id,),
+        )
+        return [
+            {
+                "value": str(row.get("iso_date") or ""),
+                "label": _iso_to_display(str(row.get("iso_date") or "")),
+                "image_count": int(row.get("image_count") or 0),
+            }
+            for row in _row_dicts(cur)
+            if str(row.get("iso_date") or "").strip()
+        ]
     finally:
         conn.close()
 
@@ -314,17 +355,19 @@ async def review_queue(
     store_id: str,
     business_date: str | None = None,
     review_status: str | None = None,
+    gpt_status: str | None = None,
+    offset: int = 0,
     limit: int = 200,
     _: str = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     global _indexes_ensured
     if not _indexes_ensured:
         _ensure_qa_indexes(settings.db_path_obj)
         _indexes_ensured = True
     feedback_map = await _latest_frame_feedback_map(store_id)
-    rows = _review_queue_rows(store_id=store_id, business_date=business_date, limit=limit)
-    out: list[dict[str, Any]] = []
+    rows = _review_queue_rows(store_id=store_id, business_date=business_date, gpt_status=gpt_status)
+    out_all: list[dict[str, Any]] = []
     for row in rows:
         capture_date_iso = _display_date_to_iso(str(row.get("date_display", "") or row.get("date_source", "") or ""))
         filename = str(row.get("image_name", "") or "").strip()
@@ -365,10 +408,29 @@ async def review_queue(
             "last_run_id": row.get("last_run_id", ""),
             "last_seen_at": row.get("last_seen_at", ""),
         }
-        if review_status and str(record["review_status"]).strip().lower() != str(review_status).strip().lower():
-            continue
-        out.append(record)
-    return out
+        out_all.append(record)
+    stats = {
+        "pending": sum(1 for row in out_all if str(row.get("review_status") or "pending") == "pending"),
+        "confirmed": sum(1 for row in out_all if str(row.get("review_status") or "") == "confirmed"),
+        "rejected": sum(1 for row in out_all if str(row.get("review_status") or "") == "rejected"),
+        "gpt_failed": sum(1 for row in out_all if str(row.get("gpt_status") or "") == "failed"),
+    }
+    out = out_all
+    if review_status:
+        out = [
+            row for row in out_all
+            if str(row.get("review_status") or "").strip().lower() == str(review_status).strip().lower()
+        ]
+    page_start = max(0, int(offset))
+    page_end = page_start + max(1, int(limit))
+    return {
+        "rows": out[page_start:page_end],
+        "total": len(out),
+        "offset": page_start,
+        "limit": max(1, int(limit)),
+        "dates": _review_queue_date_options(store_id),
+        "stats": stats,
+    }
 
 
 @router.post("/feedback", status_code=201)

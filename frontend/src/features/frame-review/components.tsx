@@ -12,11 +12,11 @@ export function cacheKey(storeId: string, date: string) {
   return `fr-v2:${storeId}:${date}`;
 }
 
-export function readCache(key: string): { rows: any[]; ts: number } | null {
+export function readCache(key: string): { rows: any[]; ts: number; total?: number; dates?: any[]; stats?: Record<string, number> } | null {
   try {
     const raw = sessionStorage.getItem(key);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { rows: any[]; ts: number };
+    const parsed = JSON.parse(raw) as { rows: any[]; ts: number; total?: number; dates?: any[]; stats?: Record<string, number> };
     if (Date.now() - parsed.ts > CACHE_TTL_MS) return null;
     return parsed;
   } catch {
@@ -24,9 +24,12 @@ export function readCache(key: string): { rows: any[]; ts: number } | null {
   }
 }
 
-export function writeCache(key: string, rows: any[]) {
+export function writeCache(
+  key: string,
+  payload: { rows: any[]; total?: number; dates?: any[]; stats?: Record<string, number> },
+) {
   try {
-    sessionStorage.setItem(key, JSON.stringify({ rows, ts: Date.now() }));
+    sessionStorage.setItem(key, JSON.stringify({ ...payload, ts: Date.now() }));
   } catch {
     // cache quota exceeded — runtime state still works
   }

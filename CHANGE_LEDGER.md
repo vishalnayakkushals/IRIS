@@ -96,6 +96,23 @@ cd frontend
 npm run build
 ```
 
+### 2026-05-12 - Quality Review Date Filters + Faster QA Page Loading
+
+- Changed paths:
+  - `backend/app/api/routes_reports.py`
+  - `backend/app/api/routes_qa.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/QualityFeedback.tsx`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/features/frame-review/components.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Reworked both QA pages to use backend-driven date lists and paginated responses so `/quality` and `/qa/frame-review` can browse full historical scanned data instead of only whatever happened to be loaded in the browser.
+  - Added working date filters to QA Overview and fixed Frame Review date filtering by sourcing distinct scan dates from SQLite, normalizing mixed date formats, and applying filters on the API side.
+  - Persisted QA review status on the server for walk-in review rows, merged latest feedback into both page payloads, and kept summary cards stable while filtering table/grid results underneath them.
+  - Reduced page load cost by replacing oversized client-side result batches with targeted page fetches plus lightweight metadata, while keeping local short-lived cache entries for quick revisits.
+
 ### 2026-05-12 - Overview Calendar Range Filter + Shortcut Toggle
 
 - Changed paths:

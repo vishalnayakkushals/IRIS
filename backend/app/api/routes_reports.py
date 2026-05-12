@@ -2,6 +2,7 @@
 model version history, and pipeline run quality stats."""
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -13,10 +14,12 @@ from backend.app.db.canonical_metadata import (
     model_versions,
     onfly_walkin_sessions,
     pipeline_run_log,
+    qa_feedback,
     report_image_scan_results,
     report_store_day_summary,
     stores,
 )
+from backend.app.config import get_settings
 from backend.app.db.session import AsyncSessionLocal
 from .report_csv import (
     get_export_download,
@@ -31,8 +34,134 @@ from .report_queries import (
     sqlite_runtime_walkins,
 )
 from .report_validation import sqlite_walkin_image_map
+from .routes_qa import _display_date_to_iso, _iso_to_display
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+_WALKIN_ISO_DATE = """
+    CASE
+        WHEN COALESCE(business_date, date, '') GLOB '??-??-????' THEN SUBSTR(COALESCE(business_date, date, ''),7,4)||'-'||SUBSTR(COALESCE(business_date, date, ''),4,2)||'-'||SUBSTR(COALESCE(business_date, date, ''),1,2)
+        ELSE COALESCE(business_date, date, '')
+    END
+"""
+
+
+def _sqlite_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(get_settings().db_path_obj), timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _row_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+    cols = [str(col[0]) for col in (cursor.description or [])]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _walkins_qa_rows(
+    store_id: str | None = None,
+    business_date: str | None = None,
+) -> list[dict[str, Any]]:
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect()
+    try:
+        where: list[str] = ["COALESCE(source_image_name, '') != ''"]
+        params: list[Any] = []
+        if store_id:
+            where.append("store_id = ?")
+            params.append(store_id)
+        if business_date:
+            where.append(f"{_WALKIN_ISO_DATE} = ?")
+            params.append(business_date)
+        cur = conn.execute(
+            f"""
+            SELECT
+                store_id,
+                image_id,
+                COALESCE(image_id, '') AS last_image_id,
+                COALESCE(walkin_id, '') AS walkin_id,
+                {_WALKIN_ISO_DATE} AS iso_date,
+                COALESCE(role, '') AS role,
+                COALESCE(entry_time, '') AS entry_time,
+                COALESCE(exit_time, '') AS exit_time,
+                COALESCE(time_spent_mins, '') AS time_spent_mins,
+                COALESCE(gender, '') AS gender,
+                COALESCE(camera_id, '') AS camera_id,
+                COALESCE(first_seen_time, '') AS first_seen_time,
+                COALESCE(last_seen_time, '') AS last_seen_time,
+                COALESCE(included_in_analytics, '') AS included_in_analytics,
+                COALESCE(source_image_name, '') AS source_image_name,
+                id
+            FROM onfly_walkin_sessions
+            WHERE {' AND '.join(where)}
+            ORDER BY iso_date DESC, entry_time ASC, id ASC
+            """,
+            tuple(params),
+        )
+        return _row_dicts(cur)
+    finally:
+        conn.close()
+
+
+def _walkins_qa_dates(store_id: str | None = None) -> list[dict[str, Any]]:
+    db_path = get_settings().db_path_obj
+    if not db_path.exists():
+        return []
+    conn = _sqlite_connect()
+    try:
+        where = ["COALESCE(source_image_name, '') != ''"]
+        params: list[Any] = []
+        if store_id:
+            where.append("store_id = ?")
+            params.append(store_id)
+        cur = conn.execute(
+            f"""
+            SELECT
+                {_WALKIN_ISO_DATE} AS iso_date,
+                COUNT(*) AS session_count
+            FROM onfly_walkin_sessions
+            WHERE {' AND '.join(where)}
+              AND {_WALKIN_ISO_DATE} != ''
+            GROUP BY iso_date
+            ORDER BY iso_date DESC
+            """,
+            tuple(params),
+        )
+        return [
+            {
+                "value": str(row.get("iso_date") or ""),
+                "label": _iso_to_display(str(row.get("iso_date") or "")),
+                "session_count": int(row.get("session_count") or 0),
+            }
+            for row in _row_dicts(cur)
+            if str(row.get("iso_date") or "").strip()
+        ]
+    finally:
+        conn.close()
+
+
+async def _latest_walkin_feedback_map(store_id: str | None = None) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(qa_feedback)
+            .where((qa_feedback.c.track_id != "") & (qa_feedback.c.track_id != "FRAME"))
+            .order_by(qa_feedback.c.created_at.desc())
+        )
+        if store_id:
+            stmt = stmt.where(qa_feedback.c.store_id == store_id)
+        result = await session.execute(stmt)
+        rows = [dict(r) for r in result.mappings().all()]
+    out: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            str(row.get("store_id") or ""),
+            _display_date_to_iso(str(row.get("capture_date") or "")),
+            str(row.get("track_id") or ""),
+            str(row.get("filename") or "").strip(),
+        )
+        if key not in out:
+            out[key] = row
+    return out
 
 
 @router.get("/walkins")
@@ -58,35 +187,68 @@ async def get_walkins(
 @router.get("/walkins-qa")
 async def get_walkins_for_qa(
     store_id: str | None = None,
+    business_date: str | None = None,
+    review_status: str | None = None,
+    offset: int = 0,
     limit: int = 100,
     _: str = Depends(get_current_user),
-) -> list[dict[str, Any]]:
-    runtime_rows = sqlite_runtime_walkins(store_id=store_id, business_date=None, limit=limit)
-    if not runtime_rows:
-        return []
-    qa_rows: list[dict[str, Any]] = []
-    for row in runtime_rows:
-        qa_rows.append(
+) -> dict[str, Any]:
+    normalized_review_status = "confirmed" if str(review_status or "").strip().lower() == "approved" else review_status
+    rows = _walkins_qa_rows(store_id=store_id, business_date=business_date)
+    feedback_map = await _latest_walkin_feedback_map(store_id=store_id)
+    qa_rows_all: list[dict[str, Any]] = []
+    for row in rows:
+        feedback = feedback_map.get((
+            str(row.get("store_id") or ""),
+            str(row.get("iso_date") or ""),
+            str(row.get("walkin_id") or ""),
+            str(row.get("source_image_name") or "").strip(),
+        ), {})
+        status = str(feedback.get("review_status") or "pending")
+        qa_rows_all.append(
             {
                 "store_id": row.get("store_id", ""),
                 "image_id": row.get("image_id", ""),
-                "last_image_id": row.get("image_id", ""),
-                "walkin_id": row.get("Walk-in ID", ""),
-                "date": row.get("Date", ""),
-                "role": row.get("Role", ""),
-                "entry_time": row.get("Entry Time", ""),
-                "exit_time": row.get("Exit Time", ""),
-                "time_spent_mins": row.get("Time Spent (mins)", ""),
-                "gender": row.get("Gender", ""),
-                "age_band": row.get("Age Band", ""),
-                "camera_id": row.get("Session Camera", row.get("camera_id", "")),
-                "first_seen_time": row.get("Entry Time", ""),
-                "last_seen_time": row.get("Exit Time", row.get("Entry Time", "")),
-                "included_in_analytics": row.get("Included in Analytics", ""),
-                "source_image_name": row.get("Source Image", ""),
+                "last_image_id": row.get("last_image_id", ""),
+                "walkin_id": row.get("walkin_id", ""),
+                "date": row.get("iso_date", ""),
+                "role": row.get("role", ""),
+                "predicted_label": str(feedback.get("predicted_label") or row.get("role") or ""),
+                "corrected_label": str(feedback.get("corrected_label") or ""),
+                "feedback_id": feedback.get("id"),
+                "review_status": status,
+                "entry_time": row.get("entry_time", ""),
+                "exit_time": row.get("exit_time", ""),
+                "time_spent_mins": row.get("time_spent_mins", ""),
+                "gender": row.get("gender", ""),
+                "camera_id": row.get("camera_id", ""),
+                "first_seen_time": row.get("first_seen_time", ""),
+                "last_seen_time": row.get("last_seen_time", ""),
+                "included_in_analytics": row.get("included_in_analytics", ""),
+                "source_image_name": row.get("source_image_name", ""),
             }
         )
-    return qa_rows[: max(1, int(limit))]
+    stats = {
+        "pending": sum(1 for row in qa_rows_all if str(row.get("review_status") or "pending") == "pending"),
+        "approved": sum(1 for row in qa_rows_all if str(row.get("review_status") or "") in {"approved", "confirmed"}),
+        "rejected": sum(1 for row in qa_rows_all if str(row.get("review_status") or "") == "rejected"),
+    }
+    qa_rows = qa_rows_all
+    if normalized_review_status:
+        qa_rows = [
+            row for row in qa_rows_all
+            if str(row.get("review_status") or "").strip().lower() == str(normalized_review_status).strip().lower()
+        ]
+    page_start = max(0, int(offset))
+    page_end = page_start + max(1, int(limit))
+    return {
+        "rows": qa_rows[page_start:page_end],
+        "total": len(qa_rows),
+        "offset": page_start,
+        "limit": max(1, int(limit)),
+        "dates": _walkins_qa_dates(store_id=store_id),
+        "stats": stats,
+    }
 
 
 @router.get("/summary")

@@ -308,10 +308,54 @@ export const reportsWalkins = (storeId?: string, date?: string, limit = 100) => 
   if (date) params.set("business_date", date);
   return api.get<any[]>(`/reports/walkins?${params}`);
 };
-export const reportsWalkinsQA = (storeId?: string, limit = 100, axiosConfig?: object) => {
-  const params = new URLSearchParams({ limit: String(limit) });
+export interface ReviewDateOption {
+  value: string;
+  label: string;
+  image_count?: number;
+  session_count?: number;
+}
+
+export interface QAOverviewRow {
+  store_id: string;
+  image_id: string;
+  last_image_id: string;
+  walkin_id: string;
+  date: string;
+  role: string;
+  predicted_label: string;
+  corrected_label: string;
+  feedback_id?: number;
+  review_status: string;
+  entry_time: string;
+  exit_time: string;
+  time_spent_mins: string;
+  gender: string;
+  camera_id: string;
+  first_seen_time: string;
+  last_seen_time: string;
+  included_in_analytics: string;
+  source_image_name: string;
+}
+
+export interface QAOverviewResponse {
+  rows: QAOverviewRow[];
+  total: number;
+  offset: number;
+  limit: number;
+  dates: ReviewDateOption[];
+  stats: { pending: number; approved: number; rejected: number };
+}
+
+export const reportsWalkinsQA = (
+  storeId?: string,
+  options?: { businessDate?: string; reviewStatus?: string; offset?: number; limit?: number },
+  axiosConfig?: object
+) => {
+  const params = new URLSearchParams({ limit: String(options?.limit ?? 100), offset: String(options?.offset ?? 0) });
   if (storeId) params.set("store_id", storeId);
-  return api.get<any[]>(`/reports/walkins-qa?${params}`, axiosConfig);
+  if (options?.businessDate) params.set("business_date", options.businessDate);
+  if (options?.reviewStatus) params.set("review_status", options.reviewStatus);
+  return api.get<QAOverviewResponse>(`/reports/walkins-qa?${params}`, axiosConfig);
 };
 export const reportsSummary = (storeId?: string, limit = 90) => {
   const params = new URLSearchParams({ limit: String(limit) });
@@ -383,11 +427,60 @@ export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 
   if (reviewStatus) params.set("review_status", reviewStatus);
   return api.get<any[]>(`/qa/feedback?${params}`);
 };
-export const qaReviewQueue = (storeId: string, reviewStatus?: string, businessDate?: string, limit = 200, axiosConfig?: object) => {
-  const params = new URLSearchParams({ store_id: storeId, limit: String(limit) });
-  if (reviewStatus) params.set("review_status", reviewStatus);
-  if (businessDate) params.set("business_date", businessDate);
-  return api.get<any[]>(`/qa/review-queue?${params}`, axiosConfig);
+export interface QAFrameRow {
+  feedback_id?: number;
+  store_id: string;
+  image_id: string;
+  filename: string;
+  capture_date: string;
+  capture_date_display: string;
+  camera_id: string;
+  predicted_label: string;
+  corrected_label: string;
+  review_status: string;
+  auto_approved: boolean;
+  comment: string;
+  confidence: number;
+  drive_link: string;
+  thumbnail_url: string;
+  source_url: string;
+  relative_path: string;
+  timestamp_hint: string;
+  yolo_relevant: boolean;
+  person_count: number;
+  gpt_status: string;
+  gpt_error: string;
+  customer_count: number;
+  staff_count: number;
+  banner_count: number;
+  pedestrian_count: number;
+  last_run_id: string;
+  last_seen_at: string;
+}
+
+export interface QAFrameReviewResponse {
+  rows: QAFrameRow[];
+  total: number;
+  offset: number;
+  limit: number;
+  dates: ReviewDateOption[];
+  stats: { pending: number; confirmed: number; rejected: number; gpt_failed: number };
+}
+
+export const qaReviewQueue = (
+  storeId: string,
+  options?: { reviewStatus?: string; businessDate?: string; gptStatus?: string; offset?: number; limit?: number },
+  axiosConfig?: object
+) => {
+  const params = new URLSearchParams({
+    store_id: storeId,
+    limit: String(options?.limit ?? 200),
+    offset: String(options?.offset ?? 0),
+  });
+  if (options?.reviewStatus) params.set("review_status", options.reviewStatus);
+  if (options?.businessDate) params.set("business_date", options.businessDate);
+  if (options?.gptStatus) params.set("gpt_status", options.gptStatus);
+  return api.get<QAFrameReviewResponse>(`/qa/review-queue?${params}`, axiosConfig);
 };
 export const qaCreateFeedback = (body: {
   store_id: string;

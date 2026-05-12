@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, Text, Title } from "@tremor/react";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
-import { qaReviewQueue } from "../api/client";
+import { qaReviewQueue, QAFrameRow, ReviewDateOption } from "../api/client";
 import { useStore } from "../context/StoreContext";
 import { FeedbackCard, PAGE_SIZE, cacheKey, readCache, writeCache } from "../features/frame-review/components";
 
@@ -9,7 +9,10 @@ export default function FrameReview() {
   const { storeId } = useStore();
   const [statusFilter, setStatusFilter] = useState("");
   const [gptFilter, setGptFilter] = useState("");
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<QAFrameRow[]>([]);
+  const [totalRows, setTotalRows] = useState(0);
+  const [dateOptions, setDateOptions] = useState<ReviewDateOption[]>([]);
+  const [stats, setStats] = useState({ pending: 0, confirmed: 0, rejected: 0, gpt_failed: 0 });
   const [cachedAt, setCachedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
@@ -24,13 +27,15 @@ export default function FrameReview() {
 
   function load(force = false) {
     if (!storeId) return;
-    const key = cacheKey(storeId, dateFilter);
+    const key = cacheKey(storeId, `${dateFilter}|${statusFilter}|${gptFilter}|${page}`);
     if (!force) {
       const cached = readCache(key);
       if (cached) {
         setRows(cached.rows);
+        setTotalRows(cached.total ?? cached.rows.length);
+        setDateOptions((cached.dates as ReviewDateOption[]) ?? []);
+        setStats((cached.stats as typeof stats) ?? { pending: 0, confirmed: 0, rejected: 0, gpt_failed: 0 });
         setCachedAt(cached.ts);
-        setPage(0);
         return;
       }
     }
@@ -39,11 +44,24 @@ export default function FrameReview() {
     const signal = abortRef.current.signal;
     setLoading(true);
     setCachedAt(null);
-    setPage(0);
-    qaReviewQueue(storeId, undefined, dateFilter || undefined, 150, { signal })
+    qaReviewQueue(storeId, {
+      reviewStatus: statusFilter || undefined,
+      businessDate: dateFilter || undefined,
+      gptStatus: gptFilter || undefined,
+      offset: page * PAGE_SIZE,
+      limit: PAGE_SIZE,
+    }, { signal })
       .then((response) => {
-        setRows(response.data);
-        writeCache(key, response.data);
+        setRows(response.data.rows ?? []);
+        setTotalRows(response.data.total ?? 0);
+        setDateOptions(response.data.dates ?? []);
+        setStats(response.data.stats ?? { pending: 0, confirmed: 0, rejected: 0, gpt_failed: 0 });
+        writeCache(key, {
+          rows: response.data.rows ?? [],
+          total: response.data.total ?? 0,
+          dates: response.data.dates ?? [],
+          stats: response.data.stats ?? { pending: 0, confirmed: 0, rejected: 0, gpt_failed: 0 },
+        });
         setCachedAt(Date.now());
       })
       .catch((error) => {
@@ -57,34 +75,28 @@ export default function FrameReview() {
     return () => {
       abortRef.current?.abort();
     };
-  }, [storeId, dateFilter]);
+  }, [storeId, dateFilter, statusFilter, gptFilter, page]);
 
-  function handleSaved(updated: any) {
+  function handleSaved(updated: QAFrameRow) {
     flash("Review saved ✓");
     setRows((prev) => prev.map((row) => (row.image_id === updated.image_id ? updated : row)));
-    if (storeId) sessionStorage.removeItem(cacheKey(storeId, dateFilter));
+    if (storeId) {
+      sessionStorage.removeItem(cacheKey(storeId, `${dateFilter}|${statusFilter}|${gptFilter}|${page}`));
+      void load(true);
+    }
   }
 
   function handleDeleted(imageId: string) {
     flash("Review removed");
     setRows((prev) => prev.filter((row) => row.image_id !== imageId));
-    if (storeId) sessionStorage.removeItem(cacheKey(storeId, dateFilter));
+    if (storeId) {
+      sessionStorage.removeItem(cacheKey(storeId, `${dateFilter}|${statusFilter}|${gptFilter}|${page}`));
+      void load(true);
+    }
   }
 
-  const dateOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.capture_date).filter(Boolean))).sort().reverse(), [rows]);
-  const filteredRows = useMemo(() => {
-    let result = rows;
-    if (statusFilter) result = result.filter((row) => (row.review_status || "pending") === statusFilter);
-    if (gptFilter) result = result.filter((row) => (row.gpt_status || "pending") === gptFilter);
-    return result;
-  }, [rows, statusFilter, gptFilter]);
-
-  const pending = rows.filter((row) => (row.review_status || "pending") === "pending").length;
-  const confirmed = rows.filter((row) => row.review_status === "confirmed").length;
-  const rejected = rows.filter((row) => row.review_status === "rejected").length;
-  const gptFailed = rows.filter((row) => row.gpt_status === "failed").length;
-  const totalPages = Math.ceil(filteredRows.length / PAGE_SIZE);
-  const pageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+  const pageRows = rows;
   const cacheAgeLabel = cachedAt ? (() => {
     const secs = Math.floor((Date.now() - cachedAt) / 1000);
     return secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`;
@@ -100,11 +112,11 @@ export default function FrameReview() {
           <Text>Review frame thumbnails. Step 1 = what YOLO found. Step 2 = what GPT classified. Confirm or reject to feed corrections into model retraining.</Text>
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <select aria-label="Filter by review status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+          <select aria-label="Filter by review status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
             <option value="">All Status</option><option value="pending">Pending</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option>
           </select>
-          <select aria-label="Filter by date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-            <option value="">All Dates</option>{dateOptions.map((date) => <option key={date} value={date}>{date}</option>)}
+          <select aria-label="Filter by date" value={dateFilter} onChange={(e) => { setDateFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <option value="">All Dates</option>{dateOptions.map((date) => <option key={date.value} value={date.value}>{date.label} ({date.image_count ?? 0})</option>)}
           </select>
           <select aria-label="Filter by GPT status" value={gptFilter} onChange={(e) => { setGptFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
             <option value="">All GPT Status</option><option value="failed">GPT Failed ⚠</option><option value="done">GPT Done</option><option value="pending">GPT Pending</option>
@@ -116,13 +128,13 @@ export default function FrameReview() {
       {cacheAgeLabel && !loading ? <p className="text-[11px] text-slate-400">Showing cached results from {cacheAgeLabel}. <button type="button" onClick={() => void load(true)} className="underline hover:text-slate-600">Refresh now</button></p> : null}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Pending</Text><p className="text-2xl font-bold mt-1 text-amber-600">{pending}</p></Card>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Confirmed</Text><p className="text-2xl font-bold mt-1 text-emerald-600">{confirmed}</p></Card>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Rejected</Text><p className="text-2xl font-bold mt-1 text-rose-600">{rejected}</p></Card>
+        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Pending</Text><p className="text-2xl font-bold mt-1 text-amber-600">{stats.pending}</p></Card>
+        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Confirmed</Text><p className="text-2xl font-bold mt-1 text-emerald-600">{stats.confirmed}</p></Card>
+        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Rejected</Text><p className="text-2xl font-bold mt-1 text-rose-600">{stats.rejected}</p></Card>
         <button type="button" className="text-left p-4 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 cursor-pointer transition-colors" onClick={() => { setGptFilter(gptFilter === "failed" ? "" : "failed"); setPage(0); }}>
-          <Text className="text-xs uppercase tracking-wide text-rose-400">GPT Failed</Text><p className="text-2xl font-bold mt-1 text-rose-600">{gptFailed}</p><p className="text-[10px] text-rose-400 mt-0.5">{gptFilter === "failed" ? "▸ Filtering" : "Click to filter"}</p>
+          <Text className="text-xs uppercase tracking-wide text-rose-400">GPT Failed</Text><p className="text-2xl font-bold mt-1 text-rose-600">{stats.gpt_failed}</p><p className="text-[10px] text-rose-400 mt-0.5">{gptFilter === "failed" ? "▸ Filtering" : "Click to filter"}</p>
         </button>
-        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Loaded</Text><p className="text-2xl font-bold mt-1 text-slate-700">{rows.length}</p><p className="text-[10px] text-slate-400 mt-0.5">of last 150</p></Card>
+        <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Loaded</Text><p className="text-2xl font-bold mt-1 text-slate-700">{rows.length}</p><p className="text-[10px] text-slate-400 mt-0.5">of {totalRows}</p></Card>
       </div>
 
       <Card className="p-4 bg-slate-50">
@@ -144,7 +156,7 @@ export default function FrameReview() {
       ) : (
         <>
           <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredRows.length)} of {filteredRows.length}{gptFilter ? " (filtered)" : ""} frames</span>
+            <span>Showing {page * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE + pageRows.length, totalRows)} of {totalRows}{gptFilter ? " (filtered)" : ""} frames</span>
             <div className="flex items-center gap-2">
               <button type="button" title="Previous page" disabled={page === 0} onClick={() => setPage((current) => current - 1)} className="p-1.5 rounded border disabled:opacity-30 hover:bg-slate-100"><ChevronLeft size={16} /></button>
               <span>Page {page + 1} / {totalPages}</span>

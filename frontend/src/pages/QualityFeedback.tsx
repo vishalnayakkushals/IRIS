@@ -5,17 +5,13 @@ import {
   qaCreateFeedback,
   qaUpdateFeedback,
   qaFrameImageUrl,
+  QAOverviewRow,
+  ReviewDateOption,
 } from "../api/client";
 import { useStore } from "../context/StoreContext";
 import { RefreshCw, ZoomIn, Check, X, Loader2 } from "lucide-react";
 
 type ReviewState = "pending" | "approved" | "rejected";
-
-interface FeedbackEntry {
-  status: ReviewState;
-  feedbackId?: number;
-  correctedLabel?: string;
-}
 
 const PAGE_SIZE = 25;
 const ROLE_OPTIONS = ["customer", "staff", "uncertain", "no_human"];
@@ -124,8 +120,11 @@ function RejectPicker({ onPick, onCancel }: { onPick: (label: string) => void; o
 // ── Main page ──────────────────────────────────────────────────────────────
 export default function QualityFeedback() {
   const { storeId, storeName } = useStore();
-  const [rows, setRows] = useState<any[]>([]);
-  const [feedbackState, setFeedbackState] = useState<Record<string, FeedbackEntry>>({});
+  const [rows, setRows] = useState<QAOverviewRow[]>([]);
+  const [dateOptions, setDateOptions] = useState<ReviewDateOption[]>([]);
+  const [dateFilter, setDateFilter] = useState("");
+  const [totalRows, setTotalRows] = useState(0);
+  const [stats, setStats] = useState({ pending: 0, approved: 0, rejected: 0 });
   const [saving, setSaving] = useState<Set<string>>(new Set());
   const [rejectPicker, setRejectPicker] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,41 +138,67 @@ export default function QualityFeedback() {
     setTimeout(() => setToast(""), 2500);
   }
 
-  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const CACHE_TTL_MS = 2 * 60 * 1000;
 
-  function getCacheKey() { return `qa_sessions_${storeId || "all"}`; }
+  function getCacheKey() {
+    return `qa_sessions_${storeId || "all"}_${dateFilter || "all"}_${filter}_${page}`;
+  }
 
-  function readCache(): { rows: any[]; feedback: Record<string, FeedbackEntry> } | null {
+  function readCache(): { rows: QAOverviewRow[]; total: number; dates: ReviewDateOption[]; stats: typeof stats } | null {
     try {
       const raw = sessionStorage.getItem(getCacheKey());
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (Date.now() - parsed.ts > CACHE_TTL_MS) { sessionStorage.removeItem(getCacheKey()); return null; }
-      return { rows: parsed.data || [], feedback: parsed.feedback || {} };
-    } catch { return null; }
+      if (Date.now() - parsed.ts > CACHE_TTL_MS) {
+        sessionStorage.removeItem(getCacheKey());
+        return null;
+      }
+      return { rows: parsed.rows || [], total: parsed.total || 0, dates: parsed.dates || [], stats: parsed.stats || { pending: 0, approved: 0, rejected: 0 } };
+    } catch {
+      return null;
+    }
   }
 
-  function writeCache(data: any[], feedback: Record<string, FeedbackEntry> = {}) {
-    try { sessionStorage.setItem(getCacheKey(), JSON.stringify({ data, feedback, ts: Date.now() })); } catch {}
+  function writeCache(data: { rows: QAOverviewRow[]; total: number; dates: ReviewDateOption[]; stats: typeof stats }) {
+    try {
+      sessionStorage.setItem(getCacheKey(), JSON.stringify({ ...data, ts: Date.now() }));
+    } catch {}
   }
 
   const abortRef = useRef<AbortController | null>(null);
 
   function load(force = false) {
     const cached = !force && readCache();
-    if (cached) { setRows(cached.rows); setFeedbackState(cached.feedback); setPage(0); return; }
+    if (cached) {
+      setRows(cached.rows);
+      setTotalRows(cached.total);
+      setDateOptions(cached.dates);
+      setStats(cached.stats);
+      return;
+    }
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     const signal = abortRef.current.signal;
     setLoading(true);
     setError("");
-    setPage(0);
-    reportsWalkinsQA(storeId || undefined, 100, { signal })
+    reportsWalkinsQA(storeId || undefined, {
+      businessDate: dateFilter || undefined,
+      reviewStatus: filter === "all" ? undefined : (filter === "approved" ? "confirmed" : filter),
+      offset: page * PAGE_SIZE,
+      limit: PAGE_SIZE,
+    }, { signal })
       .then((r) => {
-        const data: any[] = Array.isArray(r.data) ? r.data : [];
-        setRows(data);
-        setFeedbackState({});
-        writeCache(data, {});
+        const payload = r.data;
+        setRows(payload.rows ?? []);
+        setTotalRows(payload.total ?? 0);
+        setDateOptions(payload.dates ?? []);
+        setStats(payload.stats ?? { pending: 0, approved: 0, rejected: 0 });
+        writeCache({
+          rows: payload.rows ?? [],
+          total: payload.total ?? 0,
+          dates: payload.dates ?? [],
+          stats: payload.stats ?? { pending: 0, approved: 0, rejected: 0 },
+        });
       })
       .catch((e) => {
         if (e?.code === "ERR_CANCELED") return;
@@ -185,32 +210,28 @@ export default function QualityFeedback() {
   useEffect(() => {
     load();
     return () => { abortRef.current?.abort(); };
-  }, [storeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [storeId, dateFilter, filter, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const getKey     = (s: any) => String(s.walkin_id || s.id || Math.random());
-  const getRole    = (s: any) => s.role || "";
-  const getDate    = (s: any) => s.date || s.business_date || "";
-  const getStore   = (s: any) => s.store_id || "";
-  const getImageId = (s: any) => s.image_id || "";
-  const getLastImageId = (s: any) => s.last_image_id || s.image_id || "";
-  const getEntry   = (s: any) => s.entry_time || "";
-  const getExit    = (s: any) => s.exit_time || "";
-  const getDwell   = (s: any) => s.time_spent_mins || "";
-  const getGender  = (s: any) => s.gender || "";
-  const getWalkinId= (s: any) => s.walkin_id || "";
-  const getAnalytics=(s: any) => s.included_in_analytics || "";
-  const getFirst   = (s: any) => s.first_seen_time || "";
-  const getLast    = (s: any) => s.last_seen_time || "";
+  const getKey = (s: QAOverviewRow) => `${s.store_id}:${s.walkin_id || s.image_id}:${s.date}`;
+  const getRole = (s: QAOverviewRow) => s.predicted_label || s.role || "";
+  const getDate = (s: QAOverviewRow) => s.date || "";
+  const getStore = (s: QAOverviewRow) => s.store_id || "";
+  const getImageId = (s: QAOverviewRow) => s.image_id || "";
+  const getLastImageId = (s: QAOverviewRow) => s.last_image_id || s.image_id || "";
+  const getEntry = (s: QAOverviewRow) => s.entry_time || "";
+  const getExit = (s: QAOverviewRow) => s.exit_time || "";
+  const getDwell = (s: QAOverviewRow) => s.time_spent_mins || "";
+  const getGender = (s: QAOverviewRow) => s.gender || "";
+  const getWalkinId = (s: QAOverviewRow) => s.walkin_id || "";
+  const getAnalytics = (s: QAOverviewRow) => s.included_in_analytics || "";
+  const getFirst = (s: QAOverviewRow) => s.first_seen_time || "";
+  const getLast = (s: QAOverviewRow) => s.last_seen_time || "";
 
-  async function saveApprove(key: string, s: any) {
+  async function saveApprove(key: string, s: QAOverviewRow) {
     setSaving((prev) => new Set(prev).add(key));
-    const role = getRole(s);
     try {
-      const existing = feedbackState[key];
-      let newEntry: FeedbackEntry;
-      if (existing?.feedbackId) {
-        await qaUpdateFeedback(existing.feedbackId, { review_status: "confirmed", corrected_label: role });
-        newEntry = { ...existing, status: "approved" };
+      if (s.feedback_id) {
+        await qaUpdateFeedback(s.feedback_id, { review_status: "confirmed", corrected_label: getRole(s) });
       } else {
         const res = await qaCreateFeedback({
           store_id: getStore(s),
@@ -218,19 +239,24 @@ export default function QualityFeedback() {
           filename: s.source_image_name || getImageId(s),
           camera_id: s.camera_id || "",
           track_id: getWalkinId(s),
-          predicted_label: role,
-          corrected_label: role,
+          predicted_label: getRole(s),
+          corrected_label: getRole(s),
           confidence: 0.9,
           needs_review: false,
           review_status: "confirmed",
         });
-        newEntry = { status: "approved", feedbackId: res.data.id, correctedLabel: role };
+        s.feedback_id = res.data.id;
       }
-      setFeedbackState((prev) => {
-        const updated = { ...prev, [key]: newEntry };
-        writeCache(rows, updated);
-        return updated;
-      });
+      setRows((prev) => prev.map((row) => (
+        getKey(row) === key ? { ...row, feedback_id: s.feedback_id, review_status: "confirmed", corrected_label: getRole(s) } : row
+      )));
+      setStats((prev) => ({
+        pending: Math.max(0, prev.pending - (s.review_status === "pending" ? 1 : 0)),
+        approved: prev.approved + (s.review_status === "confirmed" ? 0 : 1),
+        rejected: Math.max(0, prev.rejected - (s.review_status === "rejected" ? 1 : 0)),
+      }));
+      sessionStorage.removeItem(getCacheKey());
+      void load(true);
       flash("Approved ✓");
     } catch {
       flash("Save failed — check server");
@@ -239,16 +265,12 @@ export default function QualityFeedback() {
     }
   }
 
-  async function saveReject(key: string, s: any, correctedLabel: string) {
+  async function saveReject(key: string, s: QAOverviewRow, correctedLabel: string) {
     setRejectPicker(null);
     setSaving((prev) => new Set(prev).add(key));
-    const role = getRole(s);
     try {
-      const existing = feedbackState[key];
-      let newEntry: FeedbackEntry;
-      if (existing?.feedbackId) {
-        await qaUpdateFeedback(existing.feedbackId, { review_status: "rejected", corrected_label: correctedLabel });
-        newEntry = { ...existing, status: "rejected", correctedLabel };
+      if (s.feedback_id) {
+        await qaUpdateFeedback(s.feedback_id, { review_status: "rejected", corrected_label: correctedLabel });
       } else {
         const res = await qaCreateFeedback({
           store_id: getStore(s),
@@ -256,19 +278,24 @@ export default function QualityFeedback() {
           filename: s.source_image_name || getImageId(s),
           camera_id: s.camera_id || "",
           track_id: getWalkinId(s),
-          predicted_label: role,
+          predicted_label: getRole(s),
           corrected_label: correctedLabel,
           confidence: 0.9,
           needs_review: true,
           review_status: "rejected",
         });
-        newEntry = { status: "rejected", feedbackId: res.data.id, correctedLabel };
+        s.feedback_id = res.data.id;
       }
-      setFeedbackState((prev) => {
-        const updated = { ...prev, [key]: newEntry };
-        writeCache(rows, updated);
-        return updated;
-      });
+      setRows((prev) => prev.map((row) => (
+        getKey(row) === key ? { ...row, feedback_id: s.feedback_id, review_status: "rejected", corrected_label: correctedLabel } : row
+      )));
+      setStats((prev) => ({
+        pending: Math.max(0, prev.pending - (s.review_status === "pending" ? 1 : 0)),
+        approved: Math.max(0, prev.approved - (s.review_status === "confirmed" ? 1 : 0)),
+        rejected: prev.rejected + (s.review_status === "rejected" ? 0 : 1),
+      }));
+      sessionStorage.removeItem(getCacheKey());
+      void load(true);
       flash("Rejected — label saved ✓");
     } catch {
       flash("Save failed — check server");
@@ -277,21 +304,14 @@ export default function QualityFeedback() {
     }
   }
 
-  const annotated = useMemo(() => rows.map((s) => {
-    const key = getKey(s);
-    const fb = feedbackState[key];
-    return { s, key, review: fb?.status ?? ("pending" as ReviewState), correctedLabel: fb?.correctedLabel };
-  }), [rows, feedbackState]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filtered = filter === "all" ? annotated : annotated.filter((r) => r.review === filter);
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-
-  const counts = {
-    pending:  annotated.filter((r) => r.review === "pending").length,
-    approved: annotated.filter((r) => r.review === "approved").length,
-    rejected: annotated.filter((r) => r.review === "rejected").length,
-  };
+  const annotated = useMemo(() => rows.map((s) => ({
+    s,
+    key: getKey(s),
+    review: (s.review_status === "confirmed" ? "approved" : (s.review_status as ReviewState)) || "pending",
+    correctedLabel: s.corrected_label,
+  })), [rows]);
+  const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+  const pageRows = annotated;
 
   const subtitle = storeId ? (storeName || storeId) : "All Stores";
 
@@ -309,13 +329,27 @@ export default function QualityFeedback() {
             Review GPT-analysed walk-in sessions. Approve correct detections or reject and label the actual role to feed model retraining.
           </p>
         </div>
-        <button
-          onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
-        >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={dateFilter}
+            onChange={(e) => { setDateFilter(e.target.value); setPage(0); }}
+            className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">All Dates</option>
+            {dateOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} ({option.session_count ?? 0})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => load(true)} disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+          >
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary cards — clickable filter */}
@@ -329,21 +363,21 @@ export default function QualityFeedback() {
             }`}
           >
             <p className="text-slate-400 text-xs capitalize mb-1">{s}</p>
-            <p className="text-2xl font-bold text-slate-800">{loading ? "—" : counts[s]}</p>
+            <p className="text-2xl font-bold text-slate-800">{loading ? "—" : stats[s]}</p>
           </button>
         ))}
       </div>
 
       {/* Retraining progress hint */}
-      {counts.approved + counts.rejected > 0 && (
+      {stats.approved + stats.rejected > 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-800">
-          <span className="font-semibold">{counts.approved + counts.rejected} sessions reviewed</span>
-          {counts.approved + counts.rejected < 200 && (
+          <span className="font-semibold">{stats.approved + stats.rejected} sessions reviewed</span>
+          {stats.approved + stats.rejected < 200 && (
             <span className="text-blue-600">
               {" "}— review at least <span className="font-semibold">200</span> to generate a quality retraining rule file on the Model Feedback page.
             </span>
           )}
-          {counts.approved + counts.rejected >= 200 && (
+          {stats.approved + stats.rejected >= 200 && (
             <span className="text-emerald-700 font-semibold"> ✓ Enough data to retrain. Go to Model Feedback → Generate Rule File.</span>
           )}
         </div>
@@ -361,9 +395,9 @@ export default function QualityFeedback() {
         <>
           <div className="flex items-center justify-between flex-wrap gap-2">
             <p className="text-xs text-slate-400">
-              {filtered.length === 0
+              {totalRows === 0
                 ? "No sessions match filter"
-                : `Showing ${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, filtered.length)} of ${filtered.length} sessions`}
+                : `Showing ${page * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE + pageRows.length, totalRows)} of ${totalRows} sessions`}
               {filter !== "all" && (
                 <button onClick={() => { setFilter("all"); setPage(0); }} className="ml-2 underline hover:text-slate-600">Clear filter</button>
               )}
