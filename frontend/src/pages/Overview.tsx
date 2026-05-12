@@ -4,7 +4,7 @@ import {
 } from "@tremor/react";
 import {
   fetchAnalytics, fetchTrend, fetchLeaderboard, fetchDelta,
-  AnalyticsData, TrendPoint, LeaderboardRow, DeltaData,
+  AnalyticsData, TrendPoint, LeaderboardRow, DeltaData, DashboardDateFilter,
 } from "../api/client";
 import { useStore } from "../context/StoreContext";
 
@@ -114,12 +114,60 @@ function TrendLineChart({ data }: { data: Array<{ period: string; "Walk-ins": nu
   );
 }
 
-const DAY_OPTIONS = [7, 30, 90];
+type FilterMode = "shortcuts" | "calendar";
+type ShortcutKey = "today" | "yesterday" | "7d" | "30d" | "90d";
+
+const SHORTCUT_OPTIONS: Array<{ key: ShortcutKey; label: string; days?: number; offsetDays?: number }> = [
+  { key: "today", label: "Today", offsetDays: 0 },
+  { key: "yesterday", label: "Yesterday", offsetDays: 1 },
+  { key: "7d", label: "7d", days: 7 },
+  { key: "30d", label: "30d", days: 30 },
+  { key: "90d", label: "90d", days: 90 },
+];
 const GROUP_OPTIONS: { label: string; value: string }[] = [
   { label: "Day", value: "day" },
   { label: "Week", value: "week" },
   { label: "Month", value: "month" },
 ];
+
+function formatInputDate(value: Date) {
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, "0");
+  const day = `${value.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftDate(base: Date, days: number) {
+  const next = new Date(base);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getShortcutRange(shortcut: ShortcutKey) {
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const option = SHORTCUT_OPTIONS.find((item) => item.key === shortcut);
+  if (!option) {
+    return { filter: { days: 30 } as DashboardDateFilter, label: "Last 30 days", cacheKey: "days_30", dayCount: 30 };
+  }
+  if (option.days) {
+    return {
+      filter: { days: option.days } as DashboardDateFilter,
+      label: `Last ${option.days} days`,
+      cacheKey: `days_${option.days}`,
+      dayCount: option.days,
+    };
+  }
+
+  const target = shiftDate(today, -(option.offsetDays ?? 0));
+  const iso = formatInputDate(target);
+  return {
+    filter: { dateFrom: iso, dateTo: iso } as DashboardDateFilter,
+    label: shortcut === "today" ? "Today" : "Yesterday",
+    cacheKey: `${shortcut}_${iso}`,
+    dayCount: 1,
+  };
+}
 
 function DeltaBadge({ pct }: { pct: number }) {
   if (pct === 0) return <Badge color="gray">—</Badge>;
@@ -132,7 +180,10 @@ function DeltaBadge({ pct }: { pct: number }) {
 
 export default function Overview() {
   const { storeId: storeFilter } = useStore();
-  const [days, setDays] = useState(30);
+  const [filterMode, setFilterMode] = useState<FilterMode>("shortcuts");
+  const [selectedShortcut, setSelectedShortcut] = useState<ShortcutKey>("30d");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [groupBy, setGroupBy] = useState("day");
 
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
@@ -142,9 +193,44 @@ export default function Overview() {
   const [loading, setLoading] = useState(false);
 
   const CACHE_TTL_MS = 5 * 60 * 1000;
-  const cacheKey = `overview_${storeFilter || "all"}_${days}_${groupBy}`;
+  const customRangeError = useMemo(() => {
+    if (filterMode !== "calendar") return "";
+    if ((customFrom && !customTo) || (!customFrom && customTo)) return "Select both From and To dates.";
+    if (customFrom && customTo && customFrom > customTo) return "From date cannot be after To date.";
+    return "";
+  }, [customFrom, customTo, filterMode]);
+
+  const activeFilter = useMemo(() => {
+    if (filterMode === "calendar" && customFrom && customTo && !customRangeError) {
+      const start = new Date(`${customFrom}T12:00:00`);
+      const end = new Date(`${customTo}T12:00:00`);
+      const dayCount = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      return {
+        filter: { dateFrom: customFrom, dateTo: customTo } as DashboardDateFilter,
+        label: `${customFrom} to ${customTo}`,
+        cacheKey: `custom_${customFrom}_${customTo}`,
+        dayCount,
+      };
+    }
+    return getShortcutRange(selectedShortcut);
+  }, [customFrom, customRangeError, customTo, filterMode, selectedShortcut]);
+
+  const cacheKey = `overview_${storeFilter || "all"}_${activeFilter.cacheKey}_${groupBy}`;
+
+  const handleShortcutSelect = (shortcut: ShortcutKey) => {
+    setSelectedShortcut(shortcut);
+    setCustomFrom("");
+    setCustomTo("");
+  };
 
   const load = useCallback((force = false) => {
+    if (customRangeError) {
+      setAnalytics(null);
+      setTrend([]);
+      setLeaderboard([]);
+      setDelta(null);
+      return;
+    }
     if (!force) {
       try {
         const raw = sessionStorage.getItem(cacheKey);
@@ -164,10 +250,10 @@ export default function Overview() {
     setLoading(true);
     const sid = storeFilter || undefined;
     Promise.all([
-      fetchAnalytics(sid, days),
-      fetchTrend(sid, days, groupBy),
-      fetchLeaderboard(days),
-      fetchDelta(sid, days, days),
+      fetchAnalytics(sid, activeFilter.filter),
+      fetchTrend(sid, activeFilter.filter, groupBy),
+      fetchLeaderboard(activeFilter.filter),
+      fetchDelta(sid, activeFilter.filter, activeFilter.dayCount),
     ])
       .then(([a, t, l, d]) => {
         setAnalytics(a.data);
@@ -183,7 +269,7 @@ export default function Overview() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [storeFilter, days, groupBy]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeFilter, cacheKey, customRangeError, groupBy, storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
@@ -214,19 +300,58 @@ export default function Overview() {
           <Title>Business Overview</Title>
           <Text>Walk-in, conversion and engagement analytics from the pipeline.</Text>
         </div>
-        <div className="flex flex-wrap gap-2 items-center">
-          {/* Day-range selector */}
-          <div className="flex rounded-lg overflow-hidden border border-slate-200 text-sm">
-            {DAY_OPTIONS.map((d) => (
+        <div className="flex flex-col items-stretch gap-2 w-full sm:w-auto">
+          <div className="flex rounded-lg overflow-hidden border border-slate-200 text-sm self-start">
+            {(["shortcuts", "calendar"] as FilterMode[]).map((mode) => (
               <button
-                key={d}
-                onClick={() => setDays(d)}
-                className={`px-3 py-1.5 ${days === d ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+                key={mode}
+                onClick={() => setFilterMode(mode)}
+                className={`px-3 py-1.5 capitalize ${filterMode === mode ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
               >
-                {d}d
+                {mode}
               </button>
             ))}
           </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex rounded-lg overflow-hidden border border-slate-200 text-sm">
+              {SHORTCUT_OPTIONS.map((option) => (
+                <button
+                  key={option.key}
+                  onClick={() => handleShortcutSelect(option.key)}
+                  className={`px-3 py-1.5 ${selectedShortcut === option.key ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {filterMode === "calendar" && (
+              <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <label className="flex flex-col text-xs text-slate-500">
+                  From
+                  <input
+                    type="date"
+                    value={customFrom}
+                    onChange={(e) => setCustomFrom(e.target.value)}
+                    className="mt-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
+                  />
+                </label>
+                <label className="flex flex-col text-xs text-slate-500">
+                  To
+                  <input
+                    type="date"
+                    value={customTo}
+                    onChange={(e) => setCustomTo(e.target.value)}
+                    className="mt-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+          {filterMode === "calendar" && (
+            <Text className={`text-xs ${customRangeError ? "text-red-500" : "text-slate-400"}`}>
+              {customRangeError || "Use shortcuts or pick a custom From and To date range."}
+            </Text>
+          )}
         </div>
       </div>
 
@@ -254,7 +379,7 @@ export default function Overview() {
             {delta && <DeltaBadge pct={delta.delta_rate_pct} />}
           </div>
           <Metric className="mt-1">{loading ? "—" : `${analytics?.conversion_rate ?? 0}%`}</Metric>
-          <Text className="text-xs text-slate-400 mt-1">Last {days} days</Text>
+          <Text className="text-xs text-slate-400 mt-1">{activeFilter.label}</Text>
         </Card>
         <Card decoration="top" decorationColor="indigo">
           <Text>Avg Dwell Time</Text>
@@ -389,7 +514,7 @@ export default function Overview() {
       {/* Store Leaderboard */}
       {leaderboard.length > 0 && (
         <Card>
-          <Title>Store Leaderboard — Last {days} Days</Title>
+          <Title>Store Leaderboard — {activeFilter.label}</Title>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>

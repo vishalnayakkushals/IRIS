@@ -42,7 +42,7 @@ export default function StoreDetail() {
         .finally(() => setLoadingSessions(false));
     } else {
       // All stores: use analytics aggregate for KPIs, walkins without store filter
-      fetchAnalytics(undefined, 30)
+      fetchAnalytics(undefined, { days: 30 })
         .then((res) => {
           const d = res.data;
           if (d) {

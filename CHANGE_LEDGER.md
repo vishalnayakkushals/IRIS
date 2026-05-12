@@ -96,6 +96,21 @@ cd frontend
 npm run build
 ```
 
+### 2026-05-12 - Overview Calendar Range Filter + Shortcut Toggle
+
+- Changed paths:
+  - `backend/app/api/routes_dashboard.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/Overview.tsx`
+  - `frontend/src/pages/StoreDetail.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added optional `date_from` and `date_to` support to the dashboard analytics, trend, leaderboard, delta, and overview endpoints while preserving the existing rolling `days` shortcut behavior.
+  - Updated the overview page to support two filter modes: shortcut mode and calendar mode, with `Today`, `Yesterday`, `7d`, `30d`, and `90d` quick filters plus custom `From` and `To` date inputs.
+  - Kept the overview cards, trend chart, and leaderboard aligned to one shared active date filter and updated delta comparisons so custom calendar ranges compare against the immediately preceding range of equal length.
+  - Adjusted the shared frontend dashboard client to send either rolling-day filters or explicit date ranges and fixed the dependent store-detail analytics caller to match the new client signature.
+
 
 ### 2026-05-12 - Runtime Consolidation + Smart Frame Sampling + Documentation Sync
 

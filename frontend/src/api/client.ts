@@ -101,9 +101,25 @@ export interface AnalyticsData {
   engagement: BreakdownItem[];
 }
 
-export const fetchAnalytics = (storeId?: string, days = 30) =>
+export interface DashboardDateFilter {
+  days?: number;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+const buildDashboardDateQuery = (filter: DashboardDateFilter = {}, extras: Record<string, string> = {}) => {
+  const params = new URLSearchParams();
+  if (filter.days !== undefined) params.set("days", String(filter.days));
+  if (filter.dateFrom) params.set("date_from", filter.dateFrom);
+  if (filter.dateTo) params.set("date_to", filter.dateTo);
+  Object.entries(extras).forEach(([key, value]) => params.set(key, value));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+export const fetchAnalytics = (storeId?: string, filter: DashboardDateFilter = { days: 30 }) =>
   api.get<AnalyticsData>(
-    `/dashboard/analytics?days=${days}${storeId ? `&store_id=${storeId}` : ""}`
+    `/dashboard/analytics${buildDashboardDateQuery(filter, storeId ? { store_id: storeId } : {})}`
   );
 
 export interface TrendPoint {
@@ -115,9 +131,16 @@ export interface TrendPoint {
   conversion_rate: number;
 }
 
-export const fetchTrend = (storeId?: string, days = 30, groupBy = "day") =>
+export const fetchTrend = (
+  storeId?: string,
+  filter: DashboardDateFilter = { days: 30 },
+  groupBy = "day"
+) =>
   api.get<TrendPoint[]>(
-    `/dashboard/trend?days=${days}&group_by=${groupBy}${storeId ? `&store_id=${storeId}` : ""}`
+    `/dashboard/trend${buildDashboardDateQuery(filter, {
+      group_by: groupBy,
+      ...(storeId ? { store_id: storeId } : {}),
+    })}`
   );
 
 export interface LeaderboardRow {
@@ -130,8 +153,8 @@ export interface LeaderboardRow {
   conversion_rate: number;
 }
 
-export const fetchLeaderboard = (days = 30) =>
-  api.get<LeaderboardRow[]>(`/dashboard/leaderboard?days=${days}`);
+export const fetchLeaderboard = (filter: DashboardDateFilter = { days: 30 }) =>
+  api.get<LeaderboardRow[]>(`/dashboard/leaderboard${buildDashboardDateQuery(filter)}`);
 
 export interface DeltaData {
   current: { walkins: number; conversions: number; conversion_rate: number };
@@ -141,10 +164,21 @@ export interface DeltaData {
   delta_rate_pct: number;
 }
 
-export const fetchDelta = (storeId?: string, currentDays = 30, priorDays = 30) =>
-  api.get<DeltaData>(
-    `/dashboard/delta?current_days=${currentDays}&prior_days=${priorDays}${storeId ? `&store_id=${storeId}` : ""}`
-  );
+export const fetchDelta = (
+  storeId?: string,
+  filter: DashboardDateFilter = { days: 30 },
+  priorDays?: number
+) => {
+  const params = new URLSearchParams();
+  if (filter.days !== undefined) {
+    params.set("current_days", String(filter.days));
+    params.set("prior_days", String(priorDays ?? filter.days));
+  }
+  if (filter.dateFrom) params.set("date_from", filter.dateFrom);
+  if (filter.dateTo) params.set("date_to", filter.dateTo);
+  if (storeId) params.set("store_id", storeId);
+  return api.get<DeltaData>(`/dashboard/delta?${params.toString()}`);
+};
 
 // ── Stores ───────────────────────────────────────────────────────────────────
 export interface StoreOption {
