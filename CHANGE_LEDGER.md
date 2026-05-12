@@ -1066,3 +1066,41 @@ elevant == 0).
   - Added per-date YOLO relevant-image manifest exports under the run output folder so operations can review exactly which Drive-linked images were considered relevant without duplicating image files or increasing GPT/storage cost.
   - Kept Frame Review in the same compact layout while switching the date filter to a calendar-style date input and showing the full scanned-date count now that the backend inventory is seeded earlier.
   - Tightened the `/overview` picker wording and reduced the Shopify-style picker panel to a medium footprint so opening it no longer feels oversized relative to the page.
+
+### 2026-05-12 - Scheduler And Date Report Cleanup For Full-Folder Runs
+- Changed paths:
+  - `backend/app/api/onfly_runtime.py`
+  - `frontend/src/features/scheduler/sections.tsx`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-DmTpSYwK.js`
+  - `backend/app/static/assets/CameraZones-B9GL3FGD.js`
+  - `backend/app/static/assets/charts-xFXgYxa9.js`
+  - `backend/app/static/assets/CustomerJourneys-B6EGmRKS.js`
+  - `backend/app/static/assets/EmployeeManagement-CdUyK834.js`
+  - `backend/app/static/assets/FrameReview-BvzwpXlC.js`
+  - `backend/app/static/assets/index-DgmT9UQZ.js`
+  - `backend/app/static/assets/index-CTxh3bIA.css`
+  - `backend/app/static/assets/Login-zsaszKhz.js`
+  - `backend/app/static/assets/ModelAccuracy-BHKszziO.js`
+  - `backend/app/static/assets/ModelFeedback-CUugKYRB.js`
+  - `backend/app/static/assets/Organisation-BJoLJteN.js`
+  - `backend/app/static/assets/Overview-Bw1qi79d.js`
+  - `backend/app/static/assets/QualityFeedback-DWnbvDZa.js`
+  - `backend/app/static/assets/ReportsPage-N1GyB0Z8.js`
+  - `backend/app/static/assets/RolePermissions-FBQnV0Z7.js`
+  - `backend/app/static/assets/RunDetail-BmjM6wvd.js`
+  - `backend/app/static/assets/SchedulerDashboard-Bp6KRnlo.js`
+  - `backend/app/static/assets/StoreAccess-ks3toiDn.js`
+  - `backend/app/static/assets/StoreDetail-CoMZUD6F.js`
+  - `backend/app/static/assets/StoreMapping-DlrEIYPz.js`
+  - `backend/app/static/assets/StoreMaster-CP8tR2OG.js`
+  - `backend/app/static/assets/ui-DmpKNT1K.js`
+  - `backend/app/static/assets/UsersPage-z7QBvNEq.js`
+  - `backend/app/static/assets/vendor-DMscJkZo.js`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed Date-wise Scan Report ordering so dates sort by actual business date instead of descending `dd-mm-yyyy` text order.
+  - Corrected scheduler run remarks to report `total_listed` consistently for large folder runs.
+  - Removed the stale `10,000` max-images wording and input cap from the scheduler UI so the screen matches the current unlimited full-folder scan behavior.
+  - Rebuilt and refreshed the served frontend bundle after the scheduler/date-report cleanup.

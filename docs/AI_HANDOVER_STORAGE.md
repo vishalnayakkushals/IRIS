@@ -64,6 +64,8 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - After Drive listing completes, the pipeline seeds all discovered images into `onfly_image_state` before download/YOLO/GPT work begins. This is important because scheduler reports, Frame Review date filters, and other runtime screens depend on that table for date completeness.
 - The old background download pool has been removed from the on-fly runtime because it was not delivering real prefetch gains and had produced unstable shutdown behavior during large runs.
 - SQLite heartbeat writes now use WAL plus a longer busy timeout so long-running scans are less likely to be marked stale while write traffic is high.
+- The scheduler UI and run-status summaries should stay aligned with this behavior: no frontend copy should claim manual runs are capped at 10,000 anymore.
+- Date-wise scan views should sort by normalized ISO business date internally, not by display text such as `dd-mm-yyyy`.
 
 ---
 

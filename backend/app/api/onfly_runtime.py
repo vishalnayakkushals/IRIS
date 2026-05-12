@@ -290,6 +290,11 @@ def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str
             """
             SELECT
                 date_display,
+                CASE
+                    WHEN COALESCE(date_source, '') != '' THEN date_source
+                    WHEN COALESCE(date_display, '') GLOB '??-??-????' THEN SUBSTR(date_display,7,4)||'-'||SUBSTR(date_display,4,2)||'-'||SUBSTR(date_display,1,2)
+                    ELSE COALESCE(date_display, '')
+                END AS sort_date,
                 COUNT(*) AS total_images,
                 SUM(CASE WHEN yolo_status != 'pending' THEN 1 ELSE 0 END) AS yolo_done,
                 SUM(CASE WHEN yolo_relevant = 1 THEN 1 ELSE 0 END) AS yolo_relevant,
@@ -302,8 +307,8 @@ def _load_date_report_from_sqlite(db_path: Path, store_id: str) -> list[dict[str
                 SUM(CASE WHEN sampled_anchor_image_id != '' THEN 1 ELSE 0 END) AS sampled_total
             FROM onfly_image_state
             WHERE store_id=? AND date_display != ''
-            GROUP BY date_display
-            ORDER BY date_display DESC
+            GROUP BY date_display, sort_date
+            ORDER BY sort_date DESC, date_display DESC
             """,
             (store_id,),
         )
@@ -421,7 +426,7 @@ def _run_pipeline_sync(
         )
         summary = run_onfly_pipeline(cfg)
         remarks = (
-            f"Listed: {summary.get('listed', 0)} | "
+            f"Listed: {summary.get('total_listed', summary.get('listed', 0))} | "
             f"New: {summary.get('new_images', 0)} | "
             f"YOLO relevant: {summary.get('yolo_relevant', 0)} | "
             f"GPT done: {summary.get('gpt_done', 0)} | "

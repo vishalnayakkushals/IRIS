@@ -116,7 +116,7 @@ export function SyncTriggerCard(props: SyncTriggerCardProps) {
           </div>
           <div className="w-36">
             <label className="iris-label">Max Images</label>
-            <input type="number" min={0} max={10000} step={100} value={maxImages} onChange={(e) => onMaxImagesChange(Number(e.target.value || 0))} className="iris-input" />
+            <input type="number" min={0} step={100} value={maxImages} onChange={(e) => onMaxImagesChange(Number(e.target.value || 0))} className="iris-input" />
           </div>
           <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
             <input type="checkbox" checked={gptEnabled} onChange={(e) => onGptEnabledChange(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
@@ -166,7 +166,7 @@ export function SyncTriggerCard(props: SyncTriggerCardProps) {
           </div>
         </div>
       )}
-      <div className="text-xs text-slate-400">Manual sync accepts the mapped parent folder, a child date-folder URL, or a raw Google Drive folder ID. Delta skip still applies unless Force rerun is enabled. 0 = full folder. Manual runs can process up to 10,000 images per request.</div>
+      <div className="text-xs text-slate-400">Manual sync accepts the mapped parent folder, a child date-folder URL, or a raw Google Drive folder ID. Delta skip still applies unless Force rerun is enabled. 0 = full folder, and manual runs are no longer capped at the old 10,000-image limit.</div>
     </Card>
   );
 }
