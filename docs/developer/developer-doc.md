@@ -7,7 +7,7 @@
 IRIS is now a React + FastAPI application with dedicated background workers.
 
 Do not assume:
-- Streamlit is still the primary UI
+- Streamlit is still the primary UI (false; legacy assumption to avoid)
 - the web process owns scheduler loops
 - a single mega-file is still the intended extension point
 
@@ -64,3 +64,4 @@ python -m pytest tests/test_onfly_pipeline.py tests/test_onfly_scheduler.py test
 cd frontend
 npm run build
 ```
+

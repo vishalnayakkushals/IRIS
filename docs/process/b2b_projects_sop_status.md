@@ -41,5 +41,6 @@ Status legend:
 4. Implement infrastructure-level automated DB backup + restore drill tracking.
 
 ## Notes
-- SOP mentions `React + Node + MySQL` and `AWS CodeCommit`; IRIS is currently a Python/Streamlit pipeline hosted in GitHub.
+- SOP mentions `React + Node + MySQL` and `AWS CodeCommit`; IRIS is currently a React + FastAPI application with dedicated Python workers, hosted in GitHub.
 - Where stack-specific items do not map 1:1, equivalent IRIS controls are documented above.
+

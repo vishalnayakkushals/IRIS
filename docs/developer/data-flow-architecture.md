@@ -77,7 +77,8 @@ After GPT:
 ## Out of Scope / Legacy
 
 These are no longer the canonical architecture story:
-- Streamlit as the primary UI
+- Streamlit as the primary UI (retired; legacy reference only)
 - single-process web app with embedded scheduler loops
 - PyTorch-only YOLO runtime on server
 - Celery as the required scheduler story for the current local/cloud web app
+

@@ -44,6 +44,8 @@ It records what changed, where it changed, and why.
 | `frontend/src/pages/FrameReview.tsx` | Frame review shell for QA workflows. |
 | `frontend/src/features/frame-review/components.tsx` | Reusable frame review cards, caching, preview helpers, and paging constants. |
 | `frontend/src/components/StoreSelect.tsx` | Shared searchable store picker used across reports/admin/scheduler pages. |
+| `docs/INDEX.md` | Documentation ownership map and source-of-truth index. |
+| `docs/developer/generated-vs-source-policy.md` | Policy for generated assets, runtime artifacts, and editable source boundaries. |
 | `docs/deployment/cost-optimization-plan.md` | Source-of-truth cost and savings document. |
 | `docs/process/onfly_pipeline_logic.md` | Source-of-truth on-fly processing logic document. |
 | `docs/AI_HANDOVER_STORAGE.md` | Current architecture/cost/storage handover for future agents. |
@@ -88,6 +90,8 @@ It records what changed, where it changed, and why.
 - Scheduler dashboard and reports page split into feature helpers
 - Smart frame sampling is live and tracked in `onfly_cost_metrics`
 - Cost metrics are available through `GET /api/reports/cost-metrics`
+- Documentation ownership starts from `docs/INDEX.md`
+- Canonical admin recovery keys are `emergency_admin_password` and `emergency_admin_password_hint`
 
 ### Quick validation baseline
 ```powershell
@@ -97,6 +101,26 @@ python -m pytest tests/test_onfly_pipeline.py tests/test_onfly_scheduler.py test
 cd frontend
 npm run build
 ```
+
+### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
+
+- Changed paths:
+  - `.gitignore`
+  - `backend/app/api/routes_admin.py`
+  - `frontend/src/pages/Organisation.tsx`
+  - `README.md`
+  - `docs/INDEX.md` (new)
+  - `docs/developer/generated-vs-source-policy.md` (new)
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `docs/developer/data-flow-architecture.md`
+  - `docs/developer/developer-doc.md`
+  - `docs/process/b2b_projects_sop_status.md`
+  - `docs/prd/iris-platform-prd-v1.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a documentation index and a generated-vs-source policy so future work has one clear ownership map for docs, built frontend assets, and runtime artifacts.
+  - Replaced the remaining product-facing `streamlit_password` naming with canonical emergency-admin recovery settings, while preserving safe backend alias handling for older stored keys.
+  - Cleaned the last clearly stale Streamlit-era statements in supporting docs and removed the stray tracked-file dump from the repo root while ignoring future copies.
 
 ### 2026-05-12 - Quality Review Date Filters + Faster QA Page Loading
 

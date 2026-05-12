@@ -55,8 +55,8 @@ Retail operations need consistent, privacy-safe, near-real-time store intelligen
 - Invalid license transitions must be blocked and logged.
 
 ## 9. Dependencies
-- Python runtime + Streamlit
-- SQLite persistence
+- FastAPI web app + React frontend
+- PostgreSQL for platform data + SQLite for pipeline runtime state
 - Optional Google Drive sync + optional detector model runtime
 - Future: POS APIs and external messaging APIs
 
@@ -72,3 +72,4 @@ Retail operations need consistent, privacy-safe, near-real-time store intelligen
 - Added store-master import and DB persistence for scalable operations.
 
 - Lightweight on-the-fly pipeline path: URL ingestion -> YOLO relevance -> optional GPT analysis (relevant-only) with idempotent state and scheduler separation.
+

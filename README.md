@@ -172,3 +172,8 @@ Keep these current:
 - GPT time values do **not** invent clock times; final entry/exit timing comes from filename timestamps.
 - Manual sync can use parent folder, child date folder, or raw folder ID.
 - Delta skip remains default; force rerun overwrites prior results for the chosen path.
+
+## Documentation Map
+- docs/INDEX.md — source-of-truth documentation index and ownership map
+- docs/developer/generated-vs-source-policy.md — generated vs source file policy
+

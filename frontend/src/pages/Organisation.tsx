@@ -4,6 +4,10 @@ import { Card, Title, Text } from "@tremor/react";
 import { Pencil, Save, Upload, X, Check } from "lucide-react";
 
 export default function Organisation() {
+  const RECOVERY_PASSWORD_KEY = "emergency_admin_password";
+  const RECOVERY_HINT_KEY = "emergency_admin_password_hint";
+  const LEGACY_RECOVERY_PASSWORD_KEY = "streamlit_password";
+  const LEGACY_RECOVERY_HINT_KEY = "admin_password_hint";
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [editingAppName, setEditingAppName] = useState(false);
   const [appNameDraft, setAppNameDraft] = useState("");
@@ -17,7 +21,13 @@ export default function Organisation() {
 
   useEffect(() => {
     adminGetSettings().then((r) => {
-      setSettings(r.data);
+      setSettings({
+        ...r.data,
+        [RECOVERY_PASSWORD_KEY]:
+          r.data[RECOVERY_PASSWORD_KEY] || r.data[LEGACY_RECOVERY_PASSWORD_KEY] || "",
+        [RECOVERY_HINT_KEY]:
+          r.data[RECOVERY_HINT_KEY] || r.data[LEGACY_RECOVERY_HINT_KEY] || "",
+      });
       setAppNameDraft(r.data.app_name || "");
     });
   }, []);
@@ -248,8 +258,8 @@ export default function Organisation() {
         <h3 className="font-semibold text-slate-700 text-sm">Admin Recovery Settings</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { key: "streamlit_password", label: "Emergency Admin Password" },
-            { key: "admin_password_hint", label: "Admin Password Hint (display only)" },
+            { key: RECOVERY_PASSWORD_KEY, label: "Emergency Admin Password" },
+            { key: RECOVERY_HINT_KEY, label: "Admin Password Hint (display only)" },
           ].map(({ key, label }) => (
             <div key={key}>
               <label className="iris-label">{label}</label>
@@ -268,8 +278,10 @@ export default function Organisation() {
               setSaving(true);
               try {
                 await adminUpdateSettings({
-                  streamlit_password: settings.streamlit_password || "",
-                  admin_password_hint: settings.admin_password_hint || "",
+                  [RECOVERY_PASSWORD_KEY]: settings[RECOVERY_PASSWORD_KEY] || "",
+                  [RECOVERY_HINT_KEY]: settings[RECOVERY_HINT_KEY] || "",
+                  [LEGACY_RECOVERY_PASSWORD_KEY]: settings[RECOVERY_PASSWORD_KEY] || "",
+                  [LEGACY_RECOVERY_HINT_KEY]: settings[RECOVERY_HINT_KEY] || "",
                 });
                 flash("Saved");
               } catch { flash("Save failed"); }

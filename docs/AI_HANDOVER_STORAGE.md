@@ -4,6 +4,8 @@
 
 This is the short operational handover for the current IRIS architecture.
 
+Use `docs/INDEX.md` as the documentation ownership map. Use `docs/developer/generated-vs-source-policy.md` before editing built assets or runtime/export artifacts.
+
 ---
 
 ## Runtime Shape (Current Truth)
@@ -116,6 +118,13 @@ Cost metric table contributions:
 
 Runtime API:
 - `GET /api/reports/cost-metrics`
+
+## Admin Recovery Settings
+
+- The canonical settings keys are now:
+  - `emergency_admin_password`
+  - `emergency_admin_password_hint`
+- Older `streamlit_password` naming is legacy only and should not be reintroduced in new code or docs.
 
 ---
 

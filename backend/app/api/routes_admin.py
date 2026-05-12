@@ -37,6 +37,11 @@ from backend.app.db.session import AsyncSessionLocal
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+_SETTING_KEY_ALIASES = {
+    "streamlit_password": "emergency_admin_password",
+    "admin_password_hint": "emergency_admin_password_hint",
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -610,31 +615,56 @@ async def get_settings_endpoint(_: str = Depends(get_current_user)) -> dict:
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(app_settings))
         rows = result.mappings().all()
-    return {r["setting_key"]: r["setting_value"] for r in rows}
+    payload: dict[str, str] = {}
+    for row in rows:
+        key = _SETTING_KEY_ALIASES.get(row["setting_key"], row["setting_key"])
+        payload[key] = row["setting_value"]
+    return payload
 
 
 @router.put("/settings")
 async def update_settings(body: dict[str, str], actor: str = Depends(get_current_user)) -> dict:
     now = _now()
     async with AsyncSessionLocal() as session:
-        for key, value in body.items():
-            existing = await session.execute(
+        for raw_key, value in body.items():
+            key = _SETTING_KEY_ALIASES.get(raw_key, raw_key)
+            legacy_keys = [legacy for legacy, canonical in _SETTING_KEY_ALIASES.items() if canonical == key]
+
+            existing_canonical = await session.execute(
                 select(app_settings.c.setting_key).where(app_settings.c.setting_key == key)
             )
-            if existing.first():
+            if existing_canonical.first():
                 await session.execute(
                     update(app_settings)
                     .where(app_settings.c.setting_key == key)
                     .values(setting_value=str(value), updated_at=now)
                 )
             else:
-                await session.execute(
-                    insert(app_settings).values(
-                        setting_key=key, setting_value=str(value), updated_at=now
+                migrated = False
+                for legacy_key in legacy_keys:
+                    existing_legacy = await session.execute(
+                        select(app_settings.c.setting_key).where(app_settings.c.setting_key == legacy_key)
                     )
-                )
+                    if existing_legacy.first():
+                        await session.execute(
+                            update(app_settings)
+                            .where(app_settings.c.setting_key == legacy_key)
+                            .values(setting_key=key, setting_value=str(value), updated_at=now)
+                        )
+                        migrated = True
+                        break
+                if not migrated:
+                    await session.execute(
+                        insert(app_settings).values(
+                            setting_key=key, setting_value=str(value), updated_at=now
+                        )
+                    )
+
+            for legacy_key in legacy_keys:
+                await session.execute(delete(app_settings).where(app_settings.c.setting_key == legacy_key))
         await session.commit()
-    await _log_activity(actor, "settings.update", "", {"keys": list(body.keys())})
+    updated_keys = [_SETTING_KEY_ALIASES.get(key, key) for key in body.keys()]
+    await _log_activity(actor, "settings.update", "", {"keys": updated_keys})
     return {"updated": len(body)}
 
 
