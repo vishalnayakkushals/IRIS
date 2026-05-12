@@ -124,6 +124,14 @@ npm run build
   - Added startup diagnostics to the no-Docker API launcher so IRIS warns when it is listening on `0.0.0.0` but Windows Firewall still has no inbound allow rule for the configured API port.
   - Added an elevated PowerShell helper that creates a Windows Firewall inbound rule for the IRIS API port and can optionally switch the active network profile to Private for smoother same-LAN access.
 
+### 2026-05-12 - Fix PowerShell LAN Access Helper String Parsing
+
+- Changed paths:
+  - `scripts/enable_api_network_access.ps1`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed a PowerShell string interpolation bug in the LAN access helper so the success message prints `http://<ip>:<port>/` correctly without triggering a parser error.
+
 ### 2026-05-12 - Overview Calendar Range Filter + Shortcut Toggle
 
 - Changed paths:

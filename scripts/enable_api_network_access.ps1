@@ -44,7 +44,7 @@ $ip = (Get-NetIPAddress -AddressFamily IPv4 |
   Select-Object -First 1 -ExpandProperty IPAddress)
 
 if ($ip) {
-  Write-Host "IRIS should now be reachable on: http://$ip:$Port/" -ForegroundColor Cyan
+  Write-Host ("IRIS should now be reachable on: http://{0}:{1}/" -f $ip, $Port) -ForegroundColor Cyan
 } else {
-  Write-Host "Firewall updated. Check your LAN IP with ipconfig, then open http://<your-ip>:$Port/" -ForegroundColor Cyan
+  Write-Host ("Firewall updated. Check your LAN IP with ipconfig, then open http://<your-ip>:{0}/" -f $Port) -ForegroundColor Cyan
 }
