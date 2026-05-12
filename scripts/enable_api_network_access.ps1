@@ -1,9 +1,33 @@
 $ErrorActionPreference = "Stop"
 
-param(
-  [int]$Port = 8767,
-  [switch]$SetPrivateProfile
-)
+$Port = 8767
+$SetPrivateProfile = $false
+
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $arg = [string]$args[$i]
+  switch ($arg.ToLowerInvariant()) {
+    "-port" {
+      if ($i + 1 -ge $args.Count) {
+        throw "Missing value for -Port."
+      }
+
+      $nextValue = [string]$args[$i + 1]
+      $parsedPort = 0
+      if (-not [int]::TryParse($nextValue, [ref]$parsedPort)) {
+        throw "Invalid port value '$nextValue'."
+      }
+
+      $Port = $parsedPort
+      $i++
+    }
+    "-setprivateprofile" {
+      $SetPrivateProfile = $true
+    }
+    default {
+      throw "Unknown argument '$arg'. Supported arguments: -Port <number>, -SetPrivateProfile"
+    }
+  }
+}
 
 function Test-IsAdmin {
   $current = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -12,7 +36,24 @@ function Test-IsAdmin {
 }
 
 if (-not (Test-IsAdmin)) {
-  Write-Error "Run this script from an elevated PowerShell window (Run as Administrator)."
+  Write-Host "Requesting Administrator approval to update Windows Firewall..." -ForegroundColor Yellow
+
+  $quotedScriptPath = '"' + $PSCommandPath + '"'
+  $relaunchArgs = @(
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $quotedScriptPath,
+    "-Port",
+    $Port.ToString()
+  )
+
+  if ($SetPrivateProfile) {
+    $relaunchArgs += "-SetPrivateProfile"
+  }
+
+  Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $relaunchArgs
+  exit 0
 }
 
 $ruleName = "IRIS FastAPI $Port"
@@ -39,9 +80,32 @@ if ($SetPrivateProfile) {
   }
 }
 
-$ip = (Get-NetIPAddress -AddressFamily IPv4 |
-  Where-Object { $_.IPAddress -like '192.168.*' -or $_.IPAddress -like '10.*' -or $_.IPAddress -like '172.16.*' -or $_.IPAddress -like '172.17.*' -or $_.IPAddress -like '172.18.*' -or $_.IPAddress -like '172.19.*' -or $_.IPAddress -like '172.2?.*' -or $_.IPAddress -like '172.30.*' -or $_.IPAddress -like '172.31.*' } |
-  Select-Object -First 1 -ExpandProperty IPAddress)
+$defaultRoute = Get-NetRoute -DestinationPrefix "0.0.0.0/0" |
+  Sort-Object RouteMetric, InterfaceMetric |
+  Select-Object -First 1
+
+$ip = $null
+if ($defaultRoute) {
+  $ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $defaultRoute.InterfaceIndex |
+    Where-Object { $_.IPAddress -ne "127.0.0.1" } |
+    Select-Object -First 1 -ExpandProperty IPAddress
+}
+
+if (-not $ip) {
+  $ip = Get-NetIPAddress -AddressFamily IPv4 |
+    Where-Object {
+      $_.IPAddress -like '192.168.*' -or
+      $_.IPAddress -like '10.*' -or
+      $_.IPAddress -like '172.16.*' -or
+      $_.IPAddress -like '172.17.*' -or
+      $_.IPAddress -like '172.18.*' -or
+      $_.IPAddress -like '172.19.*' -or
+      $_.IPAddress -like '172.2?.*' -or
+      $_.IPAddress -like '172.30.*' -or
+      $_.IPAddress -like '172.31.*'
+    } |
+    Select-Object -First 1 -ExpandProperty IPAddress
+}
 
 if ($ip) {
   Write-Host ("IRIS should now be reachable on: http://{0}:{1}/" -f $ip, $Port) -ForegroundColor Cyan

@@ -939,3 +939,12 @@ elevant == 0).
 - Summary:
   - Reframed the FastAPI + React app for management demo use: dynamic branding from Organisation settings, clearer store names, report tables that keep headers even when empty, and a guided data-sync console that removes fake legacy queue behaviour.
   - Updated the main handoff-facing docs to align with the single supported FastAPI + React app on `http://localhost:8767`.
+
+### 2026-05-12 - Fix PowerShell LAN Helper Argument Parsing
+- Changed paths:
+  - `scripts/enable_api_network_access.ps1`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Replaced the fragile PowerShell `param(...)` entrypoint with explicit argument parsing so `-Port 8767` and `-SetPrivateProfile` work reliably when launched with `powershell -File`.
+  - Added self-elevation handling so the helper can prompt for Administrator approval and continue setting the firewall rule without manual script edits.
+  - Tightened LAN IP detection to prefer the active default-route adapter so the helper reports the real network URL instead of virtual adapter addresses.
