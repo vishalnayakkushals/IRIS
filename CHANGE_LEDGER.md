@@ -132,6 +132,16 @@ npm run build
 - Summary:
   - Fixed a PowerShell string interpolation bug in the LAN access helper so the success message prints `http://<ip>:<port>/` correctly without triggering a parser error.
 
+### 2026-05-12 - Overview Single Shopify-Style Date Picker
+
+- Changed paths:
+  - `frontend/src/pages/Overview.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Replaced the previous inline shortcuts/calendar toggle on the overview page with one fixed-position date trigger that opens a Shopify-style anchored picker panel instead of shifting the page layout.
+  - Added a left preset column with `Today`, `Yesterday`, `Last`, `Period to date`, and `Custom range`, plus right-side range controls and `Apply` / `Cancel` actions so the page alignment stays stable while filtering.
+
 ### 2026-05-12 - Overview Calendar Range Filter + Shortcut Toggle
 
 - Changed paths:

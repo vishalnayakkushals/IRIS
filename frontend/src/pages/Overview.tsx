@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Title, Text, Metric, Card, Grid, Badge,
 } from "@tremor/react";
+import { CalendarDays, ChevronDown } from "lucide-react";
 import {
   fetchAnalytics, fetchTrend, fetchLeaderboard, fetchDelta,
   AnalyticsData, TrendPoint, LeaderboardRow, DeltaData, DashboardDateFilter,
@@ -114,16 +115,24 @@ function TrendLineChart({ data }: { data: Array<{ period: string; "Walk-ins": nu
   );
 }
 
-type FilterMode = "shortcuts" | "calendar";
-type ShortcutKey = "today" | "yesterday" | "7d" | "30d" | "90d";
+type PickerMode = "today" | "yesterday" | "last" | "period" | "custom";
 
-const SHORTCUT_OPTIONS: Array<{ key: ShortcutKey; label: string; days?: number; offsetDays?: number }> = [
-  { key: "today", label: "Today", offsetDays: 0 },
-  { key: "yesterday", label: "Yesterday", offsetDays: 1 },
-  { key: "7d", label: "7d", days: 7 },
-  { key: "30d", label: "30d", days: 30 },
-  { key: "90d", label: "90d", days: 90 },
+interface DateSelectionState {
+  mode: PickerMode;
+  lastAmount: number;
+  includeToday: boolean;
+  from: string;
+  to: string;
+}
+
+const SIDEBAR_OPTIONS: Array<{ key: PickerMode; label: string }> = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "last", label: "Last" },
+  { key: "period", label: "Period to date" },
+  { key: "custom", label: "Custom range" },
 ];
+
 const GROUP_OPTIONS: { label: string; value: string }[] = [
   { label: "Day", value: "day" },
   { label: "Week", value: "week" },
@@ -143,30 +152,104 @@ function shiftDate(base: Date, days: number) {
   return next;
 }
 
-function getShortcutRange(shortcut: ShortcutKey) {
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
+}
+
+function formatDisplayDate(value: string) {
+  if (!value) return "";
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1, 12, 0, 0, 0);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function formatRangeText(from: string, to: string) {
+  if (!from || !to) return "";
+  if (from === to) return formatDisplayDate(from);
+  return `${formatDisplayDate(from)} - ${formatDisplayDate(to)}`;
+}
+
+function getComputedSelection(selection: DateSelectionState) {
   const today = new Date();
   today.setHours(12, 0, 0, 0);
-  const option = SHORTCUT_OPTIONS.find((item) => item.key === shortcut);
-  if (!option) {
-    return { filter: { days: 30 } as DashboardDateFilter, label: "Last 30 days", cacheKey: "days_30", dayCount: 30 };
-  }
-  if (option.days) {
-    return {
-      filter: { days: option.days } as DashboardDateFilter,
-      label: `Last ${option.days} days`,
-      cacheKey: `days_${option.days}`,
-      dayCount: option.days,
-    };
-  }
 
-  const target = shiftDate(today, -(option.offsetDays ?? 0));
-  const iso = formatInputDate(target);
-  return {
-    filter: { dateFrom: iso, dateTo: iso } as DashboardDateFilter,
-    label: shortcut === "today" ? "Today" : "Yesterday",
-    cacheKey: `${shortcut}_${iso}`,
-    dayCount: 1,
-  };
+  switch (selection.mode) {
+    case "today": {
+      const iso = formatInputDate(today);
+      return {
+        filter: { dateFrom: iso, dateTo: iso } as DashboardDateFilter,
+        label: "Today",
+        summary: formatDisplayDate(iso),
+        cacheKey: `today_${iso}`,
+        dayCount: 1,
+        invalid: false,
+      };
+    }
+    case "yesterday": {
+      const iso = formatInputDate(shiftDate(today, -1));
+      return {
+        filter: { dateFrom: iso, dateTo: iso } as DashboardDateFilter,
+        label: "Yesterday",
+        summary: formatDisplayDate(iso),
+        cacheKey: `yesterday_${iso}`,
+        dayCount: 1,
+        invalid: false,
+      };
+    }
+    case "period": {
+      const start = startOfMonth(today);
+      const from = formatInputDate(start);
+      const to = formatInputDate(today);
+      const dayCount = Math.max(1, Math.round((today.getTime() - start.getTime()) / 86400000) + 1);
+      return {
+        filter: { dateFrom: from, dateTo: to } as DashboardDateFilter,
+        label: "Period to date",
+        summary: formatRangeText(from, to),
+        cacheKey: `period_${from}_${to}`,
+        dayCount,
+        invalid: false,
+      };
+    }
+    case "custom": {
+      if (!selection.from || !selection.to || selection.from > selection.to) {
+        return {
+          filter: { days: 30 } as DashboardDateFilter,
+          label: "Custom range",
+          summary: "Select a valid date range",
+          cacheKey: "custom_invalid",
+          dayCount: 30,
+          invalid: true,
+        };
+      }
+      const start = new Date(`${selection.from}T12:00:00`);
+      const end = new Date(`${selection.to}T12:00:00`);
+      const dayCount = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      return {
+        filter: { dateFrom: selection.from, dateTo: selection.to } as DashboardDateFilter,
+        label: "Custom range",
+        summary: formatRangeText(selection.from, selection.to),
+        cacheKey: `custom_${selection.from}_${selection.to}`,
+        dayCount,
+        invalid: false,
+      };
+    }
+    case "last":
+    default: {
+      const amount = Math.max(1, Math.floor(selection.lastAmount || 1));
+      const end = selection.includeToday ? today : shiftDate(today, -1);
+      const start = shiftDate(end, -(amount - 1));
+      const from = formatInputDate(start);
+      const to = formatInputDate(end);
+      return {
+        filter: { dateFrom: from, dateTo: to } as DashboardDateFilter,
+        label: `Last ${amount} days`,
+        summary: formatRangeText(from, to),
+        cacheKey: `last_${amount}_${selection.includeToday ? "incl" : "excl"}_${from}_${to}`,
+        dayCount: amount,
+        invalid: false,
+      };
+    }
+  }
 }
 
 function DeltaBadge({ pct }: { pct: number }) {
@@ -180,11 +263,23 @@ function DeltaBadge({ pct }: { pct: number }) {
 
 export default function Overview() {
   const { storeId: storeFilter } = useStore();
-  const [filterMode, setFilterMode] = useState<FilterMode>("shortcuts");
-  const [selectedShortcut, setSelectedShortcut] = useState<ShortcutKey>("30d");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [committedSelection, setCommittedSelection] = useState<DateSelectionState>({
+    mode: "last",
+    lastAmount: 30,
+    includeToday: true,
+    from: "",
+    to: "",
+  });
+  const [draftSelection, setDraftSelection] = useState<DateSelectionState>({
+    mode: "last",
+    lastAmount: 30,
+    includeToday: true,
+    from: "",
+    to: "",
+  });
   const [groupBy, setGroupBy] = useState("day");
+  const pickerRef = useRef<HTMLDivElement | null>(null);
 
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
@@ -193,44 +288,18 @@ export default function Overview() {
   const [loading, setLoading] = useState(false);
 
   const CACHE_TTL_MS = 5 * 60 * 1000;
-  const customRangeError = useMemo(() => {
-    if (filterMode !== "calendar") return "";
-    if ((customFrom && !customTo) || (!customFrom && customTo)) return "Select both From and To dates.";
-    if (customFrom && customTo && customFrom > customTo) return "From date cannot be after To date.";
+  const activeFilter = useMemo(() => getComputedSelection(committedSelection), [committedSelection]);
+  const draftPreview = useMemo(() => getComputedSelection(draftSelection), [draftSelection]);
+  const draftError = useMemo(() => {
+    if (draftSelection.mode !== "custom") return "";
+    if ((draftSelection.from && !draftSelection.to) || (!draftSelection.from && draftSelection.to)) return "Select both From and To dates.";
+    if (draftSelection.from && draftSelection.to && draftSelection.from > draftSelection.to) return "From date cannot be after To date.";
     return "";
-  }, [customFrom, customTo, filterMode]);
-
-  const activeFilter = useMemo(() => {
-    if (filterMode === "calendar" && customFrom && customTo && !customRangeError) {
-      const start = new Date(`${customFrom}T12:00:00`);
-      const end = new Date(`${customTo}T12:00:00`);
-      const dayCount = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
-      return {
-        filter: { dateFrom: customFrom, dateTo: customTo } as DashboardDateFilter,
-        label: `${customFrom} to ${customTo}`,
-        cacheKey: `custom_${customFrom}_${customTo}`,
-        dayCount,
-      };
-    }
-    return getShortcutRange(selectedShortcut);
-  }, [customFrom, customRangeError, customTo, filterMode, selectedShortcut]);
+  }, [draftSelection]);
 
   const cacheKey = `overview_${storeFilter || "all"}_${activeFilter.cacheKey}_${groupBy}`;
 
-  const handleShortcutSelect = (shortcut: ShortcutKey) => {
-    setSelectedShortcut(shortcut);
-    setCustomFrom("");
-    setCustomTo("");
-  };
-
   const load = useCallback((force = false) => {
-    if (customRangeError) {
-      setAnalytics(null);
-      setTrend([]);
-      setLeaderboard([]);
-      setDelta(null);
-      return;
-    }
     if (!force) {
       try {
         const raw = sessionStorage.getItem(cacheKey);
@@ -269,11 +338,34 @@ export default function Overview() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [activeFilter, cacheKey, customRangeError, groupBy, storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeFilter, cacheKey, groupBy, storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!pickerRef.current?.contains(event.target as Node)) {
+        setPickerOpen(false);
+        setDraftSelection(committedSelection);
+      }
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPickerOpen(false);
+        setDraftSelection(committedSelection);
+      }
+    }
+    if (pickerOpen) {
+      document.addEventListener("mousedown", handlePointerDown);
+      document.addEventListener("keydown", handleEscape);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [pickerOpen, committedSelection]);
 
   const trendData = useMemo(() => trend.map((p) => ({
     period: p.period,
@@ -294,68 +386,180 @@ export default function Overview() {
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
-      {/* Header row */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <Title>Business Overview</Title>
           <Text>Walk-in, conversion and engagement analytics from the pipeline.</Text>
         </div>
-        <div className="flex flex-col items-stretch gap-2 w-full sm:w-auto">
-          <div className="flex rounded-lg overflow-hidden border border-slate-200 text-sm self-start">
-            {(["shortcuts", "calendar"] as FilterMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setFilterMode(mode)}
-                className={`px-3 py-1.5 capitalize ${filterMode === mode ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2 items-center">
-            <div className="flex rounded-lg overflow-hidden border border-slate-200 text-sm">
-              {SHORTCUT_OPTIONS.map((option) => (
-                <button
-                  key={option.key}
-                  onClick={() => handleShortcutSelect(option.key)}
-                  className={`px-3 py-1.5 ${selectedShortcut === option.key ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            {filterMode === "calendar" && (
-              <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                <label className="flex flex-col text-xs text-slate-500">
-                  From
-                  <input
-                    type="date"
-                    value={customFrom}
-                    onChange={(e) => setCustomFrom(e.target.value)}
-                    className="mt-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
-                  />
-                </label>
-                <label className="flex flex-col text-xs text-slate-500">
-                  To
-                  <input
-                    type="date"
-                    value={customTo}
-                    onChange={(e) => setCustomTo(e.target.value)}
-                    className="mt-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
-                  />
-                </label>
+        <div ref={pickerRef} className="relative w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setDraftSelection(committedSelection);
+              setPickerOpen((open) => !open);
+            }}
+            className="flex w-full min-w-[270px] items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left shadow-sm transition-colors hover:border-slate-300 sm:w-[320px]"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="rounded-lg bg-slate-100 p-2 text-slate-500">
+                <CalendarDays size={16} />
+              </span>
+              <div className="min-w-0">
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Select date</div>
+                <div className="truncate text-sm font-semibold text-slate-700">{activeFilter.summary}</div>
               </div>
-            )}
-          </div>
-          {filterMode === "calendar" && (
-            <Text className={`text-xs ${customRangeError ? "text-red-500" : "text-slate-400"}`}>
-              {customRangeError || "Use shortcuts or pick a custom From and To date range."}
-            </Text>
+            </div>
+            <ChevronDown size={16} className={`shrink-0 text-slate-400 transition-transform ${pickerOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {pickerOpen && (
+            <div className="absolute right-0 z-30 mt-3 w-[780px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="flex min-h-[420px] flex-col md:flex-row">
+                <div className="w-full border-b border-slate-200 bg-slate-50/80 md:w-[220px] md:border-b-0 md:border-r">
+                  <div className="space-y-1 p-3">
+                    {SIDEBAR_OPTIONS.map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setDraftSelection((current) => ({ ...current, mode: option.key }))}
+                        className={`w-full rounded-xl px-4 py-3 text-left text-sm font-medium transition-colors ${draftSelection.mode === option.key ? "bg-slate-200 text-slate-900" : "text-slate-700 hover:bg-slate-100"}`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex-1 p-5">
+                  {draftSelection.mode === "last" && (
+                    <div className="space-y-5">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-3xl leading-none text-slate-500">Last</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={draftSelection.lastAmount}
+                          onChange={(e) => setDraftSelection((current) => ({
+                            ...current,
+                            lastAmount: Math.max(1, Number(e.target.value || 1)),
+                          }))}
+                          className="h-12 w-36 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                        />
+                        <select
+                          value="days"
+                          disabled
+                          className="h-12 w-40 rounded-2xl border border-slate-300 bg-white px-4 text-lg font-medium text-slate-800 outline-none"
+                        >
+                          <option value="days">Days</option>
+                        </select>
+                        <label className="inline-flex items-center gap-3 text-lg font-medium text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={draftSelection.includeToday}
+                            onChange={(e) => setDraftSelection((current) => ({ ...current, includeToday: e.target.checked }))}
+                            className="h-5 w-5 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                          />
+                          Include today
+                        </label>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                        <div className="text-sm font-medium uppercase tracking-wide text-slate-400">Preview</div>
+                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                        <div className="mt-2 text-sm text-slate-500">Use this for rolling windows like 7, 30, or 90 days without changing the page layout.</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {draftSelection.mode === "custom" && (
+                    <div className="space-y-5">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="flex flex-col text-sm font-medium text-slate-600">
+                          From
+                          <input
+                            type="date"
+                            value={draftSelection.from}
+                            onChange={(e) => setDraftSelection((current) => ({ ...current, from: e.target.value }))}
+                            className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                          />
+                        </label>
+                        <label className="flex flex-col text-sm font-medium text-slate-600">
+                          To
+                          <input
+                            type="date"
+                            value={draftSelection.to}
+                            onChange={(e) => setDraftSelection((current) => ({ ...current, to: e.target.value }))}
+                            className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                          />
+                        </label>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                        <div className="text-sm font-medium uppercase tracking-wide text-slate-400">Selected range</div>
+                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {(draftSelection.mode === "today" || draftSelection.mode === "yesterday" || draftSelection.mode === "period") && (
+                    <div className="space-y-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                        <div className="text-sm font-medium uppercase tracking-wide text-slate-400">{draftPreview.label}</div>
+                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <div className="text-xs uppercase tracking-wide text-slate-400">From</div>
+                          <div className="mt-1 text-lg font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateFrom as string) || "")}</div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <div className="text-xs uppercase tracking-wide text-slate-400">To</div>
+                          <div className="mt-1 text-lg font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateTo as string) || "")}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">{draftPreview.summary}</div>
+                  <div className={`text-xs ${draftError ? "text-red-500" : "text-slate-400"}`}>
+                    {draftError || "Apply the selected range to analytics, trend, and leaderboard together."}
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftSelection(committedSelection);
+                      setPickerOpen(false);
+                    }}
+                    className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!!draftError || draftPreview.invalid}
+                    onClick={() => {
+                      if (draftError || draftPreview.invalid) return;
+                      setCommittedSelection({
+                        ...draftSelection,
+                        lastAmount: Math.max(1, Math.floor(draftSelection.lastAmount || 1)),
+                      });
+                      setPickerOpen(false);
+                    }}
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* KPI cards, charts, leaderboard */}
       <><Grid numItemsSm={2} numItemsLg={4} className="gap-4">
         <Card decoration="top" decorationColor="blue">
           <div className="flex items-start justify-between">
@@ -379,7 +583,7 @@ export default function Overview() {
             {delta && <DeltaBadge pct={delta.delta_rate_pct} />}
           </div>
           <Metric className="mt-1">{loading ? "—" : `${analytics?.conversion_rate ?? 0}%`}</Metric>
-          <Text className="text-xs text-slate-400 mt-1">{activeFilter.label}</Text>
+          <Text className="text-xs text-slate-400 mt-1">{activeFilter.summary}</Text>
         </Card>
         <Card decoration="top" decorationColor="indigo">
           <Text>Avg Dwell Time</Text>
@@ -388,7 +592,6 @@ export default function Overview() {
         </Card>
       </Grid>
 
-      {/* Trend chart */}
       <Card>
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
           <Title>Trend — Walk-ins &amp; Conversions</Title>
@@ -413,7 +616,6 @@ export default function Overview() {
         )}
       </Card>
 
-      {/* Gender + Age breakdowns */}
       <Grid numItemsSm={1} numItemsLg={2} className="gap-4">
         <Card>
           <Title>Gender Breakdown</Title>
@@ -421,7 +623,6 @@ export default function Overview() {
             <div className="h-40 flex items-center justify-center text-slate-400 text-sm">No data</div>
           ) : (
             <div className="flex items-center gap-6 mt-4">
-              {/* CSS conic-gradient donut — avoids Tremor color rendering bug */}
               {(() => {
                 const total = genderData.reduce((s, g) => s + g.value, 0);
                 let cum = 0;
@@ -485,7 +686,6 @@ export default function Overview() {
         </Card>
       </Grid>
 
-      {/* Engagement breakdown */}
       {(analytics?.engagement ?? []).length > 0 && (
         <Card>
           <Title>Engagement Types</Title>
@@ -511,10 +711,9 @@ export default function Overview() {
         </Card>
       )}
 
-      {/* Store Leaderboard */}
       {leaderboard.length > 0 && (
         <Card>
-          <Title>Store Leaderboard — {activeFilter.label}</Title>
+          <Title>Store Leaderboard — {activeFilter.summary}</Title>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
