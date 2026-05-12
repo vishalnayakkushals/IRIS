@@ -53,6 +53,7 @@ It records what changed, where it changed, and why.
 | `deploy/cloud/iris-onfly-scheduler.service` | Systemd unit for the on-fly scheduler worker. |
 | `deploy/cloud/iris-store-auto-sync.service` | Systemd unit for the store auto-sync worker. |
 | `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
+| `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
 
 ---
 
@@ -948,3 +949,13 @@ elevant == 0).
   - Replaced the fragile PowerShell `param(...)` entrypoint with explicit argument parsing so `-Port 8767` and `-SetPrivateProfile` work reliably when launched with `powershell -File`.
   - Added self-elevation handling so the helper can prompt for Administrator approval and continue setting the firewall rule without manual script edits.
   - Tightened LAN IP detection to prefer the active default-route adapter so the helper reports the real network URL instead of virtual adapter addresses.
+
+### 2026-05-12 - Restore Localhost Access On Port 8767
+- Changed paths:
+  - `scripts/localhost_ipv6_proxy.py`
+  - `start_iris.ps1`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added an IPv6 localhost bridge so browsers resolving `localhost` to `::1` can still open IRIS on port `8767` even when the main app is listening on IPv4.
+  - Updated the supported Windows launcher to start that bridge automatically before the FastAPI process.
+  - Kept the main server bound to `0.0.0.0` so LAN access via `192.168.1.113:8767` continues to work for other devices.

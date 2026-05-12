@@ -18,6 +18,15 @@ if (-not (Test-Path $pythonExe)) {
     exit 1
 }
 
+$proxyPidFile = Join-Path $PSScriptRoot "deploy\no_docker\runtime_logs\pids\localhost_ipv6_proxy.pid"
+if (Test-Path $proxyPidFile) {
+    $oldProxyPid = Get-Content $proxyPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($oldProxyPid -match '^\d+$') {
+        Stop-Process -Id ([int]$oldProxyPid) -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item $proxyPidFile -Force -ErrorAction SilentlyContinue
+}
+
 # ── Kill anything on port 8767 ────────────────────────────────────────────────
 Write-Host "Clearing port 8767..." -ForegroundColor Yellow
 $listening = Get-NetTCPConnection -LocalPort 8767 -ErrorAction SilentlyContinue |
@@ -92,6 +101,21 @@ $env:PYTHONPATH = "$PSScriptRoot;$PSScriptRoot\src"
 $env:API_HOST = "0.0.0.0"
 $env:API_PORT = "8767"
 $env:API_RELOAD = "0"
+
+$proxyScript = Join-Path $PSScriptRoot "scripts\localhost_ipv6_proxy.py"
+$proxyStdout = Join-Path $PSScriptRoot "deploy\no_docker\runtime_logs\localhost_ipv6_proxy.out.log"
+$proxyStderr = Join-Path $PSScriptRoot "deploy\no_docker\runtime_logs\localhost_ipv6_proxy.err.log"
+if (Test-Path $proxyScript) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $proxyPidFile) | Out-Null
+    Start-Process `
+        -FilePath $pythonExe `
+        -ArgumentList $proxyScript, "8767" `
+        -WorkingDirectory $PSScriptRoot `
+        -RedirectStandardOutput $proxyStdout `
+        -RedirectStandardError $proxyStderr `
+        -WindowStyle Hidden | Out-Null
+    Write-Host "Started localhost IPv6 proxy on [::1]:8767" -ForegroundColor Green
+}
 
 # ── Start supported API launcher ──────────────────────────────────────────────
 Write-Host ""
