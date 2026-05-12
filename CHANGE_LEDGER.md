@@ -967,3 +967,11 @@ elevant == 0).
 - Summary:
   - Added explicit handover notes for the supported local startup path, the IPv6 localhost bridge, and the Windows firewall helper used for same-LAN access on port `8767`.
   - Captured the guardrail that both `http://localhost:8767` and `http://<LAN-IP>:8767/` must remain working together after future startup changes.
+
+### 2026-05-12 - Release Notes For May Overview QA And Network Changes
+- Changed paths:
+  - `release-notes/2026-05-12.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a dated stakeholder-facing release note covering the recent `/overview` date filtering work, QA page reliability/performance fixes, and the local plus LAN access hardening on port `8767`.
+  - Captured the release scope, impact, rollout availability, risks, rollback path, and validation history in the standard `release-notes` format.
