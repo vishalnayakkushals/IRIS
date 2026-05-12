@@ -6,6 +6,7 @@ import sys
 import asyncio
 from pathlib import Path
 import subprocess
+import socket
 
 
 def _kill_old_server(pid_file: Path) -> None:
@@ -30,6 +31,55 @@ def _kill_old_server(pid_file: Path) -> None:
             print(f"[iris-api] Sent SIGTERM to old server PID {old_pid}")
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def _is_windows_admin() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _firewall_rule_exists_windows(port: str) -> bool:
+    if sys.platform != "win32":
+        return True
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow | "
+                f"Get-NetFirewallPortFilter | Where-Object {{ $_.Protocol -eq 'TCP' -and $_.LocalPort -eq '{port}' }} | "
+                f"Select-Object -First 1"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and bool((result.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def _warn_if_network_access_may_be_blocked(host: str, port: str) -> None:
+    if host not in {"0.0.0.0", "::", "*"}:
+        print(f"[iris-api] Warning: server host is {host}, so LAN devices cannot connect. Use API_HOST=0.0.0.0")
+        return
+    try:
+        lan_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        lan_ip = ""
+    if sys.platform == "win32" and not _firewall_rule_exists_windows(port):
+        print("[iris-api] Warning: no Windows Firewall allow rule was found for TCP port "
+              f"{port}. Local devices may fail to open http://{lan_ip or 'THIS-PC-IP'}:{port}/")
+        print("[iris-api] Fix once in an elevated PowerShell:")
+        print(f"  powershell -ExecutionPolicy Bypass -File .\\scripts\\enable_api_network_access.ps1 -Port {port}")
+        if not _is_windows_admin():
+            print("[iris-api] Current terminal is not running as Administrator, so the firewall rule cannot be created automatically.")
 
 
 def main() -> None:
@@ -63,6 +113,7 @@ def main() -> None:
     host = env["API_HOST"]
     port = env["API_PORT"]
     reload_enabled = str(env.get("API_RELOAD", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    _warn_if_network_access_may_be_blocked(host, port)
 
     command = [
         sys.executable,

@@ -52,6 +52,7 @@ It records what changed, where it changed, and why.
 | `deploy/cloud/iris-core-scheduler.service` | Systemd unit for the core scheduler worker. |
 | `deploy/cloud/iris-onfly-scheduler.service` | Systemd unit for the on-fly scheduler worker. |
 | `deploy/cloud/iris-store-auto-sync.service` | Systemd unit for the store auto-sync worker. |
+| `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
 
 ---
 
@@ -112,6 +113,16 @@ npm run build
   - Added working date filters to QA Overview and fixed Frame Review date filtering by sourcing distinct scan dates from SQLite, normalizing mixed date formats, and applying filters on the API side.
   - Persisted QA review status on the server for walk-in review rows, merged latest feedback into both page payloads, and kept summary cards stable while filtering table/grid results underneath them.
   - Reduced page load cost by replacing oversized client-side result batches with targeted page fetches plus lightweight metadata, while keeping local short-lived cache entries for quick revisits.
+
+### 2026-05-12 - LAN Access Diagnostics For IRIS API
+
+- Changed paths:
+  - `scripts/start_api_server.py`
+  - `scripts/enable_api_network_access.ps1` (new)
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added startup diagnostics to the no-Docker API launcher so IRIS warns when it is listening on `0.0.0.0` but Windows Firewall still has no inbound allow rule for the configured API port.
+  - Added an elevated PowerShell helper that creates a Windows Firewall inbound rule for the IRIS API port and can optionally switch the active network profile to Private for smoother same-LAN access.
 
 ### 2026-05-12 - Overview Calendar Range Filter + Shortcut Toggle
 
