@@ -55,6 +55,15 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - No permanent raw-image store is required for normal processing.
 - Irrelevant local-only images can still be removed after processing according to pipeline policy.
 - Canonical outputs are written under `data/exports/current/onfly/`.
+- Each run now also writes lightweight YOLO-review manifest CSVs under `data/exports/current/onfly/<store_id>/yolo_review_manifests/`, including one combined file plus one same-date folder per scanned date with Drive links for relevant images only.
+- IRIS still does not create Google Drive folders or shortcuts directly because the current Drive integration uses a public read-only API key. Publishing those manifests back into Drive will require a write-capable service account or OAuth client later.
+
+### Large Folder Scan Guardrail
+
+- Full-folder scans must use `max_images = 0`; the runtime default now preserves that instead of falling back to a legacy 10,000-image cap.
+- After Drive listing completes, the pipeline seeds all discovered images into `onfly_image_state` before download/YOLO/GPT work begins. This is important because scheduler reports, Frame Review date filters, and other runtime screens depend on that table for date completeness.
+- The old background download pool has been removed from the on-fly runtime because it was not delivering real prefetch gains and had produced unstable shutdown behavior during large runs.
+- SQLite heartbeat writes now use WAL plus a longer busy timeout so long-running scans are less likely to be marked stale while write traffic is high.
 
 ---
 

@@ -1018,3 +1018,51 @@ elevant == 0).
   - Removed the redundant `Period to date` option from the `/overview` date picker so only the required shortcuts and custom range remain.
   - Changed custom range behavior so the `To` date cannot be selected earlier than `From`, and moving the `From` date forward automatically lifts an older `To` date instead of showing a validation error for that case.
   - Rebuilt and refreshed the served React static bundle so the updated `/overview` picker is live from the FastAPI app on port `8767`.
+
+### 2026-05-12 - Full-Folder Scan Seeding, Stable Review Dates, And Compact Overview Picker
+- Changed paths:
+  - `backend/app/config.py`
+  - `backend/app/api/onfly_runtime.py`
+  - `backend/app/api/routes_onfly.py`
+  - `frontend/src/pages/FrameReview.tsx`
+  - `frontend/src/pages/Overview.tsx`
+  - `src/iris/gpt_runtime.py`
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/pipeline_events.py`
+  - `src/iris/report_writer.py`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-_mmzAxAk.js`
+  - `backend/app/static/assets/CameraZones-z-Zb4nkU.js`
+  - `backend/app/static/assets/charts-xFXgYxa9.js`
+  - `backend/app/static/assets/CustomerJourneys-xmN19wYb.js`
+  - `backend/app/static/assets/EmployeeManagement-CEzp0jiC.js`
+  - `backend/app/static/assets/FrameReview-DjapcXTp.js`
+  - `backend/app/static/assets/index-C2MOC1pg.js`
+  - `backend/app/static/assets/index-CTxh3bIA.css`
+  - `backend/app/static/assets/Login-CHZS37b0.js`
+  - `backend/app/static/assets/ModelAccuracy-DghiBJxm.js`
+  - `backend/app/static/assets/ModelFeedback-D8GnIieO.js`
+  - `backend/app/static/assets/Organisation-CA6W_eh2.js`
+  - `backend/app/static/assets/Overview-D9M3tmcX.js`
+  - `backend/app/static/assets/QualityFeedback-z0uaUAxv.js`
+  - `backend/app/static/assets/ReportsPage-BEG9BHT9.js`
+  - `backend/app/static/assets/RolePermissions-Byk2yp24.js`
+  - `backend/app/static/assets/RunDetail-BPtIUssw.js`
+  - `backend/app/static/assets/SchedulerDashboard-BYWeGxRw.js`
+  - `backend/app/static/assets/StoreAccess-BJWaJGOI.js`
+  - `backend/app/static/assets/StoreDetail-I9hamLzV.js`
+  - `backend/app/static/assets/StoreMapping-ZPDAoYXV.js`
+  - `backend/app/static/assets/StoreMaster-CSP46RdJ.js`
+  - `backend/app/static/assets/ui-DmpKNT1K.js`
+  - `backend/app/static/assets/UsersPage-CfSzCEH-.js`
+  - `backend/app/static/assets/vendor-DMscJkZo.js`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Removed the default 10,000-image cap for manual and runtime on-fly scans so configured full-folder runs can ingest complete date folders instead of silently truncating at older manual limits.
+  - Seeded all discovered images into `onfly_image_state` immediately after Drive listing, which makes Date-wise Scan Report totals and downstream review-date inventories reflect the whole discovered folder set even before later YOLO or GPT stages finish.
+  - Hardened SQLite heartbeat writes with WAL and busy-timeout behavior so long-running scans are less likely to be marked stale while the runtime DB is busy.
+  - Simplified the per-image download path to remove the fragile background download pool that was not providing real prefetching and had already produced shutdown-related run failures.
+  - Added per-date YOLO relevant-image manifest exports under the run output folder so operations can review exactly which Drive-linked images were considered relevant without duplicating image files or increasing GPT/storage cost.
+  - Kept Frame Review in the same compact layout while switching the date filter to a calendar-style date input and showing the full scanned-date count now that the backend inventory is seeded earlier.
+  - Tightened the `/overview` picker wording and reduced the Shopify-style picker panel to a medium footprint so opening it no longer feels oversized relative to the page.

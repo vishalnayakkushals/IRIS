@@ -79,6 +79,57 @@ def _folder_from_rel(relative_path: Any) -> str:
     return first
 
 
+def _sanitize_manifest_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown_date"
+    return text.replace("/", "-").replace("\\", "-").replace(":", "-")
+
+
+def write_relevant_review_manifests(
+    frame_df: pd.DataFrame,
+    *,
+    store_out: Path,
+    run_id: str,
+    write_warnings: list[str],
+) -> dict[str, str]:
+    if frame_df.empty or "relevant" not in frame_df.columns:
+        return {}
+    relevant_df = frame_df[frame_df["relevant"].fillna(0).astype(int) == 1].copy()
+    if relevant_df.empty:
+        return {}
+    manifest_cols = [
+        col for col in [
+            "store_id",
+            "Date",
+            "folder_name",
+            "image_id",
+            "image_name",
+            "camera_id",
+            "timestamp_hint",
+            "source_url",
+            "relative_path",
+            "person_count",
+            "customer_count",
+            "staff_count",
+            "gpt_status",
+        ]
+        if col in relevant_df.columns
+    ]
+    relevant_df = relevant_df[manifest_cols]
+    manifest_root = store_out / "yolo_review_manifests"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    outputs: dict[str, str] = {}
+    combined_path = safe_write_csv(manifest_root / "all_relevant_images.csv", relevant_df, run_id, write_warnings)
+    outputs["all"] = str(combined_path.resolve())
+    for date_value, date_df in relevant_df.groupby("Date", dropna=False):
+        date_dir = manifest_root / _sanitize_manifest_date(date_value)
+        date_dir.mkdir(parents=True, exist_ok=True)
+        date_path = safe_write_csv(date_dir / "relevant_images.csv", date_df, run_id, write_warnings)
+        outputs[str(date_value or "")] = str(date_path.resolve())
+    return outputs
+
+
 def write_pipeline_reports(
     conn: sqlite3.Connection,
     *,
@@ -132,6 +183,12 @@ def write_pipeline_reports(
     frame_df = frame_df[ordered]
     write_warnings: list[str] = []
     image_results_path = safe_write_csv(store_out / "onfly_image_results.csv", frame_df, run_id, write_warnings)
+    relevant_manifest_outputs = write_relevant_review_manifests(
+        frame_df,
+        store_out=store_out,
+        run_id=run_id,
+        write_warnings=write_warnings,
+    )
     agg_df = frame_df.groupby(["store_id", "Date"], as_index=False).agg(
         total_images=("image_id", "count"),
         relevant_images=("relevant", "sum"),
@@ -213,6 +270,7 @@ def write_pipeline_reports(
             "image_results_csv": str(image_results_path.resolve()),
             "store_report_csv": str(report_actual_path.resolve()),
             "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else "",
+            "yolo_review_manifests": relevant_manifest_outputs,
         },
     }
     summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"

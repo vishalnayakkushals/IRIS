@@ -187,13 +187,24 @@ class HeartbeatThread(threading.Thread):
 
     def run(self) -> None:
         while not self._stop_evt.wait(self._interval):
-            try:
-                c = sqlite3.connect(str(self._db_path), timeout=5)
-                c.execute("UPDATE onfly_pipeline_runs SET last_heartbeat_at=? WHERE run_id=?", (now_iso(), self._run_id))
-                c.commit()
-                c.close()
-            except Exception:
-                pass
+            for _attempt in range(3):
+                c: sqlite3.Connection | None = None
+                try:
+                    c = sqlite3.connect(str(self._db_path), timeout=30)
+                    c.execute("PRAGMA busy_timeout=30000")
+                    c.execute("UPDATE onfly_pipeline_runs SET last_heartbeat_at=? WHERE run_id=?", (now_iso(), self._run_id))
+                    c.commit()
+                    break
+                except Exception:
+                    if _attempt >= 2:
+                        break
+                    time.sleep(0.5)
+                finally:
+                    try:
+                        if c is not None:
+                            c.close()
+                    except Exception:
+                        pass
 
 
 def walkin_schema() -> dict[str, Any]:

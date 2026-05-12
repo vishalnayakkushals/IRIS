@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from backend.app.api.onfly_runtime import (
-    _MANUAL_SYNC_MAX_IMAGES,
     _active_run_meta,
     _active_run_within_grace,
     _active_runs,
@@ -155,7 +154,7 @@ async def trigger_onfly_sync(store_id: str, body: SyncRequest, actor: str = Depe
     configured_source_url = str(row[0] or "").strip()
     source_url = requested_source or configured_source_url
     requested_cap = settings.max_images if body.max_images is None else int(body.max_images)
-    max_images = 0 if requested_cap <= 0 else min(requested_cap, _MANUAL_SYNC_MAX_IMAGES)
+    max_images = max(0, requested_cap)
     run_id = _make_run_id(store_id)
     _set_active_run(store_id, run_id)
 

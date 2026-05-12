@@ -92,6 +92,47 @@ __all__ = [
     "_RETAIL_WALKIN_PROMPT",
 ]
 
+_DISCOVERY_SEED_BATCH_SIZE = 1000
+
+
+def _seed_discovered_images(conn: sqlite3.Connection, cfg: OnFlyConfig, images: list[SourceImage]) -> None:
+    if not images:
+        return
+    for start in range(0, len(images), _DISCOVERY_SEED_BATCH_SIZE):
+        batch = images[start : start + _DISCOVERY_SEED_BATCH_SIZE]
+        now = _now()
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO onfly_image_state(
+                store_id,image_id,source_provider,source_uri,source_item_id,source_url,image_name,relative_path,
+                date_source,date_display,camera_id,timestamp_hint,discovered_at,last_seen_at,pipeline_version,yolo_version,gpt_version
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                (
+                    cfg.store_id,
+                    item.image_id,
+                    item.source_provider,
+                    cfg.source_uri,
+                    item.source_item_id,
+                    item.source_url,
+                    item.image_name,
+                    item.relative_path,
+                    item.date_source,
+                    item.date_display,
+                    item.camera_id,
+                    item.timestamp_hint,
+                    now,
+                    now,
+                    cfg.pipeline_version,
+                    "",
+                    "",
+                )
+                for item in batch
+            ],
+        )
+        conn.commit()
+
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
     with sqlite3.connect(str(cfg.db_path)) as _btconn:
@@ -180,6 +221,15 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             payload={"images_discovered": len(images)},
         )
         stage = PIPELINE_STAGES[1]
+        _seed_discovered_images(conn, cfg, images)
+        _append_pipeline_event(
+            conn,
+            run_id=run_id,
+            stage=stage,
+            event_type="success",
+            message="Discovered image inventory seeded into state table",
+            payload={"seeded_images": len(images)},
+        )
         _update_pipeline_run(conn, run_id, images_discovered=len(images), current_stage=stage)
         conn.commit()
         new_images = 0
@@ -294,15 +344,6 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 _failed += int(_status != "done")
             _update_pipeline_run(conn, run_id, gpt_success_count=_done, gpt_failed_count=_failed)
 
-        # ── Parallel download pool ───────────────────────────────────────────
-        # As soon as each image passes the skip-check, its download is submitted
-        # to this background pool (8 workers). By the time the main loop reaches
-        # the YOLO stage for that image, the bytes are usually already waiting —
-        # eliminating serial network wait (biggest pipeline bottleneck).
-        _DL_WORKERS = min(8, max(1, len(images)))
-        _dl_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_DL_WORKERS, thread_name_prefix="dl")
-        _pending_dl: dict[str, concurrent.futures.Future] = {}
-
         # ── Rate limiter + circuit breaker for OpenAI ───────────────────────
         # gpt_rate_limit_rps controls tokens/sec; capacity = number of parallel workers
         # so all workers can be in flight simultaneously once primed.
@@ -413,12 +454,6 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             )
             _queue_set(conn, run_id=run_id, store_id=cfg.store_id, image_id=item.image_id, stage="yolo", status="pending")
 
-            # Submit download to background pool as soon as we know this image needs work.
-            # The main thread continues the skip-check loop while the download runs in parallel.
-            # When YOLO is reached below, _dl_future.result() is usually already done.
-            if item.image_id not in _pending_dl:
-                _pending_dl[item.image_id] = _dl_pool.submit(client.fetch_bytes, item)
-
             _append_pipeline_event(
                 conn,
                 run_id=run_id,
@@ -426,12 +461,11 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 event_type="start",
                 image_id=item.image_id,
                 image_name=item.image_name,
-                message="Downloading image bytes (parallel pool)",
+                message="Downloading image bytes",
             )
             dl0 = time.perf_counter()
             try:
-                _dl_future = _pending_dl.pop(item.image_id, None)
-                image_bytes = _dl_future.result() if _dl_future is not None else client.fetch_bytes(item)
+                image_bytes = client.fetch_bytes(item)
             except Exception as exc:
                 err = str(exc)
                 conn.execute(
@@ -821,9 +855,6 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             _gpt_pool.shutdown(wait=True)
             _sync_interim_gpt_counts()
             conn.commit()
-        # Shut down download pool — cancel any futures for images that ended up skipped
-        _dl_pool.shutdown(wait=False, cancel_futures=True)
-
         # Phase 3: sequential session writes — preserves event-time ordering for Re-ID state machine.
         if gpt_work_list:
             stage = PIPELINE_STAGES[4]
@@ -1094,11 +1125,6 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     (_now_ts, _now_ts, run_id),
                 )
                 conn.commit()
-        except Exception:
-            pass
-        # Cancel any outstanding download futures (e.g. if pipeline failed mid-run)
-        try:
-            _dl_pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
         conn.close()

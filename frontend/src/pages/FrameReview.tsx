@@ -5,6 +5,14 @@ import { qaReviewQueue, QAFrameRow, ReviewDateOption } from "../api/client";
 import { useStore } from "../context/StoreContext";
 import { FeedbackCard, PAGE_SIZE, cacheKey, readCache, writeCache } from "../features/frame-review/components";
 
+function dateBounds(options: ReviewDateOption[]) {
+  const values = options.map((option) => option.value).filter(Boolean).sort();
+  return {
+    min: values[0] ?? undefined,
+    max: values[values.length - 1] ?? undefined,
+  };
+}
+
 export default function FrameReview() {
   const { storeId } = useStore();
   const [statusFilter, setStatusFilter] = useState("");
@@ -97,6 +105,7 @@ export default function FrameReview() {
 
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
   const pageRows = rows;
+  const availableDates = dateBounds(dateOptions);
   const cacheAgeLabel = cachedAt ? (() => {
     const secs = Math.floor((Date.now() - cachedAt) / 1000);
     return secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`;
@@ -115,9 +124,22 @@ export default function FrameReview() {
           <select aria-label="Filter by review status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
             <option value="">All Status</option><option value="pending">Pending</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option>
           </select>
-          <select aria-label="Filter by date" value={dateFilter} onChange={(e) => { setDateFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-            <option value="">All Dates</option>{dateOptions.map((date) => <option key={date.value} value={date.value}>{date.label} ({date.image_count ?? 0})</option>)}
-          </select>
+          <input
+            aria-label="Filter by date"
+            type="date"
+            value={dateFilter}
+            min={availableDates.min}
+            max={availableDates.max}
+            onChange={(e) => { setDateFilter(e.target.value); setPage(0); }}
+            className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+          <button
+            type="button"
+            onClick={() => { setDateFilter(""); setPage(0); }}
+            className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-600 text-sm hover:bg-slate-50"
+          >
+            All dates
+          </button>
           <select aria-label="Filter by GPT status" value={gptFilter} onChange={(e) => { setGptFilter(e.target.value); setPage(0); }} className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
             <option value="">All GPT Status</option><option value="failed">GPT Failed ⚠</option><option value="done">GPT Done</option><option value="pending">GPT Pending</option>
           </select>
@@ -125,7 +147,10 @@ export default function FrameReview() {
         </div>
       </div>
 
-      {cacheAgeLabel && !loading ? <p className="text-[11px] text-slate-400">Showing cached results from {cacheAgeLabel}. <button type="button" onClick={() => void load(true)} className="underline hover:text-slate-600">Refresh now</button></p> : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {cacheAgeLabel && !loading ? <p className="text-[11px] text-slate-400">Showing cached results from {cacheAgeLabel}. <button type="button" onClick={() => void load(true)} className="underline hover:text-slate-600">Refresh now</button></p> : <span />}
+        <p className="text-[11px] text-slate-400">{dateOptions.length.toLocaleString()} scanned dates available</p>
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card className="p-4"><Text className="text-xs uppercase tracking-wide text-slate-400">Pending</Text><p className="text-2xl font-bold mt-1 text-amber-600">{stats.pending}</p></Card>

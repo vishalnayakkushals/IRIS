@@ -378,14 +378,14 @@ export default function Overview() {
               setDraftSelection(committedSelection);
               setPickerOpen((open) => !open);
             }}
-            className="flex w-full min-w-[270px] items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left shadow-sm transition-colors hover:border-slate-300 sm:w-[320px]"
+            className="flex w-full min-w-[250px] items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2 text-left shadow-sm transition-colors hover:border-slate-300 sm:w-[300px]"
           >
             <div className="flex items-center gap-3 min-w-0">
               <span className="rounded-lg bg-slate-100 p-2 text-slate-500">
                 <CalendarDays size={16} />
               </span>
               <div className="min-w-0">
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Select date</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Date range</div>
                 <div className="truncate text-sm font-semibold text-slate-700">{activeFilter.summary}</div>
               </div>
             </div>
@@ -393,16 +393,16 @@ export default function Overview() {
           </button>
 
           {pickerOpen && (
-            <div className="absolute right-0 z-30 mt-3 w-[780px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-              <div className="flex min-h-[420px] flex-col md:flex-row">
-                <div className="w-full border-b border-slate-200 bg-slate-50/80 md:w-[220px] md:border-b-0 md:border-r">
+            <div className="absolute right-0 z-30 mt-3 w-[640px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="flex min-h-[340px] flex-col md:flex-row">
+                <div className="w-full border-b border-slate-200 bg-slate-50/80 md:w-[180px] md:border-b-0 md:border-r">
                   <div className="space-y-1 p-3">
                     {SIDEBAR_OPTIONS.map((option) => (
                       <button
                         key={option.key}
                         type="button"
                         onClick={() => setDraftSelection((current) => ({ ...current, mode: option.key }))}
-                        className={`w-full rounded-xl px-4 py-3 text-left text-sm font-medium transition-colors ${draftSelection.mode === option.key ? "bg-slate-200 text-slate-900" : "text-slate-700 hover:bg-slate-100"}`}
+                        className={`w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors ${draftSelection.mode === option.key ? "bg-slate-200 text-slate-900" : "text-slate-700 hover:bg-slate-100"}`}
                       >
                         {option.label}
                       </button>
@@ -410,11 +410,11 @@ export default function Overview() {
                   </div>
                 </div>
 
-                <div className="flex-1 p-5">
+                <div className="flex-1 p-4">
                   {draftSelection.mode === "last" && (
-                    <div className="space-y-5">
+                    <div className="space-y-4">
                       <div className="flex flex-wrap items-center gap-3">
-                        <span className="text-3xl leading-none text-slate-500">Last</span>
+                        <span className="text-2xl leading-none text-slate-500">Last</span>
                         <input
                           type="number"
                           min={1}
@@ -423,35 +423,35 @@ export default function Overview() {
                             ...current,
                             lastAmount: Math.max(1, Number(e.target.value || 1)),
                           }))}
-                          className="h-12 w-36 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                          className="h-10 w-28 rounded-xl border border-slate-300 px-3 text-base font-medium text-slate-800 outline-none transition focus:border-slate-500"
                         />
                         <select
                           value="days"
                           disabled
-                          className="h-12 w-40 rounded-2xl border border-slate-300 bg-white px-4 text-lg font-medium text-slate-800 outline-none"
+                          className="h-10 w-32 rounded-xl border border-slate-300 bg-white px-3 text-base font-medium text-slate-800 outline-none"
                         >
                           <option value="days">Days</option>
                         </select>
-                        <label className="inline-flex items-center gap-3 text-lg font-medium text-slate-700">
+                        <label className="inline-flex items-center gap-2.5 text-sm font-medium text-slate-700">
                           <input
                             type="checkbox"
                             checked={draftSelection.includeToday}
                             onChange={(e) => setDraftSelection((current) => ({ ...current, includeToday: e.target.checked }))}
-                            className="h-5 w-5 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                            className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
                           />
                           Include today
                         </label>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="text-sm font-medium uppercase tracking-wide text-slate-400">Preview</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
-                        <div className="mt-2 text-sm text-slate-500">Use this for rolling windows like 7, 30, or 90 days without changing the page layout.</div>
+                        <div className="mt-2 text-xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                        <div className="mt-2 text-sm text-slate-500">Best for rolling windows like 7, 30, or 90 days.</div>
                       </div>
                     </div>
                   )}
 
                   {draftSelection.mode === "custom" && (
-                    <div className="space-y-5">
+                    <div className="space-y-4">
                       <div className="grid gap-4 md:grid-cols-2">
                         <label className="flex flex-col text-sm font-medium text-slate-600">
                           From
@@ -463,7 +463,7 @@ export default function Overview() {
                               const nextTo = current.to && nextFrom && current.to < nextFrom ? nextFrom : current.to;
                               return { ...current, from: nextFrom, to: nextTo };
                             })}
-                            className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                            className="mt-2 h-10 rounded-xl border border-slate-300 px-3 text-base font-medium text-slate-800 outline-none transition focus:border-slate-500"
                           />
                         </label>
                         <label className="flex flex-col text-sm font-medium text-slate-600">
@@ -473,31 +473,31 @@ export default function Overview() {
                             value={draftSelection.to}
                             min={draftSelection.from || undefined}
                             onChange={(e) => setDraftSelection((current) => ({ ...current, to: e.target.value }))}
-                            className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
+                            className="mt-2 h-10 rounded-xl border border-slate-300 px-3 text-base font-medium text-slate-800 outline-none transition focus:border-slate-500"
                           />
                         </label>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="text-sm font-medium uppercase tracking-wide text-slate-400">Selected range</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                        <div className="mt-2 text-xl font-semibold text-slate-800">{draftPreview.summary}</div>
                       </div>
                     </div>
                   )}
 
                   {(draftSelection.mode === "today" || draftSelection.mode === "yesterday") && (
-                    <div className="space-y-5">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                    <div className="space-y-4">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="text-sm font-medium uppercase tracking-wide text-slate-400">{draftPreview.label}</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-800">{draftPreview.summary}</div>
+                        <div className="mt-2 text-xl font-semibold text-slate-800">{draftPreview.summary}</div>
                       </div>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 p-4">
+                        <div className="rounded-2xl border border-slate-200 p-3.5">
                           <div className="text-xs uppercase tracking-wide text-slate-400">From</div>
-                          <div className="mt-1 text-lg font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateFrom as string) || "")}</div>
+                          <div className="mt-1 text-base font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateFrom as string) || "")}</div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 p-4">
+                        <div className="rounded-2xl border border-slate-200 p-3.5">
                           <div className="text-xs uppercase tracking-wide text-slate-400">To</div>
-                          <div className="mt-1 text-lg font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateTo as string) || "")}</div>
+                          <div className="mt-1 text-base font-semibold text-slate-700">{formatDisplayDate((draftPreview.filter.dateTo as string) || "")}</div>
                         </div>
                       </div>
                     </div>
@@ -505,7 +505,7 @@ export default function Overview() {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="text-sm font-semibold text-slate-800">{draftPreview.summary}</div>
                   <div className={`text-xs ${draftError ? "text-red-500" : "text-slate-400"}`}>
