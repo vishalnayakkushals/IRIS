@@ -959,3 +959,11 @@ elevant == 0).
   - Added an IPv6 localhost bridge so browsers resolving `localhost` to `::1` can still open IRIS on port `8767` even when the main app is listening on IPv4.
   - Updated the supported Windows launcher to start that bridge automatically before the FastAPI process.
   - Kept the main server bound to `0.0.0.0` so LAN access via `192.168.1.113:8767` continues to work for other devices.
+
+### 2026-05-12 - Refresh AI Handover For Startup And Network Access
+- Changed paths:
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added explicit handover notes for the supported local startup path, the IPv6 localhost bridge, and the Windows firewall helper used for same-LAN access on port `8767`.
+  - Captured the guardrail that both `http://localhost:8767` and `http://<LAN-IP>:8767/` must remain working together after future startup changes.

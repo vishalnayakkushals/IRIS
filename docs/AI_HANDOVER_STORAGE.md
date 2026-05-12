@@ -17,6 +17,14 @@ IRIS now runs as four explicit services:
 
 The FastAPI web process no longer owns scheduler loops. Runtime preparation is handled before launch through `backend/app/runtime_startup.py`.
 
+### Local Launch And Network Access
+
+- The single supported local startup path is `start_iris.bat` -> `start_iris.ps1`.
+- The main FastAPI app listens on IPv4 `0.0.0.0:8767` so the same instance can serve both the local machine and same-LAN devices.
+- Some Windows environments resolve `localhost` to IPv6 `::1` first. To keep `http://localhost:8767` reliable, `start_iris.ps1` also launches `scripts/localhost_ipv6_proxy.py`, which forwards `::1:8767` to `127.0.0.1:8767`.
+- Same-LAN access depends on the Windows firewall allowing TCP `8767`. The supported helper is `scripts/enable_api_network_access.ps1`.
+- If LAN access works for some devices but not others, check the firewall/profile first before assuming the FastAPI app is down.
+
 ---
 
 ## Data Stores
@@ -106,6 +114,7 @@ Runtime API:
 - The web process must stay request-serving only.
 - Live operational progress comes from SQLite; long-term platform analytics may still synchronize into PostgreSQL.
 - If GPT quota is unavailable, YOLO must continue and GPT work should queue for retry instead of repeatedly burning calls.
+- Keep local and LAN access behavior stable on port `8767`; avoid changes that break either `http://localhost:8767` or `http://<LAN-IP>:8767/`.
 
 ---
 
