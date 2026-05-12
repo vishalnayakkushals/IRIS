@@ -975,3 +975,15 @@ elevant == 0).
 - Summary:
   - Added a dated stakeholder-facing release note covering the recent `/overview` date filtering work, QA page reliability/performance fixes, and the local plus LAN access hardening on port `8767`.
   - Captured the release scope, impact, rollout availability, risks, rollback path, and validation history in the standard `release-notes` format.
+
+### 2026-05-12 - Restore Missing Static Chunks For Local And LAN Web Access
+- Changed paths:
+  - `backend/app/static/assets/ActivityLogs-c3uhES8p.js`
+  - `backend/app/static/assets/CameraZones-C8VFy9ws.js`
+  - `backend/app/static/assets/CustomerJourneys-DDWFH78Q.js`
+  - `backend/app/static/assets/EmployeeManagement-CHADoRv-.js`
+  - `backend/app/static/assets/charts-xFXgYxa9.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Restored missing built frontend chunks in `backend/app/static/assets` so the browser can load the full React bundle from both `http://localhost:8767/` and `http://192.168.1.113:8767/`.
+  - Fixed the broken static deployment state where `index.html` referenced chunk files that were present in `frontend/dist` but absent from the served backend static directory.
