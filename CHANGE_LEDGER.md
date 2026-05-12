@@ -987,3 +987,34 @@ elevant == 0).
 - Summary:
   - Restored missing built frontend chunks in `backend/app/static/assets` so the browser can load the full React bundle from both `http://localhost:8767/` and `http://192.168.1.113:8767/`.
   - Fixed the broken static deployment state where `index.html` referenced chunk files that were present in `frontend/dist` but absent from the served backend static directory.
+
+### 2026-05-12 - Simplify Overview Custom Date Range Selection
+- Changed paths:
+  - `frontend/src/pages/Overview.tsx`
+  - `backend/app/static/index.html`
+  - `backend/app/static/assets/ActivityLogs-Du8OaUnL.js`
+  - `backend/app/static/assets/CameraZones-CEFNETib.js`
+  - `backend/app/static/assets/CustomerJourneys-DCho0iOA.js`
+  - `backend/app/static/assets/EmployeeManagement-f71fX0vP.js`
+  - `backend/app/static/assets/FrameReview-SaCHrgvI.js`
+  - `backend/app/static/assets/Login-BIp2mYSL.js`
+  - `backend/app/static/assets/ModelAccuracy-CIxPy5dW.js`
+  - `backend/app/static/assets/ModelFeedback-BmrcuKBb.js`
+  - `backend/app/static/assets/Organisation-CKIM3wrH.js`
+  - `backend/app/static/assets/Overview-B20TZ8Pg.js`
+  - `backend/app/static/assets/QualityFeedback-CVwBkrKg.js`
+  - `backend/app/static/assets/ReportsPage-D6BNapqu.js`
+  - `backend/app/static/assets/RolePermissions-D1O5TBHV.js`
+  - `backend/app/static/assets/RunDetail-B13DYn8i.js`
+  - `backend/app/static/assets/SchedulerDashboard-B-IEO-a5.js`
+  - `backend/app/static/assets/StoreAccess-BEicvwAg.js`
+  - `backend/app/static/assets/StoreDetail-BeR_TfHa.js`
+  - `backend/app/static/assets/StoreMapping-gL9rSLWc.js`
+  - `backend/app/static/assets/StoreMaster-Fjpob7tL.js`
+  - `backend/app/static/assets/UsersPage-DwwOXJlo.js`
+  - `backend/app/static/assets/index-DG-N7j6c.js`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Removed the redundant `Period to date` option from the `/overview` date picker so only the required shortcuts and custom range remain.
+  - Changed custom range behavior so the `To` date cannot be selected earlier than `From`, and moving the `From` date forward automatically lifts an older `To` date instead of showing a validation error for that case.
+  - Rebuilt and refreshed the served React static bundle so the updated `/overview` picker is live from the FastAPI app on port `8767`.

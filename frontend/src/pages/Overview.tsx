@@ -115,7 +115,7 @@ function TrendLineChart({ data }: { data: Array<{ period: string; "Walk-ins": nu
   );
 }
 
-type PickerMode = "today" | "yesterday" | "last" | "period" | "custom";
+type PickerMode = "today" | "yesterday" | "last" | "custom";
 
 interface DateSelectionState {
   mode: PickerMode;
@@ -129,7 +129,6 @@ const SIDEBAR_OPTIONS: Array<{ key: PickerMode; label: string }> = [
   { key: "today", label: "Today" },
   { key: "yesterday", label: "Yesterday" },
   { key: "last", label: "Last" },
-  { key: "period", label: "Period to date" },
   { key: "custom", label: "Custom range" },
 ];
 
@@ -150,10 +149,6 @@ function shiftDate(base: Date, days: number) {
   const next = new Date(base);
   next.setDate(next.getDate() + days);
   return next;
-}
-
-function startOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
 }
 
 function formatDisplayDate(value: string) {
@@ -196,26 +191,12 @@ function getComputedSelection(selection: DateSelectionState) {
         invalid: false,
       };
     }
-    case "period": {
-      const start = startOfMonth(today);
-      const from = formatInputDate(start);
-      const to = formatInputDate(today);
-      const dayCount = Math.max(1, Math.round((today.getTime() - start.getTime()) / 86400000) + 1);
-      return {
-        filter: { dateFrom: from, dateTo: to } as DashboardDateFilter,
-        label: "Period to date",
-        summary: formatRangeText(from, to),
-        cacheKey: `period_${from}_${to}`,
-        dayCount,
-        invalid: false,
-      };
-    }
     case "custom": {
-      if (!selection.from || !selection.to || selection.from > selection.to) {
+      if (!selection.from || !selection.to) {
         return {
           filter: { days: 30 } as DashboardDateFilter,
           label: "Custom range",
-          summary: "Select a valid date range",
+          summary: "Select both From and To dates",
           cacheKey: "custom_invalid",
           dayCount: 30,
           invalid: true,
@@ -293,7 +274,6 @@ export default function Overview() {
   const draftError = useMemo(() => {
     if (draftSelection.mode !== "custom") return "";
     if ((draftSelection.from && !draftSelection.to) || (!draftSelection.from && draftSelection.to)) return "Select both From and To dates.";
-    if (draftSelection.from && draftSelection.to && draftSelection.from > draftSelection.to) return "From date cannot be after To date.";
     return "";
   }, [draftSelection]);
 
@@ -478,7 +458,11 @@ export default function Overview() {
                           <input
                             type="date"
                             value={draftSelection.from}
-                            onChange={(e) => setDraftSelection((current) => ({ ...current, from: e.target.value }))}
+                            onChange={(e) => setDraftSelection((current) => {
+                              const nextFrom = e.target.value;
+                              const nextTo = current.to && nextFrom && current.to < nextFrom ? nextFrom : current.to;
+                              return { ...current, from: nextFrom, to: nextTo };
+                            })}
                             className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
                           />
                         </label>
@@ -487,6 +471,7 @@ export default function Overview() {
                           <input
                             type="date"
                             value={draftSelection.to}
+                            min={draftSelection.from || undefined}
                             onChange={(e) => setDraftSelection((current) => ({ ...current, to: e.target.value }))}
                             className="mt-2 h-12 rounded-2xl border border-slate-300 px-4 text-lg font-medium text-slate-800 outline-none transition focus:border-slate-500"
                           />
@@ -499,7 +484,7 @@ export default function Overview() {
                     </div>
                   )}
 
-                  {(draftSelection.mode === "today" || draftSelection.mode === "yesterday" || draftSelection.mode === "period") && (
+                  {(draftSelection.mode === "today" || draftSelection.mode === "yesterday") && (
                     <div className="space-y-5">
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
                         <div className="text-sm font-medium uppercase tracking-wide text-slate-400">{draftPreview.label}</div>
