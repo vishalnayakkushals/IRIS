@@ -271,6 +271,7 @@ def write_pipeline_reports(
             "store_report_csv": str(report_actual_path.resolve()),
             "walkin_sessions_csv": str(walkin_sessions_path.resolve()) if walkin_rows else "",
             "yolo_review_manifests": relevant_manifest_outputs,
+            "yolo_review_images_root": str((store_out / "yolo_review_images").resolve()),
         },
     }
     summary_path = cfg.out_dir / f"onfly_run_summary_{run_id}.json"

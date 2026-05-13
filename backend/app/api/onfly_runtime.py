@@ -412,6 +412,7 @@ def _run_pipeline_sync(
             source_uri=source_url,
             db_path=settings.db_path_obj,
             out_dir=out_dir,
+            keep_relevant_dir=out_dir / store_id / "yolo_review_images",
             detector_type=os.getenv("ONFLY_DETECTOR", "onnx"),
             conf_threshold=settings.yolo_conf,
             max_images=max_images,

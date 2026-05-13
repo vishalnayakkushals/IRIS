@@ -133,6 +133,30 @@ def _seed_discovered_images(conn: sqlite3.Connection, cfg: OnFlyConfig, images: 
         )
         conn.commit()
 
+
+def _safe_relevant_date(item: SourceImage) -> str:
+    text = str(item.date_display or "").strip()
+    if text:
+        return text.replace("/", "-").replace("\\", "-").replace(":", "-")
+    text = str(item.date_source or "").strip()
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        yyyy, mm, dd = text.split("-")
+        return f"{dd}-{mm}-{yyyy}"
+    if text:
+        return text.replace("/", "-").replace("\\", "-").replace(":", "-")
+    return "unknown_date"
+
+
+def _write_relevant_review_image(cfg: OnFlyConfig, item: SourceImage, image_bytes: bytes) -> None:
+    if cfg.keep_relevant_dir is None:
+        return
+    date_dir = cfg.keep_relevant_dir / _safe_relevant_date(item)
+    date_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (date_dir / item.image_name).write_bytes(image_bytes)
+    except Exception:
+        pass
+
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
     with sqlite3.connect(str(cfg.db_path)) as _btconn:
@@ -699,12 +723,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                 if sample_anchor is not None:
                     _sampling_anchors[sample_key] = sample_anchor
 
-            if relevant == 1 and cfg.keep_relevant_dir is not None:
-                cfg.keep_relevant_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    (cfg.keep_relevant_dir / item.image_name).write_bytes(image_bytes)
-                except Exception:
-                    pass
+            if relevant == 1:
+                _write_relevant_review_image(cfg, item, image_bytes)
             if relevant == 1 and cfg.gpt_enabled and gpt_needed:
                 stage = PIPELINE_STAGES[4]
                 _update_pipeline_run(conn, run_id, current_stage=stage)

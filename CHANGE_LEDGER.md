@@ -56,6 +56,7 @@ It records what changed, where it changed, and why.
 | `deploy/cloud/iris-store-auto-sync.service` | Systemd unit for the store auto-sync worker. |
 | `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
 | `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
+| `scripts/export_relevant_review_images.py` | Backfills same-date local folders for already-scanned YOLO-relevant images by fetching source bytes from Drive or local storage. |
 
 ---
 
@@ -1136,3 +1137,15 @@ elevant == 0).
 - Summary:
   - Added the repository root to `sys.path` before launching the store auto-sync worker so `backend.app.workers.store_auto_sync` can import correctly in the no-Docker local runtime.
   - This restores the supported `start_store_auto_sync_service.py` path for hourly mapped-store automation on the current React + FastAPI architecture.
+
+### 2026-05-13 - Same-Date Local Folders For YOLO Relevant Images
+- Changed paths:
+  - `backend/app/api/onfly_runtime.py`
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/report_writer.py`
+  - `scripts/export_relevant_review_images.py`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Future on-fly runs now write actual relevant-image files into `data/exports/current/onfly/<store_id>/yolo_review_images/<dd-mm-yyyy>/` instead of only exposing CSV manifests.
+  - Added a reusable backfill script for already-scanned history so relevant-image folders can be generated from existing `onfly_image_state` rows without rerunning the full pipeline.
+  - Backfilled `BLRRRN` for `01-05-2026`, creating the local same-date review folder under `data/exports/current/onfly/BLRRRN/yolo_review_images/01-05-2026`.

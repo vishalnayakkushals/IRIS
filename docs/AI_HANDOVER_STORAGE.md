@@ -61,6 +61,7 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - Irrelevant local-only images can still be removed after processing according to pipeline policy.
 - Canonical outputs are written under `data/exports/current/onfly/`.
 - Each run now also writes lightweight YOLO-review manifest CSVs under `data/exports/current/onfly/<store_id>/yolo_review_manifests/`, including one combined file plus one same-date folder per scanned date with Drive links for relevant images only.
+- Each run now also writes actual relevant-image files under `data/exports/current/onfly/<store_id>/yolo_review_images/<dd-mm-yyyy>/` for local visual review by date.
 - IRIS still does not create Google Drive folders or shortcuts directly because the current Drive integration uses a public read-only API key. Publishing those manifests back into Drive will require a write-capable service account or OAuth client later.
 
 ### Large Folder Scan Guardrail
