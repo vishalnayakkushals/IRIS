@@ -227,6 +227,8 @@ The final business meaning is built later from:
 
 ### Step 6 - `GPT`
 - Runs only for relevant anchor frames (when GPT enabled).
+- The `/scheduler` page has an `OpenAI GPT calls` checkbox backed by `cfg_onfly_scheduler_enable_gpt`.
+- When that setting is off, OpenAI is not called; YOLO, relevant-image Drive storage, scan reports, and dashboard state still continue.
 - Input image is base64 in memory (not persisted as raw image blobs).
 - GPT decides semantics:
   - role/event understanding (`ENTRY`, `EXIT`, `INSIDE_ACTIVE`, etc.)

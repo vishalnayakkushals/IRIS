@@ -50,6 +50,25 @@ class SyncRequest(BaseModel):
     gpt_batch_mode: bool = False
 
 
+class GptControlRequest(BaseModel):
+    enabled: bool = False
+
+
+def _get_openai_calls_enabled() -> bool:
+    from iris.store_registry import get_app_settings
+
+    settings = get_settings()
+    values = get_app_settings(settings.db_path_obj)
+    return str(values.get("cfg_onfly_scheduler_enable_gpt", "0")).strip().lower() in {"1", "true", "yes", "on", "y", "t"}
+
+
+def _set_openai_calls_enabled(enabled: bool) -> None:
+    from iris.store_registry import upsert_app_settings
+
+    settings = get_settings()
+    upsert_app_settings(settings.db_path_obj, {"cfg_onfly_scheduler_enable_gpt": "1" if enabled else "0"})
+
+
 @router.get("/stores")
 async def list_onfly_stores(_: str = Depends(get_current_user)) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as session:
@@ -118,6 +137,27 @@ async def get_store_sync_status(store_id: str, _: str = Depends(get_current_user
     return payload
 
 
+@router.get("/gpt-control")
+async def get_gpt_control(_: str = Depends(get_current_user)) -> dict[str, Any]:
+    enabled = _get_openai_calls_enabled()
+    return {
+        "enabled": enabled,
+        "setting_key": "cfg_onfly_scheduler_enable_gpt",
+        "message": "OpenAI GPT calls are enabled" if enabled else "OpenAI GPT calls are disabled",
+    }
+
+
+@router.put("/gpt-control")
+async def update_gpt_control(body: GptControlRequest, actor: str = Depends(get_current_user)) -> dict[str, Any]:
+    _set_openai_calls_enabled(bool(body.enabled))
+    enabled = _get_openai_calls_enabled()
+    return {
+        "enabled": enabled,
+        "updated_by": actor,
+        "message": "OpenAI GPT calls enabled" if enabled else "OpenAI GPT calls disabled",
+    }
+
+
 @router.post("/sync/{store_id}")
 async def trigger_onfly_sync(store_id: str, body: SyncRequest, actor: str = Depends(get_current_user)) -> dict[str, Any]:
     orphan_progress = _mark_stale_run_if_needed(get_settings().db_path_obj, store_id, "")
@@ -155,6 +195,9 @@ async def trigger_onfly_sync(store_id: str, body: SyncRequest, actor: str = Depe
     source_url = requested_source or configured_source_url
     requested_cap = settings.max_images if body.max_images is None else int(body.max_images)
     max_images = max(0, requested_cap)
+    openai_calls_enabled = _get_openai_calls_enabled()
+    effective_gpt_enabled = bool(body.gpt_enabled and openai_calls_enabled)
+    effective_gpt_batch_mode = bool(body.gpt_batch_mode and effective_gpt_enabled)
     run_id = _make_run_id(store_id)
     _set_active_run(store_id, run_id)
 
@@ -166,11 +209,11 @@ async def trigger_onfly_sync(store_id: str, body: SyncRequest, actor: str = Depe
         store_id,
         source_url,
         body.triggered_by,
-        body.gpt_enabled,
+        effective_gpt_enabled,
         body.use_tracker,
         max_images,
         body.force_reprocess,
-        body.gpt_batch_mode,
+        effective_gpt_batch_mode,
     )
     return {
         "run_id": run_id,
@@ -178,10 +221,12 @@ async def trigger_onfly_sync(store_id: str, body: SyncRequest, actor: str = Depe
         "source_url": source_url,
         "max_images": max_images,
         "force_reprocess": bool(body.force_reprocess),
-        "gpt_batch_mode": bool(body.gpt_batch_mode),
+        "openai_calls_enabled": openai_calls_enabled,
+        "gpt_enabled": effective_gpt_enabled,
+        "gpt_batch_mode": effective_gpt_batch_mode,
         "status": "running",
         "message": (
-            f"Pipeline started for {store_id} — GPT: {'batch' if body.gpt_batch_mode else ('on' if body.gpt_enabled else 'off')} | "
+            f"Pipeline started for {store_id} — GPT: {'batch' if effective_gpt_batch_mode else ('on' if effective_gpt_enabled else 'off')} | "
             f"Source: {'override' if source_url != configured_source_url else 'configured'} | "
             f"Max images: {'full folder' if max_images == 0 else max_images}"
         ),

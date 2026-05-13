@@ -394,10 +394,26 @@ def _run_pipeline_sync(
     settings = get_settings()
     out_dir = settings.data_root_obj / "exports" / "current" / "onfly"
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from iris.store_registry import get_app_settings
+
+        app_settings = get_app_settings(settings.db_path_obj)
+        openai_calls_enabled = str(app_settings.get("cfg_onfly_scheduler_enable_gpt", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "y",
+            "t",
+        }
+    except Exception:
+        openai_calls_enabled = False
+    effective_gpt_enabled = bool(gpt_enabled and openai_calls_enabled)
+    effective_gpt_batch_mode = bool(gpt_batch_mode and effective_gpt_enabled)
     _sync_update_store_sync_state(
         store_id=store_id,
         status="running",
-        message="Pipeline started",
+        message=f"Pipeline started | GPT: {'batch' if effective_gpt_batch_mode else ('on' if effective_gpt_enabled else 'off')}",
         file_count=0,
         source_uri=source_url,
         source_provider=_detect_source_provider(source_url),
@@ -417,14 +433,14 @@ def _run_pipeline_sync(
             detector_type=os.getenv("ONFLY_DETECTOR", "onnx"),
             conf_threshold=settings.yolo_conf,
             max_images=max_images,
-            gpt_enabled=gpt_enabled,
+            gpt_enabled=effective_gpt_enabled,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             google_api_key=settings.google_api_key,
             pipeline_version="onfly_v2",
             use_tracker=use_tracker,
             force_reprocess=force_reprocess,
-            gpt_batch_mode=gpt_batch_mode,
+            gpt_batch_mode=effective_gpt_batch_mode,
             export_relevant_drive_images=drive_review_export_enabled,
         )
         summary = run_onfly_pipeline(cfg)

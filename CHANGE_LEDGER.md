@@ -135,6 +135,24 @@ npm run build
   - Added Drive duplicate prevention by checking the destination date folder for the original filename before copying, and updated the source scanners to ignore `Relevant image` so review output is not re-ingested.
   - Updated the existing relevant-image backfill script to populate the Drive review folders from `onfly_image_state`, and added focused unit tests for folder creation, filename preservation, duplicate skipping, and date-folder parent handling.
 
+### 2026-05-13 - OpenAI GPT Runtime Kill Switch
+
+- Changed paths:
+  - `backend/app/api/routes_onfly.py`
+  - `backend/app/api/onfly_runtime.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/features/scheduler/sections.tsx`
+  - `scripts/onfly_scheduler.py`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `docs/process/onfly_pipeline_logic.md`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a persisted `/scheduler` `OpenAI GPT calls` toggle backed by `cfg_onfly_scheduler_enable_gpt` so manual syncs and hourly automation can run YOLO/reports/relevant-image storage without calling OpenAI.
+  - Enforced the setting in the backend runtime as a guardrail, so OpenAI calls stay disabled even if a manual request sends `gpt_enabled=true` while the stored toggle is off.
+  - Changed the on-fly scheduler default to GPT off unless explicitly enabled, preserving all existing YOLO/GPT code paths for later re-enable.
+
 ### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
 
 - Changed paths:

@@ -118,12 +118,12 @@ export function SyncTriggerCard(props: SyncTriggerCardProps) {
             <label className="iris-label">Max Images</label>
             <input type="number" min={0} step={100} value={maxImages} onChange={(e) => onMaxImagesChange(Number(e.target.value || 0))} className="iris-input" />
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
+          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2" title="Controls OpenAI GPT calls for manual syncs and hourly automation. YOLO and reports still run when this is off.">
             <input type="checkbox" checked={gptEnabled} onChange={(e) => onGptEnabledChange(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
-            GPT analysis
+            OpenAI GPT calls
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2" title="Queue images for overnight OpenAI Batch API (50% cost saving). Results ready by morning.">
-            <input type="checkbox" checked={gptBatchMode} onChange={(e) => onGptBatchModeChange(e.target.checked)} className="rounded border-slate-300 text-purple-600" />
+            <input type="checkbox" checked={gptBatchMode} disabled={!gptEnabled} onChange={(e) => onGptBatchModeChange(e.target.checked)} className="rounded border-slate-300 text-purple-600 disabled:opacity-40" />
             <span className="flex items-center gap-1">Batch mode <span className="text-xs bg-purple-100 text-purple-700 px-1 rounded">50% cheaper</span></span>
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer pb-2">
@@ -166,7 +166,7 @@ export function SyncTriggerCard(props: SyncTriggerCardProps) {
           </div>
         </div>
       )}
-      <div className="text-xs text-slate-400">Manual sync accepts the mapped parent folder, a child date-folder URL, or a raw Google Drive folder ID. Delta skip still applies unless Force rerun is enabled. 0 = full folder, and manual runs are no longer capped at the old 10,000-image limit.</div>
+      <div className="text-xs text-slate-400">Manual sync accepts the mapped parent folder, a child date-folder URL, or a raw Google Drive folder ID. Delta skip still applies unless Force rerun is enabled. 0 = full folder. When OpenAI GPT calls are off, YOLO, relevant-image storage, and scan reports still run, but GPT customer/staff fields are not filled.</div>
     </Card>
   );
 }

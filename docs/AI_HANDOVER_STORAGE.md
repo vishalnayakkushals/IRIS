@@ -90,9 +90,13 @@ The following cost controls are already implemented in code and should be treate
 | SHA-256 duplicate reuse | `src/iris/onfly_pipeline.py`, `src/iris/download_manager.py` |
 | Store-hours skip | `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
 | Camera exclusion | `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
+| OpenAI GPT kill switch | `/scheduler` -> `OpenAI GPT calls`, backed by `cfg_onfly_scheduler_enable_gpt` in `store_registry.db` |
 | OpenAI batch mode | `src/iris/gpt_batch.py`, `src/iris/onfly_pipeline.py` |
 | Smart frame sampling | `src/iris/download_manager.py`, `src/iris/onfly_pipeline.py`, `src/iris/session_reconstruction.py` |
 | Cost metrics materialization | `src/iris/report_writer.py`, `backend/app/api/report_queries.py`, `backend/app/api/routes_reports.py` |
+
+Operational note:
+- When `cfg_onfly_scheduler_enable_gpt=0`, manual syncs and hourly on-fly automation still run listing, YOLO, relevant-image Drive storage, and reports, but they do not call OpenAI and GPT-derived customer/staff/session fields remain unfilled until GPT is re-enabled and rerun.
 
 ### Smart Frame Sampling (newly live)
 Consecutive frames with similar YOLO person-box signatures on the same date/camera are now skipped for GPT after the first anchor frame. Sampled frames inherit the resolved GPT/session result from the anchor frame later in the run.

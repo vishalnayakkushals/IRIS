@@ -415,6 +415,8 @@ export const onFlyListStores = () => api.get<any[]>("/onfly/stores");
 export const onFlyStoreStatus = (storeId: string) => api.get<any>(`/onfly/status/${storeId}`);
 export const onFlySync = (storeId: string, body: { gpt_enabled?: boolean; use_tracker?: boolean; source_url?: string; max_images?: number; force_reprocess?: boolean; gpt_batch_mode?: boolean }) =>
   api.post<any>(`/onfly/sync/${storeId}`, body);
+export const onFlyGetGptControl = () => api.get<{ enabled: boolean; setting_key: string; message: string }>("/onfly/gpt-control");
+export const onFlyUpdateGptControl = (enabled: boolean) => api.put<{ enabled: boolean; message: string }>("/onfly/gpt-control", { enabled });
 export const onFlyBatchStatus = (storeId: string) => api.get<any[]>(`/onfly/batch/status/${storeId}`);
 export const onFlyBatchRetrieve = (storeId: string) => api.post<any>(`/onfly/batch/retrieve/${storeId}`, {});
 export const onFlyLiveProgress = (storeId: string) => api.get<any>(`/onfly/live-progress/${storeId}`);

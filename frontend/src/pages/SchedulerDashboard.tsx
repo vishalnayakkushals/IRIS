@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { adminCleanupZombieRuns, adminListStores, getRuns, onFlyDateReport, onFlyListStores, onFlyLiveProgress, onFlySync } from "../api/client";
+import { adminCleanupZombieRuns, adminListStores, getRuns, onFlyDateReport, onFlyGetGptControl, onFlyListStores, onFlyLiveProgress, onFlySync, onFlyUpdateGptControl } from "../api/client";
 import { useStore } from "../context/StoreContext";
 import type { RunRecord } from "../api/client";
 import { Card, Metric, Text, Title } from "@tremor/react";
@@ -14,7 +14,7 @@ export default function SchedulerDashboard() {
   const [stores, setStores] = useState<any[]>([]);
   const [adminStores, setAdminStores] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState(globalStoreId);
-  const [gptEnabled, setGptEnabled] = useState(true);
+  const [gptEnabled, setGptEnabled] = useState(false);
   const [gptBatchMode, setGptBatchMode] = useState(false);
   const [manualSource, setManualSource] = useState("");
   const [maxImages, setMaxImages] = useState(10000);
@@ -51,6 +51,17 @@ export default function SchedulerDashboard() {
     }
   }, []);
 
+  const loadGptControl = useCallback(async () => {
+    try {
+      const { data } = await onFlyGetGptControl();
+      setGptEnabled(Boolean(data.enabled));
+      if (!data.enabled) setGptBatchMode(false);
+    } catch {
+      setGptEnabled(false);
+      setGptBatchMode(false);
+    }
+  }, []);
+
   const loadProgress = useCallback(async (storeId: string) => {
     if (!storeId) return;
     try {
@@ -79,7 +90,8 @@ export default function SchedulerDashboard() {
   useEffect(() => {
     loadRuns();
     loadStores();
-  }, [loadRuns, loadStores]);
+    loadGptControl();
+  }, [loadRuns, loadStores, loadGptControl]);
 
   useEffect(() => {
     if (!selectedStore) return;
@@ -109,6 +121,21 @@ export default function SchedulerDashboard() {
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(""), 4000);
+  }
+
+  async function handleGptEnabledChange(enabled: boolean) {
+    setGptEnabled(enabled);
+    if (!enabled) setGptBatchMode(false);
+    try {
+      const { data } = await onFlyUpdateGptControl(enabled);
+      setGptEnabled(Boolean(data.enabled));
+      if (!data.enabled) setGptBatchMode(false);
+      showToast(data.message || (data.enabled ? "OpenAI GPT calls enabled" : "OpenAI GPT calls disabled"));
+    } catch {
+      setGptEnabled(false);
+      setGptBatchMode(false);
+      showToast("Could not update OpenAI GPT setting");
+    }
   }
 
   async function handleSyncNow() {
@@ -249,7 +276,7 @@ export default function SchedulerDashboard() {
         onSelectedStoreChange={(next) => { setSelectedStore(next); setLiveProgress(null); setDateReport([]); }}
         onManualSourceChange={setManualSource}
         onMaxImagesChange={setMaxImages}
-        onGptEnabledChange={setGptEnabled}
+        onGptEnabledChange={(value) => void handleGptEnabledChange(value)}
         onGptBatchModeChange={setGptBatchMode}
         onForceReprocessChange={setForceReprocess}
         onSyncNow={() => void handleSyncNow()}

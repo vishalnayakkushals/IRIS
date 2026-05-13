@@ -26,7 +26,7 @@ ONFLY_SCHEDULER_DEFAULTS: dict[str, object] = {
     "hourly_minutes": 60,
     "nightly_at": "03:00",
     "max_images": 0,
-    "enable_gpt": True,
+    "enable_gpt": False,
     "detector": "yolo",
     "conf": "0.18",
     "pipeline_version": "onfly_v1",
@@ -125,7 +125,7 @@ def _load_onfly_scheduler_config(db_path: Path) -> dict[str, object]:
             ),
         ),
         "enable_gpt": _truthy(
-            settings.get("cfg_onfly_scheduler_enable_gpt", "1"),
+            settings.get("cfg_onfly_scheduler_enable_gpt", "0"),
             default=bool(ONFLY_SCHEDULER_DEFAULTS["enable_gpt"]),
         ),
         "detector": _read_str(
