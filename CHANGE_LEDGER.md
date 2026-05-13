@@ -58,6 +58,7 @@ It records what changed, where it changed, and why.
 | `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
 | `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
 | `scripts/export_relevant_review_images.py` | Backfills Google Drive `Relevant image/<date-folder>/` folders for already-scanned YOLO-relevant images using existing `onfly_image_state` rows. |
+| `scripts/configure_drive_service_account.py` | Configures local Google Drive write access by copying a service-account JSON key into `.local-secrets/` and pointing `.env.local` to it. |
 | `scripts/export_onfly_processing_stats.py` | Exact store/date processing stats exporter that reconciles source-folder inventory, SQLite pipeline state, run events, walk-in rows, and generated report files into CSV/JSON outputs. |
 | `tests/test_drive_review_export.py` | Focused unit tests for Google Drive relevant-image folder creation, original filename preservation, duplicate skipping, and date-folder parent handling. |
 
@@ -152,6 +153,20 @@ npm run build
   - Added a persisted `/scheduler` `OpenAI GPT calls` toggle backed by `cfg_onfly_scheduler_enable_gpt` so manual syncs and hourly automation can run YOLO/reports/relevant-image storage without calling OpenAI.
   - Enforced the setting in the backend runtime as a guardrail, so OpenAI calls stay disabled even if a manual request sends `gpt_enabled=true` while the stored toggle is off.
   - Changed the on-fly scheduler default to GPT off unless explicitly enabled, preserving all existing YOLO/GPT code paths for later re-enable.
+
+### 2026-05-13 - Drive Write Credential Setup Helper
+
+- Changed paths:
+  - `.env.local.example`
+  - `src/iris/drive_review_export.py`
+  - `scripts/configure_drive_service_account.py`
+  - `tests/test_drive_review_export.py`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added support for `GOOGLE_SERVICE_ACCOUNT_FILE` / `GOOGLE_APPLICATION_CREDENTIALS` so Drive relevant-image export can use a local service-account JSON key instead of requiring a multiline private key in `.env.local`.
+  - Added a setup helper that copies a downloaded service-account JSON key into `.local-secrets/`, updates `.env.local`, and prints the service-account email that must be shared as Editor on the Drive parent folder.
+  - Extended the Drive export tests to verify file-based service-account credentials are accepted even when the old `GOOGLE_PRIVATE_KEY` value is still a placeholder.
 
 ### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
 

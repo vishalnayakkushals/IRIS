@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from google.oauth2 import service_account
@@ -32,8 +34,38 @@ def original_review_filename(item: SourceImage) -> str:
     return str(item.image_name or "image.jpg").strip() or "image.jpg"
 
 
+def _service_account_file() -> Path | None:
+    raw = str(os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")).strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def _service_account_file_status(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return False, f"GOOGLE_SERVICE_ACCOUNT_FILE does not exist: {path}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"GOOGLE_SERVICE_ACCOUNT_FILE is not valid JSON: {exc}"
+    if data.get("type") != "service_account":
+        return False, "GOOGLE_SERVICE_ACCOUNT_FILE is not a service_account JSON"
+    if "@" not in str(data.get("client_email", "")):
+        return False, "GOOGLE_SERVICE_ACCOUNT_FILE is missing client_email"
+    if "BEGIN PRIVATE KEY" not in str(data.get("private_key", "")):
+        return False, "GOOGLE_SERVICE_ACCOUNT_FILE is missing a real private_key"
+    return True, ""
+
+
 def drive_review_export_status() -> tuple[bool, str]:
     load_env_file()
+    account_file = _service_account_file()
+    if account_file is not None:
+        return _service_account_file_status(account_file)
+
     private_key = str(os.getenv("GOOGLE_PRIVATE_KEY", "")).strip()
     client_email = str(os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")).strip()
     private_key_id = str(os.getenv("GOOGLE_SERVICE_ACCOUNT_ID", "")).strip()
@@ -46,6 +78,23 @@ def drive_review_export_status() -> tuple[bool, str]:
     return True, ""
 
 
+def _build_drive_credentials() -> service_account.Credentials:
+    account_file = _service_account_file()
+    scopes = ["https://www.googleapis.com/auth/drive"]
+    if account_file is not None:
+        return service_account.Credentials.from_service_account_file(str(account_file), scopes=scopes)
+
+    private_key = str(os.getenv("GOOGLE_PRIVATE_KEY", "")).replace("\\n", "\n")
+    creds_info = {
+        "type": "service_account",
+        "client_email": str(os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")).strip(),
+        "private_key_id": str(os.getenv("GOOGLE_SERVICE_ACCOUNT_ID", "")).strip(),
+        "private_key": private_key,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    return service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
+
+
 class DriveRelevantImageExporter:
     def __init__(self, source_uri: str) -> None:
         ok, reason = drive_review_export_status()
@@ -55,18 +104,7 @@ class DriveRelevantImageExporter:
         if not folder_id:
             raise RuntimeError("Drive review export requires a Google Drive source folder URL")
 
-        private_key = str(os.getenv("GOOGLE_PRIVATE_KEY", "")).replace("\\n", "\n")
-        creds_info = {
-            "type": "service_account",
-            "client_email": str(os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")).strip(),
-            "private_key_id": str(os.getenv("GOOGLE_SERVICE_ACCOUNT_ID", "")).strip(),
-            "private_key": private_key,
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info,
-            scopes=["https://www.googleapis.com/auth/drive"],
-        )
+        creds = _build_drive_credentials()
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         self._source_root_id = folder_id
         root = self._service.files().get(

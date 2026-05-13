@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from iris.drive_review_export import DriveRelevantImageExporter
+import json
+
+from iris.drive_review_export import DriveRelevantImageExporter, drive_review_export_status
 from iris.source_clients import SourceImage
 
 
@@ -150,3 +152,21 @@ def test_relevant_image_export_skips_non_drive_sources():
 
     assert result == {"status": "skipped", "reason": "not_gdrive"}
     assert service.files_api.copied_files == []
+
+
+def test_drive_review_export_status_accepts_service_account_file(tmp_path, monkeypatch):
+    key_path = tmp_path / "service-account.json"
+    key_path.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "client_email": "iris@test-project.iam.gserviceaccount.com",
+                "private_key": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(key_path))
+    monkeypatch.setenv("GOOGLE_PRIVATE_KEY", "replace_with_private_key_from_it_admin")
+
+    assert drive_review_export_status() == (True, "")
