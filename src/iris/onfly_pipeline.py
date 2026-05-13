@@ -54,7 +54,7 @@ from iris.download_manager import (
     yolo_detect_direct as _yolo_detect_direct,
     yolo_detect_full_result as _yolo_detect_full_result,
 )
-from iris.drive_review_export import DriveRelevantShortcutExporter, unique_review_filename
+from iris.drive_review_export import DriveRelevantImageExporter
 from iris.session_reconstruction import (
     auto_discover_cameras as _auto_discover_cameras,
     load_billing_cameras as _load_billing_cameras,
@@ -135,29 +135,6 @@ def _seed_discovered_images(conn: sqlite3.Connection, cfg: OnFlyConfig, images: 
         conn.commit()
 
 
-def _safe_relevant_date(item: SourceImage) -> str:
-    text = str(item.date_display or "").strip()
-    if text:
-        return text.replace("/", "-").replace("\\", "-").replace(":", "-")
-    text = str(item.date_source or "").strip()
-    if len(text) == 10 and text[4] == "-" and text[7] == "-":
-        yyyy, mm, dd = text.split("-")
-        return f"{dd}-{mm}-{yyyy}"
-    if text:
-        return text.replace("/", "-").replace("\\", "-").replace(":", "-")
-    return "unknown_date"
-
-
-def _write_relevant_review_image(cfg: OnFlyConfig, item: SourceImage, image_bytes: bytes) -> None:
-    if cfg.keep_relevant_dir is None:
-        return
-    date_dir = cfg.keep_relevant_dir / _safe_relevant_date(item)
-    date_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        (date_dir / unique_review_filename(item)).write_bytes(image_bytes)
-    except Exception:
-        pass
-
 def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     init_onfly_tables(cfg.db_path)
     with sqlite3.connect(str(cfg.db_path)) as _btconn:
@@ -169,13 +146,13 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
     perf0 = time.perf_counter()
     client = build_source_client(cfg.source_uri, cfg.google_api_key)
     source_provider = client.provider
-    drive_shortcut_exporter: DriveRelevantShortcutExporter | None = None
-    drive_shortcut_export_error = ""
-    if cfg.export_relevant_drive_shortcuts and source_provider == "gdrive":
+    drive_image_exporter: DriveRelevantImageExporter | None = None
+    drive_image_export_error = ""
+    if (cfg.export_relevant_drive_images or cfg.export_relevant_drive_shortcuts) and source_provider == "gdrive":
         try:
-            drive_shortcut_exporter = DriveRelevantShortcutExporter(cfg.source_uri)
+            drive_image_exporter = DriveRelevantImageExporter(cfg.source_uri)
         except Exception as exc:
-            drive_shortcut_export_error = str(exc)[:500]
+            drive_image_export_error = str(exc)[:500]
     detector = None
     detector_warning = ""
     timings = {"list_ms": 0.0, "detector_init_ms": 0.0, "download_ms": 0.0, "yolo_ms": 0.0, "gpt_ms": 0.0, "report_ms": 0.0}
@@ -252,14 +229,14 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
             message="List stage completed",
             payload={"images_discovered": len(images)},
         )
-        if drive_shortcut_export_error:
+        if drive_image_export_error:
             _append_pipeline_event(
                 conn,
                 run_id=run_id,
                 stage=stage,
                 event_type="progress",
-                message="Drive relevant-review shortcut export unavailable",
-                error_message=drive_shortcut_export_error,
+                message="Drive relevant-image export unavailable",
+                error_message=drive_image_export_error,
             )
         stage = PIPELINE_STAGES[1]
         _seed_discovered_images(conn, cfg, images)
@@ -741,11 +718,10 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                     _sampling_anchors[sample_key] = sample_anchor
 
             if relevant == 1:
-                _write_relevant_review_image(cfg, item, image_bytes)
-                if drive_shortcut_exporter is not None:
+                if drive_image_exporter is not None:
                     try:
-                        shortcut_result = drive_shortcut_exporter.export_shortcut(item)
-                        if shortcut_result.get("status") == "created":
+                        export_result = drive_image_exporter.export_image(item)
+                        if export_result.get("status") == "created":
                             _append_pipeline_event(
                                 conn,
                                 run_id=run_id,
@@ -753,8 +729,8 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                                 event_type="progress",
                                 image_id=item.image_id,
                                 image_name=item.image_name,
-                                message="Drive review shortcut created",
-                                payload=shortcut_result,
+                                message="Drive relevant image copied",
+                                payload=export_result,
                             )
                     except Exception as exc:
                         _append_pipeline_event(
@@ -764,7 +740,7 @@ def run_onfly_pipeline(cfg: OnFlyConfig) -> dict[str, Any]:
                             event_type="failure",
                             image_id=item.image_id,
                             image_name=item.image_name,
-                            message="Drive review shortcut export failed",
+                            message="Drive relevant image export failed",
                             error_message=str(exc)[:1000],
                         )
             if relevant == 1 and cfg.gpt_enabled and gpt_needed:

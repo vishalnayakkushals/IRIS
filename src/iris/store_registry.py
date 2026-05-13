@@ -31,6 +31,7 @@ S3_PATH_URL_PATTERN = re.compile(
 )
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _IGNORED_DRIVE_FOLDER_PREFIXES = ("_IRIS_",)
+_IGNORED_DRIVE_FOLDER_NAMES = ("Relevant image",)
 DEFAULT_PERMISSION_CODES = ("config", "dashboard", "licenses", "roles", "stores", "users")
 _SQLITE_TRANSIENT_ERRORS = (
     "disk i/o error",
@@ -2447,7 +2448,10 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
                 if not item_name:
                     continue
                 if item.get("mimeType","")=="application/vnd.google-apps.folder":
-                    if any(item_name.upper().startswith(prefix.upper()) for prefix in _IGNORED_DRIVE_FOLDER_PREFIXES):
+                    if (
+                        item_name.upper() in {ignored.upper() for ignored in _IGNORED_DRIVE_FOLDER_NAMES}
+                        or any(item_name.upper().startswith(prefix.upper()) for prefix in _IGNORED_DRIVE_FOLDER_PREFIXES)
+                    ):
                         continue
                     stack.append((item["id"], rel_parts + [item_name]))
                 elif item.get("mimeType","")=="application/vnd.google-apps.shortcut":

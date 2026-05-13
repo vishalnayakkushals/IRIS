@@ -44,6 +44,8 @@ Update this file whenever on-fly behavior changes.
 - Persists in `onfly_image_state`:
   - `yolo_status`
   - `yolo_relevant`
+- If Drive write credentials are configured, relevant Google Drive images are copied to:
+  - `Relevant image/<same date-folder name>/<original image filename>`
 
 ## Plain-English Brain Logic
 
@@ -247,6 +249,8 @@ The final business meaning is built later from:
   - `data/exports/current/onfly/<STORE_ID>/onfly_process_timings.csv`
 - Writes cost proof rows into:
   - `onfly_cost_metrics`
+- Relevant image review files are stored in Google Drive, not in the local export tree.
+- The source scanner ignores the `Relevant image` folder so review copies are not reprocessed as source images.
 
 ### Step 8 - `DASHBOARD_INGEST`
 - Updates on-fly report index tables for UI/report discovery.

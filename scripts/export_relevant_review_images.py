@@ -13,48 +13,26 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from iris.runtime_bootstrap import load_env_file  # noqa: E402
-from iris.drive_review_export import unique_review_filename  # noqa: E402
-from iris.source_clients import GDriveClient, LocalClient, SourceImage, parse_drive_folder_id  # noqa: E402
+from iris.drive_review_export import DriveRelevantImageExporter, drive_review_export_status  # noqa: E402
+from iris.source_clients import SourceImage  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Backfill local same-date folders for YOLO relevant images")
+    parser = argparse.ArgumentParser(description="Backfill Google Drive Relevant image/<date>/ folders for YOLO relevant images")
     parser.add_argument("--store-id", required=True)
     parser.add_argument("--date", default="", help="Optional display date filter such as 01-05-2026")
     parser.add_argument("--db", type=Path, default=Path("data/store_registry.db"))
-    parser.add_argument("--out-dir", type=Path, default=Path("data/exports/current/onfly"))
     parser.add_argument("--limit", type=int, default=0, help="Optional cap for backfill count")
     return parser.parse_args()
-
-
-def _build_client(row: sqlite3.Row, google_api_key: str):
-    source_provider = str(row["source_provider"] or "").strip().lower()
-    source_uri = str(row["source_uri"] or "").strip()
-    if source_provider == "local":
-        return LocalClient(source_uri)
-    if source_provider == "gdrive" or parse_drive_folder_id(source_uri):
-        return GDriveClient(source_uri, google_api_key)
-    raise RuntimeError(f"Unsupported source provider for {row['image_id']}: {source_provider or source_uri}")
-
-
-def _safe_date(row: sqlite3.Row) -> str:
-    date_display = str(row["date_display"] or "").strip()
-    if date_display:
-        return date_display.replace("/", "-").replace("\\", "-").replace(":", "-")
-    date_source = str(row["date_source"] or "").strip()
-    if len(date_source) == 10 and date_source[4] == "-" and date_source[7] == "-":
-        yyyy, mm, dd = date_source.split("-")
-        return f"{dd}-{mm}-{yyyy}"
-    return "unknown_date"
 
 
 def main() -> None:
     args = parse_args()
     load_env_file()
-    google_api_key = str(__import__("os").environ.get("GOOGLE_API_KEY", "")).strip()
+    ok, reason = drive_review_export_status()
+    if not ok:
+        raise RuntimeError(reason)
     db_path = args.db.resolve()
-    out_root = args.out_dir.resolve() / args.store_id / "yolo_review_images"
-    out_root.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
@@ -77,12 +55,11 @@ def main() -> None:
     finally:
         conn.close()
 
-    written = 0
+    created = 0
     skipped = 0
-    client_cache: dict[tuple[str, str], object] = {}
+    failed = 0
+    exporter_cache: dict[str, DriveRelevantImageExporter] = {}
     for row in rows:
-        date_dir = out_root / _safe_date(row)
-        date_dir.mkdir(parents=True, exist_ok=True)
         item = SourceImage(
             image_id=str(row["image_id"]),
             image_name=str(row["image_name"]),
@@ -95,22 +72,28 @@ def main() -> None:
             camera_id=str(row["camera_id"] or ""),
             timestamp_hint=str(row["timestamp_hint"] or ""),
         )
-        target = date_dir / unique_review_filename(item)
-        if target.exists():
+        if item.source_provider.lower() != "gdrive":
             skipped += 1
             continue
-        cache_key = (item.source_provider, str(row["source_uri"] or ""))
-        client = client_cache.get(cache_key)
-        if client is None:
-            client = _build_client(row, google_api_key)
-            client_cache[cache_key] = client
-        image_bytes = client.fetch_bytes(item)
-        target.write_bytes(image_bytes)
-        written += 1
-        if written % 100 == 0:
-            print(f"written={written} skipped={skipped} last={target}")
+        source_uri = str(row["source_uri"] or "").strip()
+        exporter = exporter_cache.get(source_uri)
+        if exporter is None:
+            exporter = DriveRelevantImageExporter(source_uri)
+            exporter_cache[source_uri] = exporter
+        try:
+            result = exporter.export_image(item)
+        except Exception as exc:
+            failed += 1
+            print(f"failed image_id={item.image_id} image_name={item.image_name} error={str(exc)[:300]}")
+            continue
+        if result.get("status") == "created":
+            created += 1
+            if created % 100 == 0:
+                print(f"created={created} skipped={skipped} failed={failed} last={item.image_name}")
+        else:
+            skipped += 1
 
-    print(f"done written={written} skipped={skipped} out={out_root}")
+    print(f"done created={created} skipped={skipped} failed={failed}")
 
 
 if __name__ == "__main__":

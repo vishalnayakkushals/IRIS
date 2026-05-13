@@ -11,6 +11,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from iris.onfly_pipeline import OnFlyConfig, run_onfly_pipeline  # noqa: E402
+from iris.drive_review_export import drive_review_export_status  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,12 +33,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openai-model", default=os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini"))
     parser.add_argument("--openai-api-base", default=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"))
     parser.add_argument("--gpt-rate-limit-rps", type=float, default=float(os.getenv("GPT_RATE_LIMIT_RPS", "1.0")))
-    parser.add_argument("--keep-relevant-dir", type=Path, default=None, help="Optional local review cache for relevant images only")
+    parser.add_argument("--export-relevant-drive-images", action="store_true", help="Copy YOLO-relevant Drive images into Relevant image/<date>/ in Drive")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    drive_export_enabled = bool(args.export_relevant_drive_images)
+    if drive_export_enabled:
+        ok, reason = drive_review_export_status()
+        if not ok:
+            raise RuntimeError(reason)
     cfg = OnFlyConfig(
         store_id=str(args.store_id).strip(),
         source_uri=str(args.source_url).strip(),
@@ -56,8 +62,8 @@ def main() -> None:
         gpt_version=str(args.gpt_version).strip(),
         allow_detector_fallback=bool(args.allow_detector_fallback),
         force_reprocess=bool(args.force_reprocess),
-        keep_relevant_dir=args.keep_relevant_dir.resolve() if args.keep_relevant_dir is not None else None,
         run_mode=str(args.run_mode).strip() or "hourly",
+        export_relevant_drive_images=drive_export_enabled,
     )
     summary = run_onfly_pipeline(cfg)
     print(json.dumps(summary, indent=2))

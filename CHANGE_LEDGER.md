@@ -33,7 +33,7 @@ It records what changed, where it changed, and why.
 | `src/iris/session_reconstruction.py` | Walk-in persistence, QA correction replay, sampled-frame resolution, PostgreSQL sync helpers. |
 | `src/iris/report_writer.py` | Canonical CSV generation, run summaries, timing files, and cost metric writes. |
 | `src/iris/pipeline_events.py` | SQLite schema helpers, pipeline runs/events/queue tables, update helpers. |
-| `src/iris/drive_review_export.py` | Creates unique relevant-review filenames and, when real service-account credentials are configured, publishes camera-wise Google Drive shortcut folders for YOLO-relevant images under the source date folder. |
+| `src/iris/drive_review_export.py` | Copies YOLO-relevant Google Drive images into `Relevant image/<date-folder>/` under the same store parent folder, preserving original filenames and skipping duplicate destination names. |
 | `scripts/start_api_server.py` | Supported web/API launcher; runs runtime preparation then starts uvicorn. |
 | `scripts/start_scheduler_worker_service.py` | Supported launcher for the core scheduler worker. |
 | `scripts/start_onfly_scheduler_service.py` | Supported launcher for the on-fly scheduler worker. |
@@ -57,8 +57,9 @@ It records what changed, where it changed, and why.
 | `deploy/cloud/iris-store-auto-sync.service` | Systemd unit for the store auto-sync worker. |
 | `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
 | `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
-| `scripts/export_relevant_review_images.py` | Backfills same-date local folders for already-scanned YOLO-relevant images by fetching source bytes from Drive or local storage. |
+| `scripts/export_relevant_review_images.py` | Backfills Google Drive `Relevant image/<date-folder>/` folders for already-scanned YOLO-relevant images using existing `onfly_image_state` rows. |
 | `scripts/export_onfly_processing_stats.py` | Exact store/date processing stats exporter that reconciles source-folder inventory, SQLite pipeline state, run events, walk-in rows, and generated report files into CSV/JSON outputs. |
+| `tests/test_drive_review_export.py` | Focused unit tests for Google Drive relevant-image folder creation, original filename preservation, duplicate skipping, and date-folder parent handling. |
 
 ---
 
@@ -113,6 +114,26 @@ npm run build
 - Summary:
   - Expanded the on-fly source-of-truth document with a plain-English explanation of what the current YOLO stage actually does, what it does not decide, and how relevance is determined from person detection output.
   - Documented the real pre-YOLO gatekeeping flow including source listing, excluded-camera skip, outside-hours skip, delta/idempotent skip, detector selection, and smart frame sampling so reviewers can trace the "brain" logic back to the exact code paths.
+
+### 2026-05-13 - Drive-Based Relevant Image Storage
+
+- Changed paths:
+  - `src/iris/drive_review_export.py`
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/source_clients.py`
+  - `src/iris/store_registry.py`
+  - `src/iris/report_writer.py`
+  - `backend/app/api/onfly_runtime.py`
+  - `scripts/run_onfly_pipeline.py`
+  - `scripts/export_relevant_review_images.py`
+  - `tests/test_drive_review_export.py`
+  - `docs/process/onfly_pipeline_logic.md`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Replaced the active local relevant-image write path with Google Drive file copies under `Relevant image/<same date-folder>/<original filename>` while leaving YOLO relevance, thresholds, GPT processing, and smart sampling unchanged.
+  - Added Drive duplicate prevention by checking the destination date folder for the original filename before copying, and updated the source scanners to ignore `Relevant image` so review output is not re-ingested.
+  - Updated the existing relevant-image backfill script to populate the Drive review folders from `onfly_image_state`, and added focused unit tests for folder creation, filename preservation, duplicate skipping, and date-folder parent handling.
 
 ### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
 

@@ -11,7 +11,7 @@ from iris.runtime_bootstrap import load_env_file
 from iris.store_registry import parse_drive_folder_id
 from iris.source_clients import SourceImage
 
-REVIEW_FOLDER_NAME = "_IRIS_RELEVANT_BY_CAMERA"
+REVIEW_FOLDER_NAME = "Relevant image"
 _PLACEHOLDER_MARKERS = {
     "",
     "replace_with_private_key_from_it_admin",
@@ -28,6 +28,10 @@ def unique_review_filename(item: SourceImage) -> str:
     return f"{token}__{image_name}"
 
 
+def original_review_filename(item: SourceImage) -> str:
+    return str(item.image_name or "image.jpg").strip() or "image.jpg"
+
+
 def drive_review_export_status() -> tuple[bool, str]:
     load_env_file()
     private_key = str(os.getenv("GOOGLE_PRIVATE_KEY", "")).strip()
@@ -42,7 +46,7 @@ def drive_review_export_status() -> tuple[bool, str]:
     return True, ""
 
 
-class DriveRelevantShortcutExporter:
+class DriveRelevantImageExporter:
     def __init__(self, source_uri: str) -> None:
         ok, reason = drive_review_export_status()
         if not ok:
@@ -64,68 +68,95 @@ class DriveRelevantShortcutExporter:
             scopes=["https://www.googleapis.com/auth/drive"],
         )
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        self._root_folder_id = folder_id
+        self._source_root_id = folder_id
+        root = self._service.files().get(
+            fileId=folder_id,
+            fields="id,name,parents",
+            supportsAllDrives=True,
+        ).execute()
+        self._source_root_name = str(root.get("name", "")).strip()
+        parents = root.get("parents", []) or []
+        self._source_root_parent_id = str(parents[0]).strip() if parents else ""
+        self._destination_parent_id = folder_id
         self._date_folder_ids: dict[str, str] = {}
-        self._review_root_ids: dict[str, str] = {}
-        self._camera_folder_ids: dict[tuple[str, str], str] = {}
-        self._shortcut_name_cache: dict[str, set[str]] = {}
+        self._review_root_id = ""
+        self._name_cache: dict[str, set[str]] = {}
 
-    def export_shortcut(self, item: SourceImage) -> dict[str, Any]:
+    def export_image(self, item: SourceImage) -> dict[str, Any]:
         if str(item.source_provider or "").strip().lower() != "gdrive":
             return {"status": "skipped", "reason": "not_gdrive"}
         target_id = str(item.source_item_id or "").strip()
-        date_source = str(item.date_source or "").strip()
+        date_source = self._date_folder_name(item)
         if not target_id or not date_source:
             return {"status": "skipped", "reason": "missing_target_or_date"}
 
-        date_folder_id = self._get_date_folder_id(date_source)
-        if not date_folder_id:
-            return {"status": "skipped", "reason": "date_folder_not_found"}
+        date_folder_id = self._get_output_date_folder_id(date_source)
+        image_name = original_review_filename(item)
+        existing_names = self._name_cache.setdefault(date_folder_id, self._list_child_names(date_folder_id))
+        if image_name in existing_names:
+            return {"status": "skipped", "reason": "already_exported", "name": image_name, "date_source": date_source}
 
-        camera_id = str(item.camera_id or "").strip() or "UNKNOWN_CAMERA"
-        camera_folder_id = self._get_camera_folder_id(date_source, camera_id, date_folder_id)
-        shortcut_name = unique_review_filename(item)
-        existing_names = self._shortcut_name_cache.setdefault(camera_folder_id, set())
-        if shortcut_name in existing_names:
-            return {"status": "skipped", "reason": "already_exported", "name": shortcut_name}
-
-        shortcut = self._service.files().create(
+        copied = self._service.files().copy(
+            fileId=target_id,
             body={
-                "name": shortcut_name,
-                "mimeType": "application/vnd.google-apps.shortcut",
-                "shortcutDetails": {"targetId": target_id},
-                "parents": [camera_folder_id],
+                "name": image_name,
+                "parents": [date_folder_id],
             },
             fields="id,name,webViewLink",
             supportsAllDrives=True,
         ).execute()
-        existing_names.add(shortcut_name)
+        existing_names.add(image_name)
         return {
             "status": "created",
-            "shortcut_id": str(shortcut.get("id", "")).strip(),
-            "shortcut_name": str(shortcut.get("name", "")).strip(),
-            "camera_id": camera_id,
+            "file_id": str(copied.get("id", "")).strip(),
+            "file_name": str(copied.get("name", "")).strip(),
+            "web_view_link": str(copied.get("webViewLink", "")).strip(),
             "date_source": date_source,
         }
 
-    def _get_date_folder_id(self, date_source: str) -> str:
+    def export_shortcut(self, item: SourceImage) -> dict[str, Any]:
+        return self.export_image(item)
+
+    def _date_folder_name(self, item: SourceImage) -> str:
+        date_source = str(item.date_source or "").strip()
+        if date_source:
+            return date_source
+        return self._source_root_name
+
+    def _get_output_date_folder_id(self, date_source: str) -> str:
         if date_source in self._date_folder_ids:
             return self._date_folder_ids[date_source]
-        folder_id = self._find_child_folder(self._root_folder_id, date_source, create=False)
+        review_root_id = self._get_review_root_id(date_source)
+        folder_id = self._find_child_folder(review_root_id, date_source, create=True)
         self._date_folder_ids[date_source] = folder_id
         return folder_id
 
-    def _get_camera_folder_id(self, date_source: str, camera_id: str, date_folder_id: str) -> str:
-        cache_key = (date_source, camera_id)
-        if cache_key in self._camera_folder_ids:
-            return self._camera_folder_ids[cache_key]
-        review_root_id = self._review_root_ids.get(date_source)
-        if not review_root_id:
-            review_root_id = self._find_child_folder(date_folder_id, REVIEW_FOLDER_NAME, create=True)
-            self._review_root_ids[date_source] = review_root_id
-        camera_folder_id = self._find_child_folder(review_root_id, camera_id, create=True)
-        self._camera_folder_ids[cache_key] = camera_folder_id
-        return camera_folder_id
+    def _get_review_root_id(self, date_source: str) -> str:
+        if self._review_root_id:
+            return self._review_root_id
+        destination_parent_id = self._destination_parent_id
+        if self._source_root_name == date_source and self._source_root_parent_id:
+            destination_parent_id = self._source_root_parent_id
+        self._review_root_id = self._find_child_folder(destination_parent_id, REVIEW_FOLDER_NAME, create=True)
+        return self._review_root_id
+
+    def _list_child_names(self, parent_id: str) -> set[str]:
+        names: set[str] = set()
+        token = None
+        while True:
+            response = self._service.files().list(
+                q=f"'{parent_id}' in parents and trashed = false",
+                fields="nextPageToken,files(name)",
+                pageSize=1000,
+                pageToken=token,
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+            ).execute()
+            names.update(str(item.get("name", "")).strip() for item in response.get("files", []) or [] if item.get("name"))
+            token = response.get("nextPageToken")
+            if not token:
+                break
+        return names
 
     def _find_child_folder(self, parent_id: str, name: str, *, create: bool) -> str:
         escaped_name = str(name).replace("\\", "\\\\").replace("'", "\\'")
@@ -155,3 +186,6 @@ class DriveRelevantShortcutExporter:
             supportsAllDrives=True,
         ).execute()
         return str(created.get("id", "")).strip()
+
+
+DriveRelevantShortcutExporter = DriveRelevantImageExporter

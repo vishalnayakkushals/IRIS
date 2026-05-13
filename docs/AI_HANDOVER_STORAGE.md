@@ -61,11 +61,10 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - Irrelevant local-only images can still be removed after processing according to pipeline policy.
 - Canonical outputs are written under `data/exports/current/onfly/`.
 - Each run now also writes lightweight YOLO-review manifest CSVs under `data/exports/current/onfly/<store_id>/yolo_review_manifests/`, including one combined file plus one same-date folder per scanned date with Drive links for relevant images only.
-- Each run now also writes actual relevant-image files under `data/exports/current/onfly/<store_id>/yolo_review_images/<dd-mm-yyyy>/` for local visual review by date.
-- Local relevant-review filenames now include the source item id, because Google Drive date folders can contain many distinct images with the same visible filename across cameras and duplicate uploads.
 - Exact processing stats can now be exported with `scripts/export_onfly_processing_stats.py`, which writes `onfly_processing_stats.csv` plus `onfly_processing_stats_summary.json` under `data/exports/current/onfly/` by reconciling live source-folder counts, SQLite state, run-event failures, walk-in rows, and report-file visibility.
-- On-fly runs are now also capable of publishing Google Drive review shortcuts under `<date>/_IRIS_RELEVANT_BY_CAMERA/<camera_id>/` inside the source Drive tree. This avoids duplicate storage because the review set is a shortcut layer, not a copied image layer.
-- IRIS can now create Google Drive review folders and shortcuts when a real write-capable service account is configured. On this machine the read-only API key path still works for source listing/fetching, but the write path remains inactive until `GOOGLE_PRIVATE_KEY` is replaced with the real service-account private key.
+- On-fly runs now copy YOLO-relevant Google Drive files back into the same store parent folder under `Relevant image/<date-folder>/<original filename>`.
+- IRIS preserves the scanned date-folder name and original filename for Drive review copies. If the same filename already exists in the destination date folder, the exporter skips the copy to keep the flow idempotent.
+- IRIS can create Google Drive review folders and file copies when a real write-capable service account is configured. On this machine the read-only API key path still works for source listing/fetching, but the write path remains inactive until `GOOGLE_PRIVATE_KEY` is replaced with the real service-account private key.
 
 ### Large Folder Scan Guardrail
 
@@ -76,8 +75,8 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - The scheduler UI and run-status summaries should stay aligned with this behavior: no frontend copy should claim manual runs are capped at 10,000 anymore.
 - Date-wise scan views should sort by normalized ISO business date internally, not by display text such as `dd-mm-yyyy`.
 - Exact full-store Drive stats are intentionally slower than dashboard reads because they rescan the live source folder for proof. For very large stores, use the script's `--date dd-mm-yyyy` filter when you need a single-date audit, because the Drive walk now prunes directly to that date folder.
-- Google Drive review-write support is now implemented in code, but live execution still depends on a real `GOOGLE_PRIVATE_KEY` in `.env.local`. The current placeholder value means the shortcut export path will safely self-disable and log why instead of failing the full pipeline run.
-- The source scanners now ignore `_IRIS_` prefixed folders and Google Drive shortcut items so review-output folders do not get re-ingested as source images on later runs.
+- Google Drive review-write support is implemented in code, but live execution still depends on a real `GOOGLE_PRIVATE_KEY` in `.env.local`. The current placeholder value means the Drive copy path will safely self-disable and log why instead of failing the full pipeline run.
+- The source scanners now ignore `_IRIS_` prefixed folders, the `Relevant image` review folder, and Google Drive shortcut items so review-output folders do not get re-ingested as source images on later runs.
 
 ---
 
