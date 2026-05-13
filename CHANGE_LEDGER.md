@@ -1128,3 +1128,11 @@ elevant == 0).
   - Corrected scheduler run remarks to report `total_listed` consistently for large folder runs.
   - Removed the stale `10,000` max-images wording and input cap from the scheduler UI so the screen matches the current unlimited full-folder scan behavior.
   - Rebuilt and refreshed the served frontend bundle after the scheduler/date-report cleanup.
+
+### 2026-05-13 - Store Auto-Sync Launcher Import Fix
+- Changed paths:
+  - `scripts/start_store_auto_sync_service.py`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added the repository root to `sys.path` before launching the store auto-sync worker so `backend.app.workers.store_auto_sync` can import correctly in the no-Docker local runtime.
+  - This restores the supported `start_store_auto_sync_service.py` path for hourly mapped-store automation on the current React + FastAPI architecture.

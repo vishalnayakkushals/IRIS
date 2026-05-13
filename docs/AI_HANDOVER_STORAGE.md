@@ -19,6 +19,9 @@ IRIS now runs as four explicit services:
 
 The FastAPI web process no longer owns scheduler loops. Runtime preparation is handled before launch through `backend/app/runtime_startup.py`.
 
+Important local runtime note:
+- `scripts/start_store_auto_sync_service.py` must put both the repo root and `src/` on `sys.path`, because the worker imports `backend.app.workers.store_auto_sync` as well as `iris.*` modules.
+
 ### Local Launch And Network Access
 
 - The single supported local startup path is `start_iris.bat` -> `start_iris.ps1`.
