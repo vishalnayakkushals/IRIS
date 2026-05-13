@@ -62,6 +62,7 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - Canonical outputs are written under `data/exports/current/onfly/`.
 - Each run now also writes lightweight YOLO-review manifest CSVs under `data/exports/current/onfly/<store_id>/yolo_review_manifests/`, including one combined file plus one same-date folder per scanned date with Drive links for relevant images only.
 - Each run now also writes actual relevant-image files under `data/exports/current/onfly/<store_id>/yolo_review_images/<dd-mm-yyyy>/` for local visual review by date.
+- Exact processing stats can now be exported with `scripts/export_onfly_processing_stats.py`, which writes `onfly_processing_stats.csv` plus `onfly_processing_stats_summary.json` under `data/exports/current/onfly/` by reconciling live source-folder counts, SQLite state, run-event failures, walk-in rows, and report-file visibility.
 - IRIS still does not create Google Drive folders or shortcuts directly because the current Drive integration uses a public read-only API key. Publishing those manifests back into Drive will require a write-capable service account or OAuth client later.
 
 ### Large Folder Scan Guardrail
@@ -72,6 +73,7 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - SQLite heartbeat writes now use WAL plus a longer busy timeout so long-running scans are less likely to be marked stale while write traffic is high.
 - The scheduler UI and run-status summaries should stay aligned with this behavior: no frontend copy should claim manual runs are capped at 10,000 anymore.
 - Date-wise scan views should sort by normalized ISO business date internally, not by display text such as `dd-mm-yyyy`.
+- Exact full-store Drive stats are intentionally slower than dashboard reads because they rescan the live source folder for proof. For very large stores, use the script's `--date dd-mm-yyyy` filter when you need a single-date audit, because the Drive walk now prunes directly to that date folder.
 
 ---
 

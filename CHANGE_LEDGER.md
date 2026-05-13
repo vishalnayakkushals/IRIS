@@ -57,6 +57,7 @@ It records what changed, where it changed, and why.
 | `scripts/enable_api_network_access.ps1` | Windows helper to open firewall access for the IRIS FastAPI port and optionally switch the current network profile to Private. |
 | `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
 | `scripts/export_relevant_review_images.py` | Backfills same-date local folders for already-scanned YOLO-relevant images by fetching source bytes from Drive or local storage. |
+| `scripts/export_onfly_processing_stats.py` | Exact store/date processing stats exporter that reconciles source-folder inventory, SQLite pipeline state, run events, walk-in rows, and generated report files into CSV/JSON outputs. |
 
 ---
 
@@ -1149,3 +1150,13 @@ elevant == 0).
   - Future on-fly runs now write actual relevant-image files into `data/exports/current/onfly/<store_id>/yolo_review_images/<dd-mm-yyyy>/` instead of only exposing CSV manifests.
   - Added a reusable backfill script for already-scanned history so relevant-image folders can be generated from existing `onfly_image_state` rows without rerunning the full pipeline.
   - Backfilled `BLRRRN` for `01-05-2026`, creating the local same-date review folder under `data/exports/current/onfly/BLRRRN/yolo_review_images/01-05-2026`.
+
+### 2026-05-13 - Exact On-Fly Processing Stats Export
+- Changed paths:
+  - `scripts/export_onfly_processing_stats.py` (new)
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a lightweight exact-processing-stats exporter that reconciles source-folder inventory, `onfly_image_state`, run-event failures, walk-in rows, and generated report files into one CSV and one JSON summary under `data/exports/current/onfly/`.
+  - Added exact mismatch flags for source-vs-scan, scan-vs-YOLO, YOLO-vs-GPT, GPT-vs-session rows, and report-generated-vs-dashboard-visible states, while mapping runtime `REPORT_WRITER` failures into the requested `REPORT_WRITE` output label.
+  - Optimized date-filtered Google Drive inventory by pruning the walk to the requested top-level date folder so exact per-date checks remain practical on very large stores without changing pipeline business logic.
