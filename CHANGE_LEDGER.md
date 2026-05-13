@@ -105,6 +105,15 @@ cd frontend
 npm run build
 ```
 
+### 2026-05-13 - On-Fly YOLO Brain Logic Documentation Refresh
+
+- Changed paths:
+  - `docs/process/onfly_pipeline_logic.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Expanded the on-fly source-of-truth document with a plain-English explanation of what the current YOLO stage actually does, what it does not decide, and how relevance is determined from person detection output.
+  - Documented the real pre-YOLO gatekeeping flow including source listing, excluded-camera skip, outside-hours skip, delta/idempotent skip, detector selection, and smart frame sampling so reviewers can trace the "brain" logic back to the exact code paths.
+
 ### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
 
 - Changed paths:
