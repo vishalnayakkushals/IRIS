@@ -405,7 +405,9 @@ def _run_pipeline_sync(
 
     try:
         from iris.onfly_pipeline import OnFlyConfig, run_onfly_pipeline
+        from iris.drive_review_export import drive_review_export_status
 
+        drive_review_export_enabled, _ = drive_review_export_status()
         cfg = OnFlyConfig(
             run_id=run_id,
             store_id=store_id,
@@ -424,6 +426,7 @@ def _run_pipeline_sync(
             use_tracker=use_tracker,
             force_reprocess=force_reprocess,
             gpt_batch_mode=gpt_batch_mode,
+            export_relevant_drive_shortcuts=drive_review_export_enabled,
         )
         summary = run_onfly_pipeline(cfg)
         remarks = (

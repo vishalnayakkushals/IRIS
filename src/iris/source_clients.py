@@ -13,6 +13,7 @@ import requests
 from iris.store_registry import parse_drive_folder_id, parse_s3_location
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+IGNORED_DRIVE_FOLDER_PREFIXES = ("_IRIS_",)
 CAMERA_PATTERN = re.compile(r"_(D\d{2})[-_]", re.IGNORECASE)
 TIME_PATTERN = re.compile(r"^(\d{2}-\d{2}-\d{2})_")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -62,6 +63,7 @@ class OnFlyConfig:
     gpt_parallel_workers: int = 5
     google_api_key: str = ""
     gpt_batch_mode: bool = False
+    export_relevant_drive_shortcuts: bool = False
 
 
 class SourceClient(Protocol):
@@ -164,7 +166,11 @@ class GDriveClient:
                 if not name:
                     continue
                 if str(item.get("mimeType", "")) == "application/vnd.google-apps.folder":
+                    if any(name.upper().startswith(prefix.upper()) for prefix in IGNORED_DRIVE_FOLDER_PREFIXES):
+                        continue
                     subfolders.append({"id": str(item.get("id", "")), "name": name})
+                elif str(item.get("mimeType", "")) == "application/vnd.google-apps.shortcut":
+                    continue
                 elif Path(name).suffix.lower() in IMAGE_EXTS:
                     images.append({"id": str(item.get("id", "")), "name": name})
             token = payload.get("nextPageToken")

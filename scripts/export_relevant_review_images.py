@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from iris.runtime_bootstrap import load_env_file  # noqa: E402
+from iris.drive_review_export import unique_review_filename  # noqa: E402
 from iris.source_clients import GDriveClient, LocalClient, SourceImage, parse_drive_folder_id  # noqa: E402
 
 
@@ -82,10 +83,6 @@ def main() -> None:
     for row in rows:
         date_dir = out_root / _safe_date(row)
         date_dir.mkdir(parents=True, exist_ok=True)
-        target = date_dir / str(row["image_name"])
-        if target.exists():
-            skipped += 1
-            continue
         item = SourceImage(
             image_id=str(row["image_id"]),
             image_name=str(row["image_name"]),
@@ -98,6 +95,10 @@ def main() -> None:
             camera_id=str(row["camera_id"] or ""),
             timestamp_hint=str(row["timestamp_hint"] or ""),
         )
+        target = date_dir / unique_review_filename(item)
+        if target.exists():
+            skipped += 1
+            continue
         cache_key = (item.source_provider, str(row["source_uri"] or ""))
         client = client_cache.get(cache_key)
         if client is None:

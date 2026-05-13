@@ -33,6 +33,7 @@ It records what changed, where it changed, and why.
 | `src/iris/session_reconstruction.py` | Walk-in persistence, QA correction replay, sampled-frame resolution, PostgreSQL sync helpers. |
 | `src/iris/report_writer.py` | Canonical CSV generation, run summaries, timing files, and cost metric writes. |
 | `src/iris/pipeline_events.py` | SQLite schema helpers, pipeline runs/events/queue tables, update helpers. |
+| `src/iris/drive_review_export.py` | Creates unique relevant-review filenames and, when real service-account credentials are configured, publishes camera-wise Google Drive shortcut folders for YOLO-relevant images under the source date folder. |
 | `scripts/start_api_server.py` | Supported web/API launcher; runs runtime preparation then starts uvicorn. |
 | `scripts/start_scheduler_worker_service.py` | Supported launcher for the core scheduler worker. |
 | `scripts/start_onfly_scheduler_service.py` | Supported launcher for the on-fly scheduler worker. |
@@ -1160,3 +1161,21 @@ elevant == 0).
   - Added a lightweight exact-processing-stats exporter that reconciles source-folder inventory, `onfly_image_state`, run-event failures, walk-in rows, and generated report files into one CSV and one JSON summary under `data/exports/current/onfly/`.
   - Added exact mismatch flags for source-vs-scan, scan-vs-YOLO, YOLO-vs-GPT, GPT-vs-session rows, and report-generated-vs-dashboard-visible states, while mapping runtime `REPORT_WRITER` failures into the requested `REPORT_WRITE` output label.
   - Optimized date-filtered Google Drive inventory by pruning the walk to the requested top-level date folder so exact per-date checks remain practical on very large stores without changing pipeline business logic.
+
+### 2026-05-13 - Unique Relevant Review Filenames + Drive Shortcut Export Path
+- Changed paths:
+  - `src/iris/drive_review_export.py` (new)
+  - `src/iris/onfly_pipeline.py`
+  - `src/iris/source_clients.py`
+  - `src/iris/store_registry.py`
+  - `backend/app/api/onfly_runtime.py`
+  - `scripts/export_relevant_review_images.py`
+  - `requirements.txt`
+  - `backend/requirements.txt`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Fixed local relevant-review exports to use unique filenames based on source item id, so duplicate camera filenames no longer collapse hundreds of relevant rows into a much smaller local folder.
+  - Added a Google Drive review-export mechanism that is app-integrated for on-fly runs and is designed to create per-date `_IRIS_RELEVANT_BY_CAMERA/<camera_id>/` shortcut folders under the source Drive tree without duplicating image storage.
+  - Taught both Drive source scanners to ignore `_IRIS_` review folders and Google Drive shortcuts so IRIS does not rescan its own review output.
+  - The Drive shortcut path is code-complete but cannot create live folders on this machine yet because `.env.local` still contains a placeholder `GOOGLE_PRIVATE_KEY`; a real service-account private key is required before live Drive writes will succeed.

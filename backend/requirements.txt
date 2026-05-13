@@ -13,3 +13,5 @@ httpx>=0.27,<1.0
 slowapi>=0.1.9,<1.0
 python-multipart>=0.0.9,<1.0
 Pillow>=10.0,<12.0
+google-auth>=2.35,<3.0
+google-api-python-client>=2.149,<3.0

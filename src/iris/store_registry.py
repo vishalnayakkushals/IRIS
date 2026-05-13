@@ -30,6 +30,7 @@ S3_PATH_URL_PATTERN = re.compile(
     r"^https?://s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com/(?P<bucket>[a-zA-Z0-9.\-_]+)/(?P<prefix>.*)$"
 )
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+_IGNORED_DRIVE_FOLDER_PREFIXES = ("_IRIS_",)
 DEFAULT_PERMISSION_CODES = ("config", "dashboard", "licenses", "roles", "stores", "users")
 _SQLITE_TRANSIENT_ERRORS = (
     "disk i/o error",
@@ -2446,7 +2447,11 @@ def _drive_api_list_files_recursive(folder_id: str, api_key: str) -> list[dict[s
                 if not item_name:
                     continue
                 if item.get("mimeType","")=="application/vnd.google-apps.folder":
+                    if any(item_name.upper().startswith(prefix.upper()) for prefix in _IGNORED_DRIVE_FOLDER_PREFIXES):
+                        continue
                     stack.append((item["id"], rel_parts + [item_name]))
+                elif item.get("mimeType","")=="application/vnd.google-apps.shortcut":
+                    continue
                 elif Path(item.get("name", "")).suffix.lower() in _IMAGE_EXTS:
                     rel_path = Path(*rel_parts) / item_name if rel_parts else Path(item_name)
                     files.append(
