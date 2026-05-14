@@ -59,6 +59,7 @@ It records what changed, where it changed, and why.
 | `scripts/localhost_ipv6_proxy.py` | IPv6 localhost bridge that forwards `::1:8767` traffic to the main IPv4 IRIS listener on `127.0.0.1:8767`. |
 | `scripts/export_relevant_review_images.py` | Backfills Google Drive `Relevant image/<date-folder>/` folders for already-scanned YOLO-relevant images using existing `onfly_image_state` rows. |
 | `scripts/configure_drive_service_account.py` | Configures local Google Drive write access by copying a service-account JSON key into `.local-secrets/` and pointing `.env.local` to it. |
+| `scripts/export_relevant_review_table.py` | Exports a local CSV handoff table of YOLO-relevant images with original Drive links and reviewer columns for offline/cloud handoff review. |
 | `scripts/export_onfly_processing_stats.py` | Exact store/date processing stats exporter that reconciles source-folder inventory, SQLite pipeline state, run events, walk-in rows, and generated report files into CSV/JSON outputs. |
 | `tests/test_drive_review_export.py` | Focused unit tests for Google Drive relevant-image folder creation, original filename preservation, duplicate skipping, and date-folder parent handling. |
 
@@ -167,6 +168,15 @@ npm run build
   - Added support for `GOOGLE_SERVICE_ACCOUNT_FILE` / `GOOGLE_APPLICATION_CREDENTIALS` so Drive relevant-image export can use a local service-account JSON key instead of requiring a multiline private key in `.env.local`.
   - Added a setup helper that copies a downloaded service-account JSON key into `.local-secrets/`, updates `.env.local`, and prints the service-account email that must be shared as Editor on the Drive parent folder.
   - Extended the Drive export tests to verify file-based service-account credentials are accepted even when the old `GOOGLE_PRIVATE_KEY` value is still a placeholder.
+
+### 2026-05-14 - Local YOLO Relevant Review Table Export
+
+- Changed paths:
+  - `scripts/export_relevant_review_table.py`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a lightweight local CSV exporter that reads YOLO-relevant rows from `onfly_image_state` and writes a review handoff table under `data/exports/current/onfly/<store_id>/`.
+  - Included original Drive links, date/camera/time fields, YOLO counts/confidence, GPT status/count fields, source IDs, and blank reviewer columns so the table can be shared or uploaded later without requiring Drive write credentials now.
 
 ### 2026-05-12 - P0A Docs Index + Generated Policy + Admin Recovery Naming Cleanup
 
