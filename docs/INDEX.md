@@ -1,6 +1,6 @@
 # IRIS Documentation Index
 
-**Last updated:** 2026-05-12
+**Last updated:** 2026-05-14
 
 This index is the current ownership map for documentation. If a document conflicts with one listed as source-of-truth below, follow the source-of-truth document and update the stale file or archive it.
 
@@ -25,6 +25,7 @@ This index is the current ownership map for documentation. If a document conflic
 | Developer onboarding | `docs/developer/developer-doc.md` | Safe change rules and testing baseline |
 | Planning | `docs/planning/execution-status.md` | Current execution snapshot |
 | Operations | `docs/operations/deployment-runbook.md` | Runbook/checklist support |
+| Operations | `docs/operations/local-server-restart-and-troubleshooting.md` | Local no-Docker restart, localhost/login troubleshooting, and token-saving manual checks |
 | Operations | `docs/operations/platform_data_cutover_inventory.md` | Historical migration inventory; references to Streamlit are legacy only |
 | Product | `docs/prd/iris-platform-prd-v1.md` | Product framing; keep aligned with runtime stack |
 

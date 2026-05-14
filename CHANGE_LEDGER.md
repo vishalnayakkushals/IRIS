@@ -36,6 +36,7 @@ It records what changed, where it changed, and why.
 | `src/iris/drive_review_export.py` | Copies YOLO-relevant Google Drive images into `Relevant image/<date-folder>/` under the same store parent folder, preserving original filenames and skipping duplicate destination names. |
 | `src/iris/relevant_review_table.py` | Shared CSV exporter for YOLO-relevant review handoff tables used by both the scheduler UI and the command-line script. |
 | `scripts/start_api_server.py` | Supported web/API launcher; runs runtime preparation then starts uvicorn. |
+| `scripts/restart_iris_local.ps1` | One-command local no-Docker recovery helper for port `8767`; restarts FastAPI, IPv6 localhost proxy, and verifies API health. |
 | `scripts/start_scheduler_worker_service.py` | Supported launcher for the core scheduler worker. |
 | `scripts/start_onfly_scheduler_service.py` | Supported launcher for the on-fly scheduler worker. |
 | `scripts/start_store_auto_sync_service.py` | Supported launcher for the mapped-store auto-sync worker. |
@@ -49,6 +50,7 @@ It records what changed, where it changed, and why.
 | `docs/INDEX.md` | Documentation ownership map and source-of-truth index. |
 | `docs/developer/generated-vs-source-policy.md` | Policy for generated assets, runtime artifacts, and editable source boundaries. |
 | `docs/deployment/cost-optimization-plan.md` | Source-of-truth cost and savings document. |
+| `docs/operations/local-server-restart-and-troubleshooting.md` | Local restart, login troubleshooting, glossary, and manual token-saving runbook. |
 | `docs/process/onfly_pipeline_logic.md` | Source-of-truth on-fly processing logic document. |
 | `docs/AI_HANDOVER_STORAGE.md` | Current architecture/cost/storage handover for future agents. |
 | `deploy/cloud/README.md` | Source-of-truth cloud deployment guide for the dedicated-worker runtime model. |
@@ -109,6 +111,19 @@ python -m pytest tests/test_onfly_pipeline.py tests/test_onfly_scheduler.py test
 cd frontend
 npm run build
 ```
+
+### 2026-05-14 - Local Restart Runbook And Helper
+
+- Changed paths:
+  - `scripts/restart_iris_local.ps1`
+  - `docs/operations/local-server-restart-and-troubleshooting.md`
+  - `docs/INDEX.md`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a one-command PowerShell restart helper for the local no-Docker app that stops stale `8767` listeners, loads `.env.local`, starts FastAPI on `0.0.0.0:8767`, starts the IPv6 localhost proxy, writes PID files, and verifies `/api/health`.
+  - Documented the common `localhost/login` failure mode where only the IPv6 proxy remains active and the real FastAPI listener is down.
+  - Added a structured operations runbook with glossary, problem statement, troubleshooting commands, decision tree, and manual token-saving tasks.
 
 ### 2026-05-14 - Scheduler YOLO Review Table Export
 
