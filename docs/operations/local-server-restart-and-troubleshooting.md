@@ -78,7 +78,7 @@ The script `scripts/restart_iris_local.ps1` performs these steps:
 
 This avoids the stale-proxy problem where `localhost` is open but the real API is down.
 
-The script opens two minimized PowerShell windows to keep the API server and IPv6 proxy alive. Closing those windows stops the local app.
+The script starts the API server and IPv6 proxy as hidden background Python processes. To stop them cleanly, run the restart script again or stop the port `8767` processes shown by `Get-NetTCPConnection`.
 
 ---
 

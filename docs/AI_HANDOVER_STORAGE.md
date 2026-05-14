@@ -25,7 +25,7 @@ Important local runtime note:
 ### Local Launch And Network Access
 
 - The single supported local startup path is `start_iris.bat` -> `start_iris.ps1`.
-- For quick local recovery when `localhost:8767/login` fails, use `scripts/restart_iris_local.ps1`; it stops stale listeners, loads `.env.local`, starts FastAPI on `0.0.0.0:8767`, starts the IPv6 proxy, and verifies `/api/health`.
+- For quick local recovery when `localhost:8767/login` fails, use `scripts/restart_iris_local.ps1`; it stops stale listeners, loads `.env.local`, starts FastAPI on `0.0.0.0:8767` through `scripts/run_api_server_detached.py`, starts the IPv6 proxy, and verifies `/api/health`.
 - The main FastAPI app listens on IPv4 `0.0.0.0:8767` so the same instance can serve both the local machine and same-LAN devices.
 - Some Windows environments resolve `localhost` to IPv6 `::1` first. To keep `http://localhost:8767` reliable, `start_iris.ps1` also launches `scripts/localhost_ipv6_proxy.py`, which forwards `::1:8767` to `127.0.0.1:8767`.
 - Same-LAN access depends on the Windows firewall allowing TCP `8767`. The supported helper is `scripts/enable_api_network_access.ps1`.

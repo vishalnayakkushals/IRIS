@@ -11,6 +11,10 @@ $PythonExe = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
 if (-not (Test-Path $PythonExe)) {
   $PythonExe = "python"
 }
+$PythonwExe = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\pythonw.exe"
+if (-not (Test-Path $PythonwExe)) {
+  $PythonwExe = $PythonExe
+}
 
 $RuntimeLogDir = Join-Path $RepoRoot "deploy\no_docker\runtime_logs"
 $PidDir = Join-Path $RuntimeLogDir "pids"
@@ -18,6 +22,16 @@ New-Item -ItemType Directory -Force -Path $RuntimeLogDir, $PidDir | Out-Null
 
 function Stop-IrisPortListeners {
   param([int]$TargetPort)
+
+  Get-WmiObject Win32_Process | Where-Object {
+    $_.CommandLine -like "*run_iris_api_$TargetPort.cmd*" -or
+    $_.CommandLine -like "*run_iris_proxy_$TargetPort.cmd*" -or
+    $_.CommandLine -like "*run_api_server_detached.py*" -or
+    $_.CommandLine -like "*api_live_uvicorn.log*" -or
+    $_.CommandLine -like "*localhost_ipv6_proxy.log*"
+  } | ForEach-Object {
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+  }
 
   $listeners = Get-NetTCPConnection -LocalPort $TargetPort -ErrorAction SilentlyContinue |
     Where-Object { $_.State -in @("Listen", "Bound", "Established") } |
@@ -75,19 +89,9 @@ $env:API_PORT = [string]$Port
 $env:API_RELOAD = "0"
 
 $apiLog = Join-Path $RuntimeLogDir "api_live_uvicorn.log"
-$apiCommand = @"
-`$ErrorActionPreference = 'Continue'
-if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) { `$global:PSNativeCommandUseErrorActionPreference = `$false }
-Set-Location '$RepoRoot'
-Get-Content .env.local -Encoding UTF8 | Where-Object { `$_ -match '^\s*[A-Z_][A-Z0-9_]*=.+' } | ForEach-Object { `$parts = `$_ -split '=', 2; [System.Environment]::SetEnvironmentVariable(`$parts[0].Trim(), `$parts[1].Trim(), 'Process') }
-`$env:PYTHONPATH='$RepoRoot;$RepoRoot\src'
-`$env:API_HOST='0.0.0.0'
-`$env:API_PORT='$Port'
-`$env:API_RELOAD='0'
-& '$PythonExe' -m uvicorn backend.app.main:app --host 0.0.0.0 --port $Port *> '$apiLog'
-"@
-
-Start-Process -FilePath powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $apiCommand) -WorkingDirectory $RepoRoot -WindowStyle Minimized | Out-Null
+Remove-Item $apiLog -Force -ErrorAction SilentlyContinue
+$apiLauncher = Join-Path $RepoRoot "scripts\run_api_server_detached.py"
+Start-Process -FilePath $PythonwExe -ArgumentList @($apiLauncher) -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
 
 if (-not (Wait-IrisHealth -TargetPort $Port)) {
   Write-Host "IRIS API did not become healthy. Last API log lines:" -ForegroundColor Red
@@ -99,9 +103,7 @@ if (-not (Wait-IrisHealth -TargetPort $Port)) {
 
 $proxyScript = Join-Path $RepoRoot "scripts\localhost_ipv6_proxy.py"
 if (Test-Path $proxyScript) {
-  $proxyLog = Join-Path $RuntimeLogDir "localhost_ipv6_proxy.log"
-  $proxyCommand = "`$ErrorActionPreference='Continue'; Set-Location '$RepoRoot'; & '$PythonExe' '$proxyScript' $Port *> '$proxyLog'"
-  Start-Process -FilePath powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $proxyCommand) -WorkingDirectory $RepoRoot -WindowStyle Minimized | Out-Null
+  Start-Process -FilePath $PythonwExe -ArgumentList @($proxyScript, [string]$Port) -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
   Start-Sleep -Seconds 1
 }
 

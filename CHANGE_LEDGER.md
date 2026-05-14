@@ -37,6 +37,7 @@ It records what changed, where it changed, and why.
 | `src/iris/relevant_review_table.py` | Shared CSV exporter for YOLO-relevant review handoff tables used by both the scheduler UI and the command-line script. |
 | `scripts/start_api_server.py` | Supported web/API launcher; runs runtime preparation then starts uvicorn. |
 | `scripts/restart_iris_local.ps1` | One-command local no-Docker recovery helper for port `8767`; restarts FastAPI, IPv6 localhost proxy, and verifies API health. |
+| `scripts/run_api_server_detached.py` | Hidden-background local API launcher used by `restart_iris_local.ps1`; loads `.env.local`, prepares runtime, and runs uvicorn with file logging. |
 | `scripts/start_scheduler_worker_service.py` | Supported launcher for the core scheduler worker. |
 | `scripts/start_onfly_scheduler_service.py` | Supported launcher for the on-fly scheduler worker. |
 | `scripts/start_store_auto_sync_service.py` | Supported launcher for the mapped-store auto-sync worker. |
@@ -116,12 +117,13 @@ npm run build
 
 - Changed paths:
   - `scripts/restart_iris_local.ps1`
+  - `scripts/run_api_server_detached.py`
   - `docs/operations/local-server-restart-and-troubleshooting.md`
   - `docs/INDEX.md`
   - `docs/AI_HANDOVER_STORAGE.md`
   - `CHANGE_LEDGER.md`
 - Summary:
-  - Added a one-command PowerShell restart helper for the local no-Docker app that stops stale `8767` listeners, loads `.env.local`, starts FastAPI on `0.0.0.0:8767`, starts the IPv6 localhost proxy, writes PID files, and verifies `/api/health`.
+  - Added a one-command PowerShell restart helper for the local no-Docker app that stops stale `8767` listeners, loads `.env.local`, starts FastAPI on `0.0.0.0:8767` through a hidden detached Python launcher, starts the IPv6 localhost proxy, writes PID files, and verifies `/api/health`.
   - Documented the common `localhost/login` failure mode where only the IPv6 proxy remains active and the real FastAPI listener is down.
   - Added a structured operations runbook with glossary, problem statement, troubleshooting commands, decision tree, and manual token-saving tasks.
 
