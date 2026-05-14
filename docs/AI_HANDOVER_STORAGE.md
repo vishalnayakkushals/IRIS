@@ -1,6 +1,6 @@
 # AI Handover — Runtime, Storage, and Cost State
 
-**Last updated:** 2026-05-12
+**Last updated:** 2026-05-14
 
 This is the short operational handover for the current IRIS architecture.
 
@@ -63,6 +63,8 @@ Reports and operational screens can read directly from SQLite for live pipeline 
 - Each run now also writes lightweight YOLO-review manifest CSVs under `data/exports/current/onfly/<store_id>/yolo_review_manifests/`, including one combined file plus one same-date folder per scanned date with Drive links for relevant images only.
 - Exact processing stats can now be exported with `scripts/export_onfly_processing_stats.py`, which writes `onfly_processing_stats.csv` plus `onfly_processing_stats_summary.json` under `data/exports/current/onfly/` by reconciling live source-folder counts, SQLite state, run-event failures, walk-in rows, and report-file visibility.
 - On-fly runs now copy YOLO-relevant Google Drive files back into the same store parent folder under `Relevant image/<date-folder>/<original filename>`.
+- The `/scheduler` page now has a YOLO Relevant Review Table card. It can start a full-folder YOLO run with OpenAI GPT calls forced off (`max_images=0`) and can generate/download the same relevant-image CSV table as `scripts/export_relevant_review_table.py`.
+- The review-table CSV is generated from existing `onfly_image_state` rows only. It does not change relevance logic, YOLO thresholds, GPT logic, source folders, or Drive image output behavior.
 - IRIS preserves the scanned date-folder name and original filename for Drive review copies. If the same filename already exists in the destination date folder, the exporter skips the copy to keep the flow idempotent.
 - IRIS can create Google Drive review folders and file copies when a real write-capable service account is configured. The preferred local setup is `GOOGLE_SERVICE_ACCOUNT_FILE=.local-secrets/google_service_account.json`, configured with `scripts/configure_drive_service_account.py`.
 - The read-only API key path still works for source listing/fetching, but the write path remains inactive until a real service-account JSON key or real `GOOGLE_PRIVATE_KEY` is configured and the source Drive parent folder is shared with that service-account email as Editor.

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { adminCleanupZombieRuns, adminListStores, getRuns, onFlyDateReport, onFlyGetGptControl, onFlyListStores, onFlyLiveProgress, onFlySync, onFlyUpdateGptControl } from "../api/client";
+import { adminCleanupZombieRuns, adminListStores, getRuns, onFlyDateReport, onFlyDownloadRelevantReviewTable, onFlyExportRelevantReviewTable, onFlyGetGptControl, onFlyListStores, onFlyLiveProgress, onFlySync, onFlyUpdateGptControl } from "../api/client";
 import { useStore } from "../context/StoreContext";
-import type { RunRecord } from "../api/client";
+import type { RelevantReviewTableResult, RunRecord } from "../api/client";
 import { Card, Metric, Text, Title } from "@tremor/react";
-import { AutomationStatusCard, DateReportCard, ExecutionHistoryCard, LiveProgressCard, SyncTriggerCard } from "../features/scheduler/sections";
+import { AutomationStatusCard, DateReportCard, ExecutionHistoryCard, LiveProgressCard, RelevantReviewTableCard, SyncTriggerCard } from "../features/scheduler/sections";
 
 const POLL_MS = 3000;
 
@@ -23,10 +23,14 @@ export default function SchedulerDashboard() {
   const [liveProgress, setLiveProgress] = useState<any>(null);
   const [dateReport, setDateReport] = useState<any[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
+  const [reviewDate, setReviewDate] = useState("");
+  const [reviewExporting, setReviewExporting] = useState(false);
+  const [lastReviewExport, setLastReviewExport] = useState<RelevantReviewTableResult | null>(null);
   const [storeStatusFilter, setStoreStatusFilter] = useState<"enabled" | "disabled" | "all">("enabled");
   const [runLimit, setRunLimit] = useState(10);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollCountRef = useRef(0);
+  const autoExportRunIdRef = useRef("");
 
   useEffect(() => {
     setSelectedStore(globalStoreId);
@@ -98,6 +102,8 @@ export default function SchedulerDashboard() {
     setManualSource("");
     setMaxImages(10000);
     setForceReprocess(false);
+    setReviewDate("");
+    setLastReviewExport(null);
     loadProgress(selectedStore);
     loadDateReport(selectedStore);
   }, [selectedStore, loadProgress, loadDateReport]);
@@ -121,6 +127,17 @@ export default function SchedulerDashboard() {
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(""), 4000);
+  }
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   }
 
   async function handleGptEnabledChange(enabled: boolean) {
@@ -193,6 +210,98 @@ export default function SchedulerDashboard() {
       setSyncing(false);
     }
   }
+
+  const handleExportRelevantReviewTable = useCallback(async (dateOverride?: string) => {
+    if (!selectedStore) {
+      showToast("Select a store first");
+      return;
+    }
+    const date = typeof dateOverride === "string" ? dateOverride : reviewDate;
+    setReviewExporting(true);
+    try {
+      const { data } = await onFlyExportRelevantReviewTable(selectedStore, date || undefined);
+      setLastReviewExport(data);
+      const download = await onFlyDownloadRelevantReviewTable(selectedStore, date || undefined);
+      downloadBlob(download.data, data.filename || `yolo_relevant_review_table_${date || "all_dates"}.csv`);
+      showToast(data.message || `Exported ${data.rows} YOLO-relevant image row(s)`);
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || "Could not export YOLO review CSV");
+    } finally {
+      setReviewExporting(false);
+    }
+  }, [reviewDate, selectedStore]);
+
+  async function handleRunYoloFullFolder() {
+    if (!selectedStore) {
+      showToast("Select a store first");
+      return;
+    }
+    const store = stores.find((s) => s.store_id === selectedStore);
+    const effectiveSource = manualSource.trim() || store?.drive_folder_url || "";
+    if (!effectiveSource) {
+      showToast("Store has no Drive URL — configure in Admin > Store Mapping first");
+      return;
+    }
+
+    setGptEnabled(false);
+    setGptBatchMode(false);
+    setMaxImages(0);
+    setSyncing(true);
+    setLiveProgress({
+      store_id: selectedStore,
+      active_run_id: "",
+      run_id: "",
+      is_running: true,
+      status: "running",
+      stage: "",
+      images_discovered: 0,
+      images_processed: 0,
+      images_relevant: 0,
+      images_skipped: 0,
+      gpt_success: 0,
+      gpt_failed: 0,
+      pending_tasks: 0,
+      error: "",
+      stale_heartbeat: false,
+    });
+
+    try {
+      await onFlyUpdateGptControl(false);
+      const { data } = await onFlySync(selectedStore, {
+        gpt_enabled: false,
+        gpt_batch_mode: false,
+        source_url: manualSource.trim() || undefined,
+        max_images: 0,
+        force_reprocess: forceReprocess,
+      });
+      autoExportRunIdRef.current = data.run_id || "";
+      showToast("Full-folder YOLO started. Review CSV will download after this run finishes.");
+      setLiveProgress((prev: any) => ({ ...(prev || {}), ...data, run_id: data.run_id, active_run_id: data.run_id, is_running: true, status: "running", stage: "" }));
+      setTimeout(() => {
+        loadProgress(selectedStore);
+        loadDateReport(selectedStore, { silent: true });
+        loadStores();
+      }, 1500);
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || "Failed to start full-folder YOLO");
+      autoExportRunIdRef.current = "";
+      setSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    const pendingRunId = autoExportRunIdRef.current;
+    if (!pendingRunId || !selectedStore || !liveProgress) return;
+    const progressRunId = String(liveProgress.run_id || liveProgress.active_run_id || "");
+    if (progressRunId && progressRunId !== pendingRunId) return;
+    const status = String(liveProgress.status || "").toLowerCase();
+    const stillRunning = Boolean(liveProgress.is_running || status === "running");
+    const terminal = ["done", "success", "completed", "failed", "cancelled", "abandoned", "partial"].includes(status);
+    if (!stillRunning && terminal) {
+      autoExportRunIdRef.current = "";
+      void handleExportRelevantReviewTable();
+    }
+  }, [handleExportRelevantReviewTable, liveProgress, selectedStore]);
 
   const runningCount = stores.filter((s) => s.is_running).length;
   const driveReadyCount = stores.filter((s) => Boolean(s.drive_folder_url)).length;
@@ -273,7 +382,7 @@ export default function SchedulerDashboard() {
         gptEnabled={gptEnabled}
         gptBatchMode={gptBatchMode}
         forceReprocess={forceReprocess}
-        onSelectedStoreChange={(next) => { setSelectedStore(next); setLiveProgress(null); setDateReport([]); }}
+        onSelectedStoreChange={(next) => { setSelectedStore(next); setLiveProgress(null); setDateReport([]); setReviewDate(""); setLastReviewExport(null); }}
         onManualSourceChange={setManualSource}
         onMaxImagesChange={setMaxImages}
         onGptEnabledChange={(value) => void handleGptEnabledChange(value)}
@@ -284,6 +393,17 @@ export default function SchedulerDashboard() {
       />
 
       <LiveProgressCard liveProgress={liveProgress} syncing={syncing} />
+      <RelevantReviewTableCard
+        selectedStore={selectedStore || ""}
+        dateReport={dateReport}
+        selectedDate={reviewDate}
+        exporting={reviewExporting}
+        syncing={syncing}
+        lastExport={lastReviewExport}
+        onDateChange={setReviewDate}
+        onRunFullFolder={() => void handleRunYoloFullFolder()}
+        onExport={() => void handleExportRelevantReviewTable()}
+      />
       <DateReportCard selectedStore={selectedStore || ""} syncing={syncing} dateReport={dateReport} loadingReport={loadingReport} onRefresh={() => { if (selectedStore) void loadDateReport(selectedStore); }} />
       <AutomationStatusCard visibleAutomationStores={visibleAutomationStores} stores={stores} storeStatusFilter={storeStatusFilter} onStoreStatusFilterChange={setStoreStatusFilter} />
       <ExecutionHistoryCard runs={runs} runLimit={runLimit} onRunLimitChange={setRunLimit} onCleanupZombies={() => void handleCleanupZombies()} onDownloadRuns={() => void downloadRuns()} storeNameById={storeNameById} />

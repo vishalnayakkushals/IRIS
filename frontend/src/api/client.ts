@@ -421,6 +421,28 @@ export const onFlyBatchStatus = (storeId: string) => api.get<any[]>(`/onfly/batc
 export const onFlyBatchRetrieve = (storeId: string) => api.post<any>(`/onfly/batch/retrieve/${storeId}`, {});
 export const onFlyLiveProgress = (storeId: string) => api.get<any>(`/onfly/live-progress/${storeId}`);
 export const onFlyDateReport = (storeId: string) => api.get<any[]>(`/onfly/date-report/${storeId}`);
+export type RelevantReviewTableResult = {
+  store_id: string;
+  date_filter: string;
+  rows: number;
+  output_path: string;
+  filename: string;
+  generated_at: string;
+  message?: string;
+};
+export const onFlyExportRelevantReviewTable = (storeId: string, date?: string, limit = 0) => {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  if (limit > 0) params.set("limit", String(limit));
+  const suffix = params.toString() ? `?${params}` : "";
+  return api.post<RelevantReviewTableResult>(`/onfly/relevant-review-table/${storeId}${suffix}`);
+};
+export const onFlyDownloadRelevantReviewTable = (storeId: string, date?: string) => {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  const suffix = params.toString() ? `?${params}` : "";
+  return api.get(`/onfly/relevant-review-table/${storeId}/download${suffix}`, { responseType: "blob" });
+};
 
 // ── QA Feedback ───────────────────────────────────────────────────────────────
 export const qaListFeedback = (storeId?: string, reviewStatus?: string, limit = 200) => {

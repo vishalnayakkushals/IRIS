@@ -34,6 +34,7 @@ It records what changed, where it changed, and why.
 | `src/iris/report_writer.py` | Canonical CSV generation, run summaries, timing files, and cost metric writes. |
 | `src/iris/pipeline_events.py` | SQLite schema helpers, pipeline runs/events/queue tables, update helpers. |
 | `src/iris/drive_review_export.py` | Copies YOLO-relevant Google Drive images into `Relevant image/<date-folder>/` under the same store parent folder, preserving original filenames and skipping duplicate destination names. |
+| `src/iris/relevant_review_table.py` | Shared CSV exporter for YOLO-relevant review handoff tables used by both the scheduler UI and the command-line script. |
 | `scripts/start_api_server.py` | Supported web/API launcher; runs runtime preparation then starts uvicorn. |
 | `scripts/start_scheduler_worker_service.py` | Supported launcher for the core scheduler worker. |
 | `scripts/start_onfly_scheduler_service.py` | Supported launcher for the on-fly scheduler worker. |
@@ -62,6 +63,7 @@ It records what changed, where it changed, and why.
 | `scripts/export_relevant_review_table.py` | Exports a local CSV handoff table of YOLO-relevant images with original Drive links and reviewer columns for offline/cloud handoff review. |
 | `scripts/export_onfly_processing_stats.py` | Exact store/date processing stats exporter that reconciles source-folder inventory, SQLite pipeline state, run events, walk-in rows, and generated report files into CSV/JSON outputs. |
 | `tests/test_drive_review_export.py` | Focused unit tests for Google Drive relevant-image folder creation, original filename preservation, duplicate skipping, and date-folder parent handling. |
+| `tests/test_relevant_review_table.py` | Focused unit tests for the shared YOLO relevant review table CSV exporter. |
 
 ---
 
@@ -107,6 +109,24 @@ python -m pytest tests/test_onfly_pipeline.py tests/test_onfly_scheduler.py test
 cd frontend
 npm run build
 ```
+
+### 2026-05-14 - Scheduler YOLO Review Table Export
+
+- Changed paths:
+  - `src/iris/relevant_review_table.py`
+  - `scripts/export_relevant_review_table.py`
+  - `backend/app/api/routes_onfly.py`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/pages/SchedulerDashboard.tsx`
+  - `frontend/src/features/scheduler/sections.tsx`
+  - `backend/app/static/` (rebuilt React bundle)
+  - `tests/test_relevant_review_table.py`
+  - `docs/AI_HANDOVER_STORAGE.md`
+  - `CHANGE_LEDGER.md`
+- Summary:
+  - Added a `/scheduler` YOLO Relevant Review Table card that can start a full-folder YOLO run with OpenAI GPT calls forced off and export a CSV review handoff table from existing `onfly_image_state` data.
+  - Exposed authenticated FastAPI endpoints to generate/download the same CSV format used by the command-line exporter, preserving the existing YOLO relevance logic and GPT pipeline behavior.
+  - Refactored the script exporter onto a shared `src/iris/relevant_review_table.py` module and added focused tests for relevant-only filtering, Drive link preservation, and blank reviewer columns.
 
 ### 2026-05-13 - On-Fly YOLO Brain Logic Documentation Refresh
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -36,6 +37,7 @@ from backend.app.auth.dependencies import get_current_user
 from backend.app.config import get_settings
 from backend.app.db.canonical_metadata import store_sync_state, stores
 from backend.app.db.session import AsyncSessionLocal
+from iris.relevant_review_table import export_relevant_review_table, relevant_review_table_path
 
 router = APIRouter(prefix="/onfly", tags=["onfly"])
 
@@ -295,6 +297,56 @@ async def get_live_progress(store_id: str, _: str = Depends(get_current_user)) -
 @router.get("/date-report/{store_id}")
 async def get_date_report(store_id: str, _: str = Depends(get_current_user)) -> list[dict[str, Any]]:
     return _load_date_report_from_sqlite(get_settings().db_path_obj, store_id)
+
+
+@router.post("/relevant-review-table/{store_id}")
+async def create_relevant_review_table(
+    store_id: str,
+    date: str = "",
+    limit: int = 0,
+    _: str = Depends(get_current_user),
+) -> dict[str, Any]:
+    settings = get_settings()
+    try:
+        result = export_relevant_review_table(
+            db_path=settings.db_path_obj,
+            out_dir=settings.data_root_obj / "exports" / "current" / "onfly",
+            store_id=store_id,
+            date_filter=str(date or "").strip(),
+            limit=max(0, int(limit)),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read YOLO scan state: {exc}") from exc
+    result["message"] = f"Review table generated with {result['rows']} YOLO-relevant image row(s)."
+    return result
+
+
+@router.get("/relevant-review-table/{store_id}/download")
+async def download_relevant_review_table(
+    store_id: str,
+    date: str = "",
+    _: str = Depends(get_current_user),
+) -> FileResponse:
+    settings = get_settings()
+    output = relevant_review_table_path(settings.data_root_obj / "exports" / "current" / "onfly", store_id, str(date or "").strip())
+    if not output.exists():
+        try:
+            export_relevant_review_table(
+                db_path=settings.db_path_obj,
+                out_dir=settings.data_root_obj / "exports" / "current" / "onfly",
+                store_id=store_id,
+                date_filter=str(date or "").strip(),
+                limit=0,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=500, detail=f"Could not read YOLO scan state: {exc}") from exc
+    if not output.exists():
+        raise HTTPException(status_code=404, detail="Review table was not generated.")
+    return FileResponse(path=output, filename=output.name, media_type="text/csv")
 
 
 @router.delete("/sync/{store_id}/cancel")

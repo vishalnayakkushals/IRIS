@@ -248,6 +248,75 @@ export function DateReportCard({ selectedStore, syncing, dateReport, loadingRepo
   );
 }
 
+export function RelevantReviewTableCard({
+  selectedStore,
+  dateReport,
+  selectedDate,
+  exporting,
+  syncing,
+  lastExport,
+  onDateChange,
+  onRunFullFolder,
+  onExport,
+}: {
+  selectedStore: string;
+  dateReport: any[];
+  selectedDate: string;
+  exporting: boolean;
+  syncing: boolean;
+  lastExport: { rows: number; output_path: string; filename: string; generated_at: string } | null;
+  onDateChange: (value: string) => void;
+  onRunFullFolder: () => void;
+  onExport: () => void;
+}) {
+  if (!selectedStore) return null;
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-700">YOLO Relevant Review Table</p>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Run YOLO across the full selected folder, then generate a CSV of only YOLO-relevant images with Drive links and review columns.
+          </p>
+        </div>
+        <Badge color="blue">OpenAI off for full-folder YOLO run</Badge>
+      </div>
+      <div className="grid md:grid-cols-[220px_1fr] gap-4 items-end">
+        <div>
+          <label className="iris-label">Review Date</label>
+          <select value={selectedDate} onChange={(e) => onDateChange(e.target.value)} className="iris-select">
+            <option value="">All scanned dates</option>
+            {dateReport.map((row) => (
+              <option key={row.date} value={row.date}>{row.date}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={onRunFullFolder} disabled={syncing || !selectedStore} className="iris-btn-primary">
+            <Play size={14} />
+            {syncing ? "Pipeline Running…" : "Run YOLO Full Folder"}
+          </button>
+          <button onClick={onExport} disabled={exporting || !selectedStore} className="iris-btn-secondary">
+            <Download size={14} />
+            {exporting ? "Preparing CSV…" : "Export Review CSV"}
+          </button>
+        </div>
+      </div>
+      {lastExport ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <p className="font-semibold text-slate-700">{lastExport.rows.toLocaleString()} YOLO-relevant row(s) exported to {lastExport.filename}</p>
+          <p className="mt-1 break-all">{lastExport.output_path}</p>
+          <p className="mt-1 text-slate-400">Generated at {new Date(lastExport.generated_at).toLocaleString("en-IN", { hour12: true })}</p>
+        </div>
+      ) : (
+        <p className="text-xs text-slate-400">
+          Use the full-folder button when you want YOLO coverage for the complete Drive folder. Use Export CSV anytime to create a review table from the current scanned database.
+        </p>
+      )}
+    </Card>
+  );
+}
+
 export function AutomationStatusCard({ visibleAutomationStores, stores, storeStatusFilter, onStoreStatusFilterChange }: { visibleAutomationStores: StoreRecord[]; stores: StoreRecord[]; storeStatusFilter: "enabled" | "disabled" | "all"; onStoreStatusFilterChange: (value: "enabled" | "disabled" | "all") => void }) {
   return (
     <Card className="p-0 overflow-hidden">
